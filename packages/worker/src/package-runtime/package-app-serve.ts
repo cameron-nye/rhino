@@ -22,6 +22,7 @@ import {
 	packageAppHostLegacyMountSegment,
 } from '@kody-internal/shared/package-app-host-paths.ts'
 import { accountCreditsPath } from '#universal/compute-overage.ts'
+import { packageAppOauthPaths } from '#universal/package-app-oauth-paths.ts'
 import { renderErrorAgentPromptStaticHtml } from '#universal/error-agent-prompt.ts'
 import { buildPackageAppErrorAgentPrompt } from '#universal/error-agent-prompt-presets.ts'
 import { packageAppHandoffQueryParam } from '#app/package-app-handoff.ts'
@@ -56,6 +57,16 @@ import {
 } from '#worker/package-invocations/module-artifacts.ts'
 import { getPackageNameLeaf } from '#worker/package-registry/package-name.ts'
 import { loadPackageSourceBySourceId } from '#worker/package-registry/source.ts'
+import { loadPublishedCredentialNeeds } from '#worker/credentials/credential-needs-closure.ts'
+import { isPackageCredentialSuppliersEnabled } from '#worker/credentials/credential-suppliers-flag.ts'
+import {
+	CredentialClientError,
+	openCredentialClient,
+} from '#worker/credentials/credential-client.ts'
+import {
+	createPackageAppCredentialAuthority,
+	createPackageAppVisitorPersonalRequest,
+} from '#worker/package-runtime/package-app-authority.ts'
 import {
 	buildPackageAppWorker,
 	createPackageAppCallerContext,
@@ -249,6 +260,15 @@ function packageAppLocationPath(input: {
 			throw new Error(`Unknown package app mount: ${String(input.mount)}`)
 		}
 	}
+}
+
+function buildPackageAppLoginUrl(input: {
+	requestUrl: string
+	appLeaf: string
+}) {
+	const loginUrl = new URL(packageAppOauthPaths.login, input.requestUrl)
+	loginUrl.searchParams.set('app', input.appLeaf)
+	return loginUrl
 }
 
 export function isPackageAppRequestPath(pathname: string) {
@@ -1084,6 +1104,85 @@ export async function servePackageAppRequest(input: {
 			publishedCommit: packageManifest.source.published_commit,
 		})
 		if (refusal) return attachPackageAppServerTiming(refusal, serverTiming)
+		const suppliersEnabled = await isPackageCredentialSuppliersEnabled({
+			db: env.APP_DB,
+			orgId: owner.userId,
+			request,
+		})
+		const visitorNeeds = suppliersEnabled
+			? await loadPublishedCredentialNeeds({
+					env,
+					userId: owner.userId,
+					sourceId: savedPackage.sourceId,
+					request: callerContext.request,
+				})
+			: []
+		const requiredExecutorNeeds = visitorNeeds.filter(
+			(need) => need.supplier === 'executor' && need.required !== false,
+		)
+		for (const need of requiredExecutorNeeds) {
+			try {
+				await openCredentialClient(
+					{
+						env,
+						callerContext,
+						binding: '',
+						packageId: savedPackage.id,
+						runNeeds: async () =>
+							new Map(visitorNeeds.map((item) => [item.key, item])),
+						packageAppAuthority: createPackageAppCredentialAuthority({
+							env,
+							scope: {
+								orgId: owner.userId,
+								packageId: savedPackage.id,
+							},
+							grantScope: {
+								orgSlug: packagePath.username,
+								kodyId: savedPackage.kodyId,
+							},
+							visitorRequest: await createPackageAppVisitorPersonalRequest({
+								db: env.APP_DB,
+								visitor,
+							}),
+							issue: { visitorNeed: need.key },
+							waitUntil: scheduleWorkerWaitUntil,
+						}),
+					},
+					{ key: need.key },
+				)
+			} catch (error) {
+				if (!(error instanceof CredentialClientError)) throw error
+				if (request.method !== 'GET' && request.method !== 'HEAD') {
+					throw error
+				}
+				const loginUrl = buildPackageAppLoginUrl({
+					requestUrl: request.url,
+					appLeaf: getPackageNameLeaf(savedPackage.name),
+				})
+				loginUrl.searchParams.set(
+					'scope',
+					[
+						'profile',
+						...requiredExecutorNeeds.map((item) => `need:${item.key}`),
+					].join(' '),
+				)
+				loginUrl.searchParams.set('prompt', 'consent')
+				loginUrl.searchParams.set(
+					'return_to',
+					`${requestUrl.pathname}${requestUrl.search}`,
+				)
+				return attachPackageAppServerTiming(
+					new Response(null, {
+						status: 302,
+						headers: {
+							Location: loginUrl.toString(),
+							'Cache-Control': 'no-store',
+						},
+					}),
+					serverTiming,
+				)
+			}
+		}
 		servedPublishedCommit = packageManifest.source.published_commit
 		const appWorker = await buildPackageAppWorker({
 			env,

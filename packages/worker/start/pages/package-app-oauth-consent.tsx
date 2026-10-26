@@ -34,13 +34,51 @@ export function PackageAppOauthConsentPage({
 	const [selectedScopes, setSelectedScopes] = useState(
 		() => new Set(data.optionalScopes.map(({ scope }) => scope)),
 	)
+	const [selectedCredentialIds, setSelectedCredentialIds] = useState(
+		() =>
+			Object.fromEntries(
+				data.executorNeeds.flatMap((need) =>
+					need.recommendedCredentialId
+						? [[need.key, need.recommendedCredentialId]]
+						: [],
+				),
+			) as Record<string, string>,
+	)
+	const [choosingAnother, setChoosingAnother] = useState<Set<string>>(
+		() => new Set(),
+	)
+	const missingRequiredCredential = data.executorNeeds.some(
+		(need) =>
+			need.required &&
+			!need.credentials.some(
+				(credential) => credential.id === selectedCredentialIds[need.key],
+			),
+	)
+	const missingSelectedCredential = data.executorNeeds.some((need) => {
+		const isSelected = need.required || selectedScopes.has(need.scope)
+		return (
+			isSelected &&
+			!need.credentials.some(
+				(credential) => credential.id === selectedCredentialIds[need.key],
+			)
+		)
+	})
 	async function submit(decision: 'approve' | 'deny') {
 		if (busy) return
 		setBusy(true)
 		setError(null)
 		try {
+			const credentialFields = Object.fromEntries(
+				data.executorNeeds.flatMap((need) => {
+					const selected = selectedCredentialIds[need.key]
+					return selected
+						? [[`credential_need:${encodeURIComponent(need.key)}`, selected]]
+						: []
+				}),
+			)
 			const fields = {
 				...data.hiddenFields,
+				...credentialFields,
 				selected_scopes: [
 					...data.requiredScopes,
 					...data.alreadyAllowedScopes,
@@ -167,6 +205,108 @@ export function PackageAppOauthConsentPage({
 						</p>
 					) : null}
 				</section>
+				{data.executorNeeds.map((need) => {
+					const selected = selectedCredentialIds[need.key]
+					const recommended = need.credentials.find(
+						(credential) => credential.id === need.recommendedCredentialId,
+					)
+					const otherCandidates = need.credentials.filter(
+						(credential) => credential.id !== need.recommendedCredentialId,
+					)
+					const showAlternates = choosingAnother.has(need.key)
+					return (
+						<section
+							key={need.key}
+							aria-label={`Credentials for ${need.description}`}
+							css={{ display: 'grid', gap: spacing.sm }}
+						>
+							<h2 css={sectionHeadingCss}>
+								{need.required
+									? 'Required credentials'
+									: 'Optional credentials'}
+							</h2>
+							<p css={mutedCss}>{need.description}</p>
+							{recommended ? (
+								<label css={credentialChoiceCss}>
+									<input
+										type="radio"
+										name={`credential_need:${encodeURIComponent(need.key)}`}
+										value={recommended.id}
+										form="package-app-oauth-consent-form"
+										checked={selected === recommended.id}
+										onChange={() =>
+											setSelectedCredentialIds((current) => ({
+												...current,
+												[need.key]: recommended.id,
+											}))
+										}
+									/>
+									<span>
+										<strong>{recommended.name}</strong>
+										<span css={mutedCss}>
+											{' '}
+											Used by {recommended.usedByApps} apps
+										</span>
+									</span>
+								</label>
+							) : (
+								<p css={mutedCss}>No matching credentials are available yet.</p>
+							)}
+							{otherCandidates.length > 0 ? (
+								<button
+									type="button"
+									css={getGhostButtonCss({ size: 'sm' })}
+									onClick={() =>
+										setChoosingAnother((current) => {
+											const next = new Set(current)
+											if (next.has(need.key)) next.delete(need.key)
+											else next.add(need.key)
+											return next
+										})
+									}
+								>
+									{showAlternates
+										? 'Hide other credentials'
+										: 'Choose another credential'}
+								</button>
+							) : null}
+							{showAlternates
+								? otherCandidates.map((credential) => (
+										<label key={credential.id} css={credentialChoiceCss}>
+											<input
+												type="radio"
+												name={`credential_need:${encodeURIComponent(need.key)}`}
+												value={credential.id}
+												form="package-app-oauth-consent-form"
+												checked={selected === credential.id}
+												onChange={() =>
+													setSelectedCredentialIds((current) => ({
+														...current,
+														[need.key]: credential.id,
+													}))
+												}
+											/>
+											<span>
+												<strong>{credential.name}</strong>
+												<span css={mutedCss}>
+													{' '}
+													Used by {credential.usedByApps} apps
+												</span>
+											</span>
+										</label>
+									))
+								: null}
+							<a
+								href={need.createUrl}
+								target="_blank"
+								rel="noreferrer"
+								css={mutedCss}
+							>
+								Create new credentials
+							</a>
+						</section>
+					)
+				})}
 
 				<details
 					data-testid="package-app-oauth-consent-details"
@@ -204,7 +344,7 @@ export function PackageAppOauthConsentPage({
 						/>
 					))}
 					<button
-						disabled={busy}
+						disabled={busy || missingSelectedCredential}
 						type="submit"
 						name="decision"
 						value="approve"
@@ -224,6 +364,13 @@ export function PackageAppOauthConsentPage({
 						Cancel
 					</button>
 				</form>
+				{missingSelectedCredential ? (
+					<p role="status" css={mutedCss}>
+						{missingRequiredCredential
+							? 'Create a matching credential before allowing this app.'
+							: 'Choose a credential or turn off the optional scope to continue.'}
+					</p>
+				) : null}
 				{error ? (
 					<p role="alert" css={mutedCss}>
 						{error}
@@ -277,4 +424,10 @@ const sectionHeadingCss = {
 	fontSize: typography.fontSize.base,
 	fontWeight: typography.fontWeight.semibold,
 	color: colors.text,
+}
+
+const credentialChoiceCss = {
+	display: 'flex',
+	alignItems: 'flex-start',
+	gap: spacing.sm,
 }

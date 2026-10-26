@@ -38,10 +38,15 @@ const handlePayloadSchema = z.object({
 	 */
 	runsAs: z.literal(true).optional(),
 	/**
-	 * Opened on a visitor's own credential for this `kody.app.visitorNeeds`
-	 * key: each use re-checks the visitor's live consent for it.
+	 * Opened for a legacy visitor need: each use re-checks the visitor's live
+	 * consent for it.
 	 */
 	visitorNeed: z.string().min(1).max(100).optional(),
+	/**
+	 * Opened on an executor credential: each use re-checks consent and the
+	 * credential mapping on the visitor's live grant.
+	 */
+	executorNeed: z.string().min(1).max(100).optional(),
 	exp: z.number(),
 })
 
@@ -139,6 +144,10 @@ export async function verifyCredentialClientHandle(input: {
 	runsAsRequest?: () => Promise<RequestContext | null>
 	/** Package apps: the visitor, while their consent covers this need. */
 	visitorNeedRequest?: (needKey: string) => Promise<RequestContext | null>
+	/** Package apps: the visitor grant authorizing this need. */
+	visitorNeedGrant?: (
+		needKey: string,
+	) => Promise<{ request: RequestContext; grantId: string } | null>
 	now?: number
 }): Promise<CredentialClientHandle> {
 	const fail = () => new CredentialClientHandleError()
@@ -178,9 +187,15 @@ export async function verifyCredentialClientHandle(input: {
 		? ((await input.ownerCredentialRequest?.()) ?? null)
 		: handle.data.runsAs
 			? ((await input.runsAsRequest?.()) ?? null)
-			: handle.data.visitorNeed
-				? ((await input.visitorNeedRequest?.(handle.data.visitorNeed)) ?? null)
-				: input.request
+			: handle.data.executorNeed
+				? ((await input.visitorNeedGrant?.(handle.data.executorNeed))
+						?.request ?? null)
+				: handle.data.visitorNeed
+					? ((await input.visitorNeedGrant?.(handle.data.visitorNeed))
+							?.request ??
+						(await input.visitorNeedRequest?.(handle.data.visitorNeed)) ??
+						null)
+					: input.request
 	if (
 		!request?.actor ||
 		handle.data.org !== request.org.id ||

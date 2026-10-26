@@ -293,11 +293,41 @@ run as anyone.
 `kody.app.visitorNeeds` is how an app works on a signed-in visitor's own data.
 Each key is its own Sign in with Kody consent scope, `need:<key>`, and the
 consent screen shows the `description`. A need names exactly one of a
-`kody.credentials` key (open it with `credential.visitor('calendar')`) or a
-capability (run it with `kody.visitorNeed({ need: 'calendar', args })`). Both
-run as the visitor and need a live grant that covers the scope, read on every
-call, so revoking the app on **Account > Connected apps** takes effect on the
-next call. They never fall back to the runs-as person.
+`kody.credentials` key or a capability (run it with
+`kody.visitorNeed({ need: 'calendar', args })`). Capability calls run as the
+visitor and need a live grant that covers the scope, read on every call.
+Credential needs use the supplier declared in `kody.credentials`: executor needs
+resolve only the credential mapping on that visitor's live grant, while
+publisher needs are not available through `credential.visitor()` or
+`kody.visitorNeed()`. Neither path falls back to the runs-as person. Revoking
+the app on **Account > Connected apps** takes effect on the next call.
+
+Executor credential needs use `need:<key>` scopes and are required by default.
+An optional executor need declares `required: false`. The visitor chooses a
+usable credential for each approved need during consent; the credential value
+stays host-side. See
+[Credentials](./credentials.md#choose-who-supplies-a-package-credential) for
+supplier and mapping rules.
+
+Supplier-aware credentials are rolling out. Closures published while the flag is
+off do not store supplier metadata, so republish them after enabling the flag.
+In app code, check the grant before opening a visitor credential, and handle the
+unbound case without trying the publisher's credential:
+
+```ts
+import { credential, hasScope } from 'kody:runtime'
+
+if (hasScope(request, 'need:calendar')) {
+	const calendar = await credential.visitor('calendar')
+	// Use the visitor's credential for this request.
+}
+```
+
+`credential.visitor(key)` resolves only the credential selected for that need in
+the visitor's live grant. It does not fall back to publisher credentials,
+visitor defaults, org mappings, or automatic matching. A missing mapping is
+reported as `credential_unbound`. Keep publisher-supplied needs on
+`credential(key)`.
 
 While apps move over, a call that would fail as the runs-as person (a capability
 missing from `kody.app.capabilities`, for example) still runs as the visitor, as
