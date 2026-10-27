@@ -691,6 +691,14 @@
 		{
 			"filename": "0187-invite-link-label-last-used-teams.sql",
 			"sha256": "76e1d1039763217904b695d146e39b677d426185a5a990da535bed5b13090d89"
+		},
+		{
+			"filename": "0189-execution-contexts.sql",
+			"sha256": "922d44a264991f067645a392a4019ef7cd113939b23c7474f04747a3a2717863"
+		},
+		{
+			"filename": "0190-grants-execution-context-resource-type.sql",
+			"sha256": "2ee08874e6fa1e1d7256eb642325d36de682ab1fd71ee910903ff4b47f97028d"
 		}
 	]
 }
