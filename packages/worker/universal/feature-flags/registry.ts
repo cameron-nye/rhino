@@ -235,9 +235,6 @@ export const repoPushQueueFlagKey = 'repo-push-queue' satisfies FeatureFlagKey
 export const credentialNeedEnforcementFlagKey =
 	'credential-need-enforcement' satisfies FeatureFlagKey
 
-export const executionContextsFlagKey =
-	'execution-contexts' satisfies FeatureFlagKey
-
 export const featureFlagKeys: ReadonlyArray<FeatureFlagKey> =
 	featureFlagDefinitions.map((definition) => definition.key)
 
