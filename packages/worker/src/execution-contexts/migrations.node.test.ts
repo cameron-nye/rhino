@@ -257,6 +257,7 @@ test('execution context tables exist with their columns and unique rules', () =>
 	insertEntry.run(1, null)
 	expect(() => insertEntry.run(2, 'ec_1')).toThrow(/UNIQUE constraint failed/)
 	expect(() => insertEntry.run(1, 'ec_2')).toThrow(/UNIQUE constraint failed/)
+	expect(() => insertEntry.run(3, null)).toThrow(/UNIQUE constraint failed/)
 
 	expect(() =>
 		sqlite
@@ -277,6 +278,7 @@ test('execution context tables exist with their columns and unique rules', () =>
 			.all() as Array<{ name: string }>
 	).map((row) => row.name)
 	expect(indexes).toEqual([
+		'execution_context_chain_entries_cloud_once',
 		'execution_context_chain_entries_context',
 		'execution_context_chain_entries_context_once',
 		'execution_context_chain_entries_user',

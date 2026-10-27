@@ -75,7 +75,9 @@ CREATE TABLE execution_context_chains (
 
 CREATE INDEX execution_context_chains_user ON execution_context_chains (user_id);
 
--- A null context_id is the Kody cloud entry.
+-- A null context_id is the Kody cloud entry. Each context, and the cloud
+-- entry, appears at most once per chain (SQLite treats nulls as distinct in
+-- a unique index, so the cloud entry has its own partial index).
 CREATE TABLE execution_context_chain_entries (
 	org_id TEXT NOT NULL,
 	user_id TEXT NOT NULL,
@@ -86,6 +88,9 @@ CREATE TABLE execution_context_chain_entries (
 
 CREATE UNIQUE INDEX execution_context_chain_entries_context_once
 	ON execution_context_chain_entries (org_id, user_id, context_id);
+CREATE UNIQUE INDEX execution_context_chain_entries_cloud_once
+	ON execution_context_chain_entries (org_id, user_id)
+	WHERE context_id IS NULL;
 CREATE INDEX execution_context_chain_entries_context ON execution_context_chain_entries (context_id);
 CREATE INDEX execution_context_chain_entries_user ON execution_context_chain_entries (user_id);
 
