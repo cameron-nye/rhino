@@ -180,7 +180,7 @@ const capabilityProxyRoute = {
  *
  * Deliberately absent: secret plaintext reads, inbound webhook receive,
  * package-app HTTP/WebSocket traffic, admin, and runtime-only capabilities
- * (values, package-app fetch, synthetic dispatch). Hosted execute is
+ * (values, synthetic dispatch). Hosted execute is
  * `POST /v1/execute` (native). The in-sandbox `execute` capability stays
  * off this list.
  */
@@ -318,6 +318,8 @@ export const apiOperations: ReadonlyArray<ApiOperation> = [
 			'packageCollaboratorRemove',
 		],
 		['PATCH', '/v1/packages/{package_id}', 'packageUpdate'],
+		// Body-only so `kody_id` works as well as `package_id`.
+		['POST', '/v1/packages/app-fetch', 'packageAppFetch'],
 		['GET', '/v1/packages/{package_id}/runs-as', 'packageAppRunsAsGet'],
 		['PUT', '/v1/packages/{package_id}/runs-as', 'packageAppRunsAsSet'],
 		['DELETE', '/v1/packages/{package_id}', 'packageDelete'],
