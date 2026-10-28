@@ -16,6 +16,7 @@ exports[`contextRuns allow list snapshot 1`] = `
   "communitySearch",
   "credentialList",
   "credentialOrgGrantList",
+  "credentialPlacementApprovalLink",
   "emailAttachmentGet",
   "emailDeliveryEventList",
   "emailDestinationAdd",
