@@ -571,6 +571,26 @@ test('credential(key) checks the calling package even when a sibling entry decla
 			{ key: 'resend' },
 		),
 	).rejects.toMatchObject({ body: { code: 'credential_need_undeclared' } })
+	// Reading the entry package's mappings does not widen declared use.
+	await expect(
+		openCredentialClient(
+			{
+				...t.clientContext(t.acmeId, packageId),
+				runNeeds: async () =>
+					new Map(
+						savedCredentialNeeds([need('resend')]).map((item) => [
+							item.key,
+							item,
+						]),
+					),
+				runEntries: async () => ({
+					packageIds: ['entry-package'],
+					entryByKey: new Map([['resend', 'entry-package']]),
+				}),
+			},
+			{ key: 'resend' },
+		),
+	).rejects.toMatchObject({ body: { code: 'credential_need_undeclared' } })
 })
 
 test('credential(key) resolves a key only the fresh closure declares as declared', async () => {

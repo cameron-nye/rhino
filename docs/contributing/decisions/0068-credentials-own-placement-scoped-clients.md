@@ -895,6 +895,31 @@ credentials fill its needs. Visitors bring only verified identity.
   `adminPackageAppAuthorityFallbackReport`. The visitor path and
   `ownerCredentialForVisitors` are removed only after those stay at zero.
 
+## Amendment 2026-10-27: dependency needs use the entry package's mappings
+
+Kent decided this on 2026-10-27 after a user report: a dependency's
+`credential(key)` ignored the mapping its entry package showed as ready.
+
+- **Rule.** When dependency D calls `credential(key)` or `credentials(key)` in a
+  run whose entry package E pins the need, stored mappings (the run's trigger
+  mapping, then `mine`, then `org`) and the creation link's `forPackage` come
+  from E. E is where `packageGet`, the capability set approval, and the
+  Credentials tab already show and set the mapping, and the only package a
+  caller in another org can map.
+- **Which entry.** The first entry whose pinned closure has the key, the same
+  first-entry-wins rule `loadRunCredentialNeeds` uses for the need definition. A
+  caller that is itself an entry reads its own mappings. Ad hoc code with no
+  package reads none.
+- **Identity split.** GHSA-5fv3 bound identity still decides authorization:
+  declared use is checked against D's own closure (the
+  [2026-10-15 amendment](#amendment-2026-10-15-credential-need-enforcement)),
+  and a Key bound to a package fills only that package's own calls. The entry is
+  used only to select mappings, and comes from the host: the run's package
+  context or, for CLI `--local`, the entries the package graph signs into each
+  package binding. Sandbox code cannot name it. E's code can already open any
+  key in its closure, and a mapping never grants Use, so reading E's mappings
+  for D's need grants nothing new.
+
 ## Amendment 2026-10-27: secret-provider slots
 
 Kent decided on 2026-10-27 that saved packages must be able to use custom secret
