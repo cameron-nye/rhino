@@ -576,7 +576,13 @@ test('credential(key) checks the calling package even when a sibling entry decla
 		openCredentialClient(
 			{
 				...t.clientContext(t.acmeId, packageId),
-				runNeeds: async () => new Map([['resend', need('resend')]]),
+				runNeeds: async () =>
+					new Map(
+						savedCredentialNeeds([need('resend')]).map((item) => [
+							item.key,
+							item,
+						]),
+					),
 				runEntries: async () => ({
 					packageIds: ['entry-package'],
 					entryByKey: new Map([['resend', 'entry-package']]),
