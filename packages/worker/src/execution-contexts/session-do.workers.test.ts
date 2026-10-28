@@ -415,6 +415,36 @@ test('history purges a requester and keeps nothing but metadata', async () => {
 	})
 })
 
+test('a queued run waits for reconnect and expires on the alarm', async () => {
+	const ecid = 'ec_queue'
+	const stub = env.EXECUTION_CONTEXT_SESSION.get(
+		env.EXECUTION_CONTEXT_SESSION.idFromName(ecid),
+	)
+	await stub.issueConnectTicket({
+		snapshot: snapshot(ecid),
+		nonce: crypto.randomUUID(),
+	})
+	const expiresAt = Date.now() + 60_000
+	expect(
+		await stub.enqueue({
+			request: runRequest('run_queued'),
+			lease: lease(ecid, 'run_queued'),
+			runRecord: null,
+			requires: [],
+			position: 1,
+			expiresAt,
+		}),
+	).toEqual({ queued: true })
+	expect(await stub.listQueued()).toEqual([
+		expect.objectContaining({ runId: 'run_queued', expiresAt }),
+	])
+	await runInDurableObject(stub, async (instance, state) => {
+		state.storage.sql.exec(`UPDATE queued SET expires_at = ?`, Date.now() - 1)
+		await instance.alarm()
+	})
+	expect(await stub.listQueued()).toEqual([])
+})
+
 test('a malformed ECP_FRAME_SIGNING_KEYS closes the socket loudly, then heals once the keys parse', async () => {
 	consoleError.mockImplementation(() => {})
 	const ecid = 'ec_bad_keys'
@@ -470,4 +500,26 @@ test('a malformed ECP_FRAME_SIGNING_KEYS closes the socket loudly, then heals on
 	await setKeys(goodKeys)
 	const { welcome } = await connect(ecid)
 	expect(welcome.t).toBe('welcome')
+})
+
+test('revoking a context fails its queued runs at once', async () => {
+	const ecid = 'ec_queue_revoked'
+	const stub = env.EXECUTION_CONTEXT_SESSION.get(
+		env.EXECUTION_CONTEXT_SESSION.idFromName(ecid),
+	)
+	await stub.issueConnectTicket({
+		snapshot: snapshot(ecid),
+		nonce: crypto.randomUUID(),
+	})
+	await stub.enqueue({
+		request: runRequest('run_queued_revoked'),
+		lease: lease(ecid, 'run_queued_revoked'),
+		runRecord: null,
+		requires: [],
+		position: 1,
+		expiresAt: Date.now() + 60_000,
+	})
+	expect(await stub.listQueued()).toHaveLength(1)
+	await stub.revoke({ reason: 'test' })
+	expect(await stub.listQueued()).toEqual([])
 })

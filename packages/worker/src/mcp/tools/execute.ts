@@ -786,7 +786,7 @@ export async function runExecuteToolCall(input: {
 		const { cloudFallbackContent, cloudFallbackFields } = cloudFallbackParts(
 			routed?.kind === 'cloud' ? routed.metadata : null,
 		)
-		if (routed?.kind === 'pending') {
+		if (routed?.kind === 'pending' || routed?.kind === 'queued') {
 			transportDetached = true
 			const timing = finishToolTiming(timingStart)
 			return buildTransportBudgetFollowResponse({
