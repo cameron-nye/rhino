@@ -37,7 +37,10 @@
   [Amendment 2026-10-20](#amendment-2026-10-20-package-manifest-fill-placement));
   2026-10-24 (Kent: package apps run as their publisher; visitors bring only
   identity; see
-  [Amendment 2026-10-24](#amendment-2026-10-24-package-apps-run-as-their-publisher))
+  [Amendment 2026-10-24](#amendment-2026-10-24-package-apps-run-as-their-publisher));
+  2026-10-27 (Kent: saved packages declare the secret provider package they use
+  with a `kind: "secret-provider"` slot; see
+  [Amendment 2026-10-27](#amendment-2026-10-27-secret-provider-slots))
 - **Supersedes in part:** [0021](./0021-publish-gated-package-composition.md)
   (credential authority for the opt-in types used through scoped clients), and
   credentials plan v4 section 3.3 (assignments) and section 3.4 (placeholder
@@ -916,3 +919,32 @@ Kent decided this on 2026-10-27 after a user report: a dependency's
   package binding. Sandbox code cannot name it. E's code can already open any
   key in its closure, and a mapping never grants Use, so reading E's mappings
   for D's need grants nothing new.
+
+## Amendment 2026-10-27: secret-provider slots
+
+Kent decided on 2026-10-27 that saved packages must be able to use custom secret
+provider placeholders, and that the slot names the provider package. Before
+this, the publish stamp failed every vault placeholder in a request site, and no
+manifest declaration could satisfy it.
+
+- **Shape.** A `kody.credentials` slot with `kind: "secret-provider"`, a
+  required `package` (the saved provider package's package.json name), and a
+  description. The key follows the normal key grammar. `provider` and the
+  saved-credential fields (`multiple`, `supplier`, `required`,
+  `ownerCredentialForVisitors`, `placement`) are rejected.
+- **Publish.** The gate looks up `package` in the publishing org and reads its
+  `kody.secretProvider.id`. A vault placeholder in a request or
+  credential-mapped site stamps only when its literal provider id equals that
+  id; the slot key is sealed. A missing, unreadable, or id-less package fails
+  publish, as do computed provider ids and ids no declared package serves.
+  Display-only placeholders stay exempt.
+- **Runtime.** A provider use is declared only when the org's binding for the
+  placeholder's provider id is the declared package; otherwise it fails with
+  `credential_need_undeclared` naming the bound and declared packages. An older
+  slot keyed by the provider id still counts. Saved-credential uses
+  (`credential(key)`, `{{secret:NAME}}`) never resolve through a secret-provider
+  need.
+- **Unchanged.** The stamp seals the provider, not refs. The binding check,
+  per-package per-ref grants, item websites as hosts, `https:` only, and
+  redaction all still apply. Mappings, call maps, candidates, and creation links
+  skip secret-provider needs.

@@ -65,7 +65,10 @@ import {
 	type NeedTarget,
 	needTarget,
 } from './credential-need-fit.ts'
-import { type CredentialNeed } from './credential-needs.ts'
+import {
+	savedCredentialNeeds,
+	type SavedCredentialNeed,
+} from './credential-needs.ts'
 import {
 	checkOwnerCredentialForVisitorsRateLimit,
 	loadOwnerCredentialAuthority,
@@ -209,7 +212,7 @@ export type CredentialClientContext = {
 	 * set, a key missing here reads as a provider: a package's latest publish
 	 * never adds needs the run's entry closures did not pin.
 	 */
-	runNeeds?: () => Promise<ReadonlyMap<string, CredentialNeed>>
+	runNeeds?: () => Promise<ReadonlyMap<string, SavedCredentialNeed>>
 	/**
 	 * The run's entry packages, from the host (run package context or a
 	 * host-signed binding), never from sandbox arguments. Stored mappings and
@@ -421,7 +424,7 @@ function assertApprovedForVisitors(
 /** The creation link for an unbound need, naming its package when known. */
 async function createUrlForNeed(
 	ctx: CredentialClientContext,
-	input: { key: string; provider: string; need: CredentialNeed | null },
+	input: { key: string; provider: string; need: SavedCredentialNeed | null },
 ) {
 	const packageId = await mappingPackageIdFor(ctx, input.key)
 	const saved = packageId
@@ -538,7 +541,7 @@ async function resolveMappedNeed(
 		target: NeedTarget
 		usable: ReadonlyArray<UsableCredential>
 		createUrl: () => Promise<string>
-		supplier?: CredentialNeed['supplier']
+		supplier?: SavedCredentialNeed['supplier']
 	},
 ): Promise<Array<UsableCredential> | null> {
 	const packageId = await mappingPackageIdFor(ctx, input.key)
@@ -699,7 +702,10 @@ async function resolveKey(
 				throw toCredentialClientError(error) ?? error
 			})
 		: null
-	const need = runNeed ?? declared?.get(key) ?? null
+	const declaredNeed = declared?.get(key)
+	const need =
+		runNeed ??
+		(declaredNeed ? (savedCredentialNeeds([declaredNeed])[0] ?? null) : null)
 	const isVisitorNeedAuthority = Boolean(
 		ctx.packageAppAuthority?.issue &&
 		'visitorNeed' in ctx.packageAppAuthority.issue,
@@ -999,7 +1005,7 @@ export async function loadRunCredentialNeeds(input: {
 	orgId: string
 	packageIds: ReadonlyArray<string>
 	request?: RequestContext | null
-}): Promise<ReadonlyMap<string, CredentialNeed>> {
+}): Promise<ReadonlyMap<string, SavedCredentialNeed>> {
 	const { needs } = await loadRunCredentialNeedEntries(input)
 	return needs
 }
@@ -1014,7 +1020,7 @@ export async function loadRunCredentialNeedEntries(input: {
 	packageIds: ReadonlyArray<string>
 	request?: RequestContext | null
 }): Promise<{
-	needs: ReadonlyMap<string, CredentialNeed>
+	needs: ReadonlyMap<string, SavedCredentialNeed>
 	entries: RunCredentialEntries
 }> {
 	const needLists = await Promise.all(
@@ -1027,7 +1033,7 @@ export async function loadRunCredentialNeedEntries(input: {
 			}),
 		),
 	)
-	const needs = new Map<string, CredentialNeed>()
+	const needs = new Map<string, SavedCredentialNeed>()
 	const entryByKey = new Map<string, string>()
 	needLists.forEach((list, index) => {
 		for (const need of list) {
@@ -1092,7 +1098,7 @@ export async function validateCredentialCallMap(input: {
 				})),
 			),
 		])
-		const needs = new Map<string, CredentialNeed>()
+		const needs = new Map<string, SavedCredentialNeed>()
 		const needDeclaredBy = new Map<string, Array<string>>()
 		for (const { packageId, needs: list } of needLists) {
 			for (const need of list) {

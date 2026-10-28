@@ -26,7 +26,7 @@ import { staticCallMeterRuntimeBridgeProviderName } from '#mcp/evaluation-side-e
 import { takeSecretAuthorityFromCapabilityArgs } from '#mcp/secrets/secret-authority.ts'
 import { kodyCallDispatcherName } from '#worker/kody-evaluate-bindings.ts'
 import { type CredentialCallMap } from '#worker/credentials/credential-call-map.ts'
-import { type CredentialNeed } from '#worker/credentials/credential-needs.ts'
+import { type SavedCredentialNeed } from '#worker/credentials/credential-needs.ts'
 import {
 	type PackageAppCredentialAuthority,
 	type RunCredentialEntries,
@@ -82,7 +82,7 @@ export type CredentialClientToolOptions = {
 	/** The caller's credential picks for this run, by need key. */
 	callMap?: CredentialCallMap | null
 	/** The run's pinned needs by key (hosted runs only). */
-	runNeeds?: () => Promise<ReadonlyMap<string, CredentialNeed>>
+	runNeeds?: () => Promise<ReadonlyMap<string, SavedCredentialNeed>>
 	/**
 	 * The run's entry packages for mapping selection, from the host: the run
 	 * package context when hosted; for CapabilityProxy, the entries signed
