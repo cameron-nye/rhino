@@ -118,8 +118,9 @@ list in the `credentials` map (`{ payments: ['store-east', 'store-west'] }`).
 ## Pass a client in
 
 The caller can open the client itself and hand it to the shared package. The
-shared package then uses exactly what it was given and declares no need of its
-own:
+exported function uses exactly the client it was given, so it reads no mapping.
+A shared package that only takes clients this way can leave the need out of its
+own `kody.credentials`; the caller declares it instead:
 
 ```ts
 // In the caller, which declares the need:
