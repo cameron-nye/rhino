@@ -23,12 +23,12 @@ List the need in the shared package's `kody.credentials` and open it with
 ```json
 {
 	"name": "@you/payments",
-	"exports": { "./charge": "./src/charge.ts" },
+	"exports": { "./locations": "./src/locations.ts" },
 	"kody": {
 		"credentials": {
 			"payments": {
 				"provider": "square",
-				"description": "Create charges in the caller's account"
+				"description": "Read locations in the caller's account"
 			}
 		}
 	}
@@ -38,12 +38,10 @@ List the need in the shared package's `kody.credentials` and open it with
 ```ts
 import { credential } from 'kody:runtime'
 
-export async function charge(amount: number) {
+export async function listLocations() {
 	const client = await credential('payments')
-	return await client.fetch('/v2/payments', {
-		method: 'POST',
-		body: JSON.stringify({ amount }),
-	})
+	const res = await client.fetch('/v2/locations')
+	return await res.json()
 }
 ```
 
@@ -92,7 +90,7 @@ Declare the need with `multiple: true` and open every pick with
 	"payments": {
 		"provider": "square",
 		"multiple": true,
-		"description": "Stores to settle"
+		"description": "Stores to read"
 	}
 }
 ```
@@ -100,11 +98,15 @@ Declare the need with `multiple: true` and open every pick with
 ```ts
 import { credentials } from 'kody:runtime'
 
-export async function settleAll() {
-	const results: Record<string, number> = {}
+export async function listAllLocations() {
+	const results = []
 	for (const client of await credentials('payments')) {
-		const res = await client.fetch('/v2/payouts', { method: 'POST' })
-		results[client.name] = res.status
+		const res = await client.fetch('/v2/locations')
+		results.push({
+			name: client.name,
+			scope: client.scope,
+			locations: await res.json(),
+		})
 	}
 	return results
 }
@@ -122,20 +124,18 @@ own:
 ```ts
 // In the caller, which declares the need:
 import { credential } from 'kody:runtime'
-import { charge } from 'kody:@you/payments/charge-with'
+import { listLocationsWith } from 'kody:@you/payments/locations'
 
 export default async function run() {
-	return await charge(await credential('payments'), 500)
+	return await listLocationsWith(await credential('payments'))
 }
 ```
 
 ```ts
-// In the shared package:
-export async function charge(client: { fetch: typeof fetch }, amount: number) {
-	return await client.fetch('/v2/payments', {
-		method: 'POST',
-		body: JSON.stringify({ amount }),
-	})
+// In the shared package's src/locations.ts:
+export async function listLocationsWith(client: { fetch: typeof fetch }) {
+	const res = await client.fetch('/v2/locations')
+	return await res.json()
 }
 ```
 
