@@ -291,9 +291,10 @@ await resend.fetch('/emails', { method: 'POST', body: JSON.stringify(email) })
   ad hoc code it is a warning. A package's `credential(key)` resolves the same
   need the check used, pinned by the entry package, and a dependency's call
   reads the entry package's stored mappings
-  ([how mappings resolve](../guides/credentials.md#picking-a-credential)). A
-  pick with no provider opens with a `hint` to set one. A pick grants nothing;
-  it chooses only among credentials you can Use.
+  ([how mappings resolve](../guides/credentials.md#picking-a-credential),
+  [shared packages for many accounts](../guides/shared-packages.md)). A pick
+  with no provider opens with a `hint` to set one. A pick grants nothing; it
+  chooses only among credentials you can Use.
 - A client works only in the run that opened it. Under `kody execute --local`,
   published `kody:@…` modules and ad hoc / unpublished `--code` / `--file`
   modules both use `credential` / `credentials` from `kody:runtime` with the

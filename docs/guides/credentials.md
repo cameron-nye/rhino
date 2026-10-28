@@ -493,15 +493,8 @@ applies only when you run the dependency itself. Agents propose changes with
 `credentialMappingPropose`; you approve them on the package's approval page or
 its **Credentials** tab.
 
-A shared package that serves several callers with different accounts of the same
-provider needs nothing special:
-
-- Each caller's entry package maps the need: an org or personal default, and a
-  trigger mapping for a schedule or other trigger.
-- When one run needs several accounts, declare the need with `multiple: true`
-  and open them with `credentials(key)`.
-- Or the caller opens the client itself and passes it into the dependency's
-  function, so the dependency uses exactly what it was handed.
+To build one shared package that many callers use with their own accounts, see
+[Shared packages for many accounts](./shared-packages.md).
 
 A Key bound to one package fills only that package's own `credential()` calls,
 so map an org or personal credential for a need the entry package inherits.
