@@ -316,10 +316,22 @@ export async function buildLocalExecutePackageGraph(input: {
 	for (const dependency of prepared.publishedArtifactDependencies) {
 		if (dependency.packageId) graphPackageIds.add(dependency.packageId)
 	}
+	// The entry code is ad hoc, so its direct imports are the run's entries
+	// (`credentialNeedsEntryPackageIds`); each binding carries them so
+	// CapabilityProxy reads a dependency's mappings from its entry.
+	const entryPackageIds = [
+		...new Set(
+			staticImports.flatMap((specifier) => {
+				const packageId = packageIdsByImport.get(specifier)
+				return packageId ? [packageId] : []
+			}),
+		),
+	]
 	const packageBindings = await signLocalExecutePackageBindings({
 		env: input.env,
 		packageIds: graphPackageIds,
 		subject: { org: input.userId, actor: input.actorUserId },
+		entryPackageIds,
 	})
 	if (modulesByName.has(primaryRuntimePath) || packageBindings.size > 0) {
 		modulesByName.set(

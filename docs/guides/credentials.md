@@ -485,9 +485,26 @@ A pick grants nothing. It chooses only among credentials you can already Use.
 Running code through a client needs your Use on the credential; a package's
 identity never grants access on its own.
 
-Defaults and trigger mappings are stored per package. Agents propose changes
-with `credentialMappingPropose`; you approve them on the package's approval page
-or its **Credentials** tab.
+Defaults and trigger mappings are stored on the package you run (the entry
+package), including needs it inherits from its dependencies. When a dependency
+calls `credential(key)` in that run, it uses the entry package's mappings, and a
+creation link names the entry package. A mapping stored on the dependency
+applies only when you run the dependency itself. Agents propose changes with
+`credentialMappingPropose`; you approve them on the package's approval page or
+its **Credentials** tab.
+
+A shared package that serves several callers with different accounts of the same
+provider needs nothing special:
+
+- Each caller's entry package maps the need: an org or personal default, and a
+  trigger mapping for a schedule or other trigger.
+- When one run needs several accounts, declare the need with `multiple: true`
+  and open them with `credentials(key)`.
+- Or the caller opens the client itself and passes it into the dependency's
+  function, so the dependency uses exactly what it was handed.
+
+A Key bound to one package fills only that package's own `credential()` calls,
+so map an org or personal credential for a need the entry package inherits.
 
 ### Errors
 

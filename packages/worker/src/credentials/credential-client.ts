@@ -211,6 +211,14 @@ export type CredentialClientContext = {
 	 */
 	runNeeds?: () => Promise<ReadonlyMap<string, CredentialNeed>>
 	/**
+	 * The run's entry packages, from the host (run package context or a
+	 * host-signed binding), never from sandbox arguments. Stored mappings and
+	 * creation links for a need use the entry whose closure pins it, so a
+	 * dependency's `credential(key)` reads the entry package's mappings (ADR
+	 * 0068 amendment 2026-10-27). Unset means the calling package's own.
+	 */
+	runEntries?: () => Promise<RunCredentialEntries | null>
+	/**
 	 * Set only for package-app runs: a need that opts in with
 	 * `ownerCredentialForVisitors` resolves with the app's credential
 	 * authority while the app is internet-visible and approved. The viewer
@@ -314,6 +322,28 @@ function retryFor(key: string | null, credential: UsableCredential) {
 	}
 }
 
+export type RunCredentialEntries = {
+	/** Entry package ids in precedence order. */
+	packageIds: ReadonlyArray<string>
+	/** For each pinned need key, the first entry whose closure declares it. */
+	entryByKey: ReadonlyMap<string, string>
+}
+
+/**
+ * The package whose stored mappings and creation link apply to `key`: the
+ * calling package when it is an entry itself (or no entries are known),
+ * else the first entry whose pinned closure has the key. Declared-use checks
+ * and bound Keys still use the calling package.
+ */
+async function mappingPackageIdFor(ctx: CredentialClientContext, key: string) {
+	if (!ctx.packageId) return null
+	const entries = ctx.runEntries ? await ctx.runEntries() : null
+	if (!entries || entries.packageIds.includes(ctx.packageId)) {
+		return ctx.packageId
+	}
+	return entries.entryByKey.get(key) ?? ctx.packageId
+}
+
 async function loadNeed(ctx: CredentialClientContext, key: string) {
 	if (ctx.runNeeds) return (await ctx.runNeeds()).get(key) ?? null
 	if (!ctx.packageId) return null
@@ -393,10 +423,11 @@ async function createUrlForNeed(
 	ctx: CredentialClientContext,
 	input: { key: string; provider: string; need: CredentialNeed | null },
 ) {
-	const saved = ctx.packageId
+	const packageId = await mappingPackageIdFor(ctx, input.key)
+	const saved = packageId
 		? await getSavedPackageById(ctx.env.APP_DB, {
 				userId: requireActorRequest(ctx).org.id,
-				packageId: ctx.packageId,
+				packageId,
 			}).catch(() => null)
 		: null
 	return buildNeedCreateUrl({
@@ -510,12 +541,13 @@ async function resolveMappedNeed(
 		supplier?: CredentialNeed['supplier']
 	},
 ): Promise<Array<UsableCredential> | null> {
-	if (!ctx.packageId) return null
+	const packageId = await mappingPackageIdFor(ctx, input.key)
+	if (!packageId) return null
 	const enablementId = enablementIdOf(input.request)
 	const rows = await loadCredentialMappings({
 		db: ctx.env.APP_DB,
 		orgId: input.request.org.id,
-		packageId: ctx.packageId,
+		packageId,
 		personId: input.request.actor!.userId,
 		enablementIds: enablementId ? [enablementId] : [],
 		needKey: input.key,
@@ -968,6 +1000,23 @@ export async function loadRunCredentialNeeds(input: {
 	packageIds: ReadonlyArray<string>
 	request?: RequestContext | null
 }): Promise<ReadonlyMap<string, CredentialNeed>> {
+	const { needs } = await loadRunCredentialNeedEntries(input)
+	return needs
+}
+
+/**
+ * `loadRunCredentialNeeds` plus, per key, the entry that pinned it (the same
+ * first-entry-wins rule), for mapping selection.
+ */
+export async function loadRunCredentialNeedEntries(input: {
+	env: Env
+	orgId: string
+	packageIds: ReadonlyArray<string>
+	request?: RequestContext | null
+}): Promise<{
+	needs: ReadonlyMap<string, CredentialNeed>
+	entries: RunCredentialEntries
+}> {
 	const needLists = await Promise.all(
 		input.packageIds.map((packageId) =>
 			loadPackageNeeds({
@@ -979,10 +1028,15 @@ export async function loadRunCredentialNeeds(input: {
 		),
 	)
 	const needs = new Map<string, CredentialNeed>()
-	for (const need of needLists.flat()) {
-		if (!needs.has(need.key)) needs.set(need.key, need)
-	}
-	return needs
+	const entryByKey = new Map<string, string>()
+	needLists.forEach((list, index) => {
+		for (const need of list) {
+			if (needs.has(need.key)) continue
+			needs.set(need.key, need)
+			entryByKey.set(need.key, input.packageIds[index]!)
+		}
+	})
+	return { needs, entries: { packageIds: [...input.packageIds], entryByKey } }
 }
 
 /**

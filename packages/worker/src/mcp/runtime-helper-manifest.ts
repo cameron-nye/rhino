@@ -27,7 +27,10 @@ import { takeSecretAuthorityFromCapabilityArgs } from '#mcp/secrets/secret-autho
 import { kodyCallDispatcherName } from '#worker/kody-evaluate-bindings.ts'
 import { type CredentialCallMap } from '#worker/credentials/credential-call-map.ts'
 import { type CredentialNeed } from '#worker/credentials/credential-needs.ts'
-import { type PackageAppCredentialAuthority } from '#worker/credentials/credential-client.ts'
+import {
+	type PackageAppCredentialAuthority,
+	type RunCredentialEntries,
+} from '#worker/credentials/credential-client.ts'
 import { type OwnerCredentialScope } from '#worker/credentials/owner-credential-for-visitors.ts'
 import { createCredentialClientKodyTools } from './credential-client-tools.ts'
 import { createCredentialClientRuntimeSource } from './execute-modules/credential-client-source.ts'
@@ -80,6 +83,12 @@ export type CredentialClientToolOptions = {
 	callMap?: CredentialCallMap | null
 	/** The run's pinned needs by key (hosted runs only). */
 	runNeeds?: () => Promise<ReadonlyMap<string, CredentialNeed>>
+	/**
+	 * The run's entry packages for mapping selection, from the host: the run
+	 * package context when hosted; for CapabilityProxy, the entries signed
+	 * into the verified package binding the call claims.
+	 */
+	runEntries?: (requested: unknown) => Promise<RunCredentialEntries | null>
 	/** Package-app runs only; see `CredentialClientContext.ownerCredentialScope`. */
 	ownerCredentialScope?: OwnerCredentialScope | null
 	/** Package-app runs only; see `CredentialClientContext.packageAppAuthority`. */
