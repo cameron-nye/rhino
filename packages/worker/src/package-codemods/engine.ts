@@ -32,6 +32,7 @@ import {
 	updatePackageCodemodRunItem,
 	updatePackageCodemodRunStatus,
 	type PackageCodemodRunRecord,
+	hasPackageCodemodRunItemForPackage,
 } from './ledger.ts'
 import { getPackageCodemodById } from './registry.ts'
 import {
@@ -1471,6 +1472,22 @@ async function processRevertStep(input: {
 	}
 }
 
+/**
+ * A package whose processing kills the step (out of CPU or memory) never
+ * reaches the per-item catch, so the same cursor would fail forever. Each
+ * scan or dry-run attempt is counted before processing and cleared after;
+ * past the limit the package is recorded as failed and paging moves on. A
+ * retried page skips packages this run already recorded.
+ */
+const maxUnfinishedAttempts = 2
+const unfinishedAttemptTtlSeconds = 7 * 24 * 60 * 60
+export const unfinishedAttemptsError =
+	'Skipped: earlier attempts on this package did not finish (the step ran out of time or memory).'
+
+function unfinishedAttemptKvKey(runId: string, packageId: string) {
+	return `package-codemod-attempt:${runId}:${packageId}`
+}
+
 export async function runPackageCodemodStep(input: {
 	env: Env
 	baseUrl: string
@@ -1546,6 +1563,44 @@ export async function runPackageCodemodStep(input: {
 		const summary: Partial<Record<PackageCodemodItemStatus, number>> = {}
 		for (const savedPackage of packages) {
 			let result: PersistedItemResult
+			// Read-only modes only: an interrupted apply may already have
+			// published, so it must not be recorded as a plain failure.
+			const tracksAttempts = input.mode !== 'apply'
+			if (
+				tracksAttempts &&
+				(await hasPackageCodemodRunItemForPackage(input.env.APP_DB, {
+					runId: run.id,
+					packageId: savedPackage.id,
+				}))
+			) {
+				continue
+			}
+			const attemptKey = unfinishedAttemptKvKey(run.id, savedPackage.id)
+			const unfinishedAttempts = tracksAttempts
+				? Number((await input.env.BUNDLE_ARTIFACTS_KV.get(attemptKey)) ?? 0)
+				: 0
+			if (unfinishedAttempts >= maxUnfinishedAttempts) {
+				result = emptyItemResult({
+					itemId: crypto.randomUUID(),
+					userId: savedPackage.userId,
+					packageId: savedPackage.id,
+					kodyId: savedPackage.kodyId,
+					status: 'failed',
+					error: unfinishedAttemptsError,
+				})
+				await persistItem(input.env, result, run.id)
+				await input.env.BUNDLE_ARTIFACTS_KV.delete(attemptKey)
+				items.push(toPublicItem(result))
+				incrementSummary(summary, result.status)
+				continue
+			}
+			if (tracksAttempts) {
+				await input.env.BUNDLE_ARTIFACTS_KV.put(
+					attemptKey,
+					String(unfinishedAttempts + 1),
+					{ expirationTtl: unfinishedAttemptTtlSeconds },
+				)
+			}
 			try {
 				result = await processPackageForMode({
 					env: input.env,
@@ -1567,7 +1622,13 @@ export async function runPackageCodemodStep(input: {
 					error: getErrorMessage(error),
 				})
 			}
-			await persistItem(input.env, result, run.id)
+			try {
+				await persistItem(input.env, result, run.id)
+			} finally {
+				if (tracksAttempts) {
+					await input.env.BUNDLE_ARTIFACTS_KV.delete(attemptKey)
+				}
+			}
 			items.push(toPublicItem(result))
 			incrementSummary(summary, result.status)
 		}
