@@ -72,12 +72,71 @@ function requestedNames(names: ReadonlyArray<string>) {
 	)
 }
 
+const pinnedCredentialMismatch =
+	'This link was made for a different credential than the one saved under that name here. Open the link from the original error again, or ask for a new link.'
+
+/**
+ * A pinned link must name one credential, and that name must resolve to the
+ * pinned credential in this org. Never falls back to a same-named one.
+ */
+function pinnedCredentialError(input: {
+	credentialId: string | null | undefined
+	names: ReadonlyArray<string>
+	storedId: string | null
+}) {
+	if (!input.credentialId) return null
+	if (input.names.length !== 1) return pinnedCredentialMismatch
+	return input.storedId === input.credentialId ? null : pinnedCredentialMismatch
+}
+
+/**
+ * Null when every name resolves to the pinned credential in the viewer's org,
+ * or nothing is pinned. Guards the host approval that rides on a pinned link.
+ */
+export async function pinnedCredentialMismatchFor(input: {
+	env: Env
+	user: AuthenticatedAppUser
+	names: ReadonlyArray<string>
+	credentialId: string | null | undefined
+	/** Where the host update writes; pinned ids only name org-scope credentials. */
+	target?: { scope: string; storagePackageId?: string; sessionId?: string }
+}): Promise<string | null> {
+	if (!input.credentialId) return null
+	const names = requestedNames(input.names)
+	if (names.length !== 1) return pinnedCredentialMismatch
+	const target = input.target
+	if (
+		target &&
+		(target.scope !== 'user' ||
+			target.storagePackageId?.trim() ||
+			target.sessionId?.trim())
+	) {
+		return pinnedCredentialMismatch
+	}
+	const orgId = ownerIdFromCaller({
+		request: input.user.request,
+		user: input.user.mcpUser,
+	})
+	const stored = await readStoredCredentialPlacement({
+		db: input.env.APP_DB,
+		orgId,
+		name: names[0]!,
+	})
+	return pinnedCredentialError({
+		credentialId: input.credentialId,
+		names,
+		storedId: stored?.id ?? null,
+	})
+}
+
 /** What the approval page shows. Never reads a credential value. */
 export async function loadCredentialPlacementApprovalView(input: {
 	env: Env
 	user: AuthenticatedAppUser
 	names: ReadonlyArray<string>
 	parts: ReadonlyArray<string>
+	/** The exact credential the link was made for, when pinned. */
+	credentialId?: string | null
 }): Promise<CredentialPlacementApprovalView | null> {
 	const parts = normalizePlacementApprovalParts(input.parts)
 	const names = requestedNames(input.names)
@@ -97,6 +156,12 @@ export async function loadCredentialPlacementApprovalView(input: {
 			orgId,
 			name,
 		})
+		const pinned = pinnedCredentialError({
+			credentialId: input.credentialId,
+			names,
+			storedId: stored?.id ?? null,
+		})
+		if (pinned) throw new McpCallerError(pinned)
 		if (!stored) {
 			view.missingNames.push(name)
 			continue
@@ -128,6 +193,8 @@ export async function approveCredentialPlacement(input: {
 	user: AuthenticatedAppUser
 	names: ReadonlyArray<string>
 	parts: ReadonlyArray<string>
+	/** The exact credential the link was made for, when pinned. */
+	credentialId?: string | null
 }) {
 	const parts = normalizePlacementApprovalParts(input.parts)
 	const names = requestedNames(input.names)
@@ -157,6 +224,12 @@ export async function approveCredentialPlacement(input: {
 		}> = []
 		for (const name of names) {
 			const stored = await readStoredCredentialPlacement({ db, orgId, name })
+			const pinned = pinnedCredentialError({
+				credentialId: input.credentialId,
+				names,
+				storedId: stored?.id ?? null,
+			})
+			if (pinned) return operationResult({ ok: false, error: pinned }, 409)
 			const credential = stored
 				? await getOrgCredential(db, orgId, stored.id)
 				: null
