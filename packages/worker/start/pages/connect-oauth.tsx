@@ -21,6 +21,7 @@ import {
 	uniqueOauthScopes,
 } from '#universal/oauth-scopes.ts'
 import { isConnectOauthCallbackUrl } from '#universal/oauth-connect.ts'
+import { useHydrated } from '../components/use-hydrated.ts'
 
 import { readOrgSlugFromUrl } from '#universal/org-binding/url.ts'
 import { useShellData } from '../routes/__root.tsx'
@@ -28,6 +29,12 @@ import { orgSectionRestPath } from '#universal/org-section-hrefs.ts'
 import { organizationsWithSignupFallback } from '#universal/org-pages.ts'
 
 import { ProviderMark } from '../components/provider-icons.tsx'
+import {
+	ConnectOauthOrgPicker,
+	ConnectOauthOrgTarget,
+	connectOauthTargetOrg,
+	shouldPickConnectOauthOrg,
+} from './connect-oauth-org.tsx'
 import {
 	pageDescriptionCss,
 	pageTitleCss,
@@ -306,6 +313,16 @@ export function ConnectOauthRoute({
 		organizations.find((org) => org.slug === flowOrg)?.slug ??
 		organizations.find((org) => org.personal)?.slug ??
 		organizations[0]?.slug
+	const hydrated = useHydrated()
+	const pickOrg = shouldPickConnectOauthOrg({
+		organizations,
+		flowOrg,
+		href: currentHref,
+	})
+	const viewer = {
+		displayName: session?.username ?? '',
+		avatarUrl: session?.avatarUrl ?? null,
+	}
 	const invalidatePages = usePageInvalidation(mutationResources)
 	const [state, setState] = useState(() =>
 		initialOauthState(
@@ -348,6 +365,22 @@ export function ConnectOauthRoute({
 		hasStoredClientSecret,
 		revealStoredClientSecretField,
 	} = state
+	// `mode=personal` saves to the member's personal org, pinned to `?org=`;
+	// the callback only knows that from the restored config.
+	const pinnedAppSlug = config?.pinnedAppSlug ?? null
+	// The provider callback restores the org and `mode=personal` from
+	// sessionStorage, which SSR cannot read; wait for the restored config.
+	const orgKnown =
+		(hydrated && config !== null) ||
+		!isConnectOauthCallbackUrl(new URL(currentHref, 'https://kody.local'))
+	const targetOrg =
+		initialData.pinnedConnect || pinnedAppSlug
+			? (organizations.find((org) => org.personal) ?? null)
+			: connectOauthTargetOrg({ organizations, flowOrg })
+	const orgTarget =
+		targetOrg && !pickOrg && orgKnown ? (
+			<ConnectOauthOrgTarget org={targetOrg} viewer={viewer} />
+		) : null
 	const mounted = useRef(false),
 		inFlight = useRef(false),
 		callbackStarted = useRef(false)
@@ -740,6 +773,22 @@ export function ConnectOauthRoute({
 	}
 	const description = connectOauthHeaderDescription(headerInput)
 	const title = connectOauthHeaderTitle(headerInput)
+	if (pickOrg) {
+		return (
+			<section css={connectOauthPageCss}>
+				<header css={connectOauthHeaderCss}>
+					<span css={connectOauthEyebrowCss}>Connect an account</span>
+					<h1 css={pageTitleCss}>{title}</h1>
+					{description ? <p css={pageDescriptionCss}>{description}</p> : null}
+				</header>
+				<ConnectOauthOrgPicker
+					organizations={organizations}
+					viewer={viewer}
+					href={currentHref}
+				/>
+			</section>
+		)
+	}
 	if (!config) {
 		return (
 			<section css={connectOauthPageCss}>
@@ -748,6 +797,7 @@ export function ConnectOauthRoute({
 					<h1 css={pageTitleCss}>{title}</h1>
 					{description ? <p css={pageDescriptionCss}>{description}</p> : null}
 				</header>
+				{orgTarget}
 				{initialData.pinnedConnectError
 					? renderPinnedConnectError(initialData.pinnedConnectError)
 					: null}
@@ -790,9 +840,15 @@ export function ConnectOauthRoute({
 				<h1 css={pageTitleCss}>{title}</h1>
 				{description ? <p css={pageDescriptionCss}>{description}</p> : null}
 			</header>
-			{initialData.pinnedConnect && currentConfig.pinnedAppSlug
+			{orgTarget}
+			{currentConfig.pinnedAppSlug && (initialData.pinnedConnect || flowOrg)
 				? renderPinnedConnectNotice({
-						pinnedConnect: initialData.pinnedConnect,
+						pinnedConnect: initialData.pinnedConnect ?? {
+							orgSlug: flowOrg ?? '',
+							appSlug: currentConfig.pinnedAppSlug,
+							appLabel: null,
+							connectionName: currentConfig.providerKey,
+						},
 					})
 				: null}
 			{renderStatusCallout({
@@ -892,6 +948,7 @@ export function ConnectOauthRoute({
 							void handleConnect()
 						},
 						onToggleScope: toggleRequestedScope,
+						orgSlug: flowOrg,
 						wouldReplace: wouldReplaceDifferentApp({
 							config: currentConfig,
 							existingConnection,
@@ -918,7 +975,7 @@ export function ConnectOauthRoute({
 							? orgSectionRestPath(
 									destinationOrg,
 									'integrations',
-									config.providerKey,
+									pinnedAppSlug ? `apps/${pinnedAppSlug}` : config.providerKey,
 								)
 							: '/account'
 					}

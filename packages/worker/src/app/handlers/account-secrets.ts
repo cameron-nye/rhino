@@ -117,6 +117,10 @@ import {
 import { listSavedPackagesByUserId } from '#worker/package-registry/repo.ts'
 import { ownerIdFromCaller } from '#worker/request-context/owner-id.ts'
 import {
+	requireWebsiteIntegrationPermission,
+	requireWebsiteOauthAppConnectAccess,
+} from '#app/handlers/website-integration-access.ts'
+import {
 	buildAccountSecretId,
 	parseAccountSecretId,
 } from '@kody-internal/shared/account-secret-route.ts'
@@ -207,6 +211,12 @@ export async function saveAccountOAuthApp(input: {
 		}
 	}
 
+	await requireWebsiteIntegrationPermission({
+		env: input.env,
+		user: input.user,
+		permission: 'integration:write',
+		action: 'save OAuth apps',
+	})
 	try {
 		const app = await upsertOauthAppWithoutConnection({
 			env: input.env,
@@ -417,6 +427,29 @@ export async function connectAccountOAuth(input: {
 			{ ok: false, error: 'Token payload is required.' },
 			400,
 		)
+	}
+	if (!platformApp) {
+		await requireWebsiteOauthAppConnectAccess({
+			env: input.env,
+			user: input.user,
+			clientSecret: input.fields.clientSecret,
+			config: {
+				name: provider,
+				tokenUrl,
+				apiBaseUrl,
+				flow: flow === 'confidential' || flow === 'device' ? flow : 'pkce',
+				usePkce,
+				clientId,
+				tokenExchangeStyle: resolveTokenExchangeStyle({
+					tokenUrl,
+					tokenExchangeStyle: input.fields.tokenExchangeStyle?.trim() ?? null,
+				}),
+				deviceAuthorizationUrl,
+				authorization: authorizeUrl
+					? { authorizeUrl, scopes, scopeSeparator, extraAuthorizeParams }
+					: null,
+			},
+		})
 	}
 	const tokenRecord = tokenPayload as Record<string, unknown>
 	const accessToken = readTokenField(tokenRecord, 'access_token')
@@ -666,6 +699,42 @@ export async function startAccountDeviceConnect(input: {
 		replaceLiveConnection?: boolean
 	}
 }) {
+	const deviceTokenUrl = input.fields.tokenUrl?.trim()
+	const deviceClientId = input.fields.clientId?.trim()
+	if (
+		!input.fields.platformAppSlug?.trim() &&
+		deviceTokenUrl &&
+		deviceClientId
+	) {
+		const authorizeUrl = input.fields.authorizeUrl?.trim() || null
+		await requireWebsiteOauthAppConnectAccess({
+			env: input.env,
+			user: input.user,
+			clientSecret: input.fields.clientSecret,
+			config: {
+				name: input.fields.provider,
+				tokenUrl: deviceTokenUrl,
+				apiBaseUrl: input.fields.apiBaseUrl?.trim() || null,
+				flow: 'device',
+				usePkce: input.fields.usePkce ?? null,
+				clientId: deviceClientId,
+				tokenExchangeStyle: resolveTokenExchangeStyle({
+					tokenUrl: deviceTokenUrl,
+					tokenExchangeStyle: input.fields.tokenExchangeStyle ?? null,
+				}),
+				deviceAuthorizationUrl:
+					input.fields.deviceAuthorizationUrl?.trim() || null,
+				authorization: authorizeUrl
+					? {
+							authorizeUrl,
+							scopes: input.fields.scopes ?? [],
+							scopeSeparator: input.fields.scopeSeparator ?? null,
+							extraAuthorizeParams: input.fields.extraAuthorizeParams ?? {},
+						}
+					: null,
+			},
+		})
+	}
 	const guardFailure = await refuseUnconfirmedDeviceReplace(input)
 	if (guardFailure) return guardFailure
 	const started = await startIntegrationDeviceConnect({
@@ -728,6 +797,32 @@ export async function pollAccountDeviceConnect(input: {
 		request: input.user.request,
 		mcpUser: input.user.mcpUser,
 		sessionId,
+		authorizePersist: (session) =>
+			requireWebsiteOauthAppConnectAccess({
+				env: input.env,
+				user: input.user,
+				config: {
+					name: session.provider,
+					tokenUrl: session.tokenUrl,
+					apiBaseUrl: session.apiBaseUrl,
+					flow: 'device',
+					usePkce: session.usePkce,
+					clientId: session.clientId,
+					tokenExchangeStyle: resolveTokenExchangeStyle({
+						tokenUrl: session.tokenUrl,
+						tokenExchangeStyle: session.tokenExchangeStyle,
+					}),
+					deviceAuthorizationUrl: session.deviceAuthorizationUrl,
+					authorization: session.authorizeUrl
+						? {
+								authorizeUrl: session.authorizeUrl,
+								scopes: session.scopes,
+								scopeSeparator: session.scopeSeparator,
+								extraAuthorizeParams: session.extraAuthorizeParams,
+							}
+						: null,
+				},
+			}),
 	})
 	if (!polled.ok) {
 		return operationResult(
