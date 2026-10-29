@@ -65,6 +65,7 @@ import {
 	buildRepoLargeFileMessage,
 	maxRepoSourceFileBytes,
 } from './large-file-policy.ts'
+import { createKodyIgnoreMatcher, kodyIgnoreFileName } from './kodyignore.ts'
 import { normalizeRepoWorkspacePath } from './manifest.ts'
 import {
 	timePublishExternalPushPhase,
@@ -330,6 +331,7 @@ async function* workspaceFilesForSnapshot(input: {
 		stat?(path: string): Promise<{ size: number } | null>
 	}
 	root: string
+	applyKodyIgnore?: boolean
 }) {
 	const encoder = new TextEncoder()
 	const normalizedRoot = normalizeRepoWorkspacePath(input.root).replace(
@@ -337,17 +339,30 @@ async function* workspaceFilesForSnapshot(input: {
 		'',
 	)
 	const pattern = normalizedRoot === '' ? '**/*' : `${normalizedRoot}/**/*`
+	const isKodyIgnored =
+		input.applyKodyIgnore === false
+			? null
+			: createKodyIgnoreMatcher(
+					await input.workspace.readFile(
+						normalizedRoot === ''
+							? kodyIgnoreFileName
+							: `${normalizedRoot}/${kodyIgnoreFileName}`,
+					),
+				)
 	const files = await input.workspace.glob(pattern)
 	for (const file of files) {
 		if (file.type !== 'file') continue
 		const normalizedPath = normalizeRepoWorkspacePath(file.path)
 		if (normalizedPath.split('/').includes('.git')) continue
-		const content = await input.workspace.readFile(file.path)
-		if (content == null) continue
 		const relativePath =
 			normalizedRoot && normalizedPath.startsWith(`${normalizedRoot}/`)
 				? normalizedPath.slice(normalizedRoot.length + 1)
 				: normalizedPath
+		// Skipped before reading or counting, so ignored files never reach a
+		// check and never count toward the publish check caps.
+		if (isKodyIgnored?.(relativePath)) continue
+		const content = await input.workspace.readFile(file.path)
+		if (content == null) continue
 		// Prefer the filesystem's byte size: readFile UTF-8-decodes binary
 		// blobs lossily, so re-encoding the string can overstate a binary
 		// file's size by up to 3x.
@@ -2133,9 +2148,12 @@ export async function runRepoSourceWalkChecks(input: {
 	const collected: Record<string, string> = {}
 	let fileCount = 0
 	let totalBytes = 0
+	// Plain repos push the whole tree, so `.kodyignore` must not shrink
+	// what this size gate counts.
 	for await (const [path, content, fileBytes] of workspaceFilesForSnapshot({
 		workspace: input.workspace,
 		root: sourceRoot,
+		applyKodyIgnore: false,
 	})) {
 		fileCount += 1
 		if (fileCount > repoChecksSourceMaxFiles) {
