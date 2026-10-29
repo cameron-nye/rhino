@@ -102,8 +102,53 @@ export function readPackageAppManifest(
 	return { capabilities, visitorNeeds, ownerCredentialForVisitors }
 }
 
+/** A module-level `kody` that is not the runtime bridge (`const kody = …`, another module's `kody`). */
+function declaresTopLevelBinding(body: Array<AstNode>, name: string) {
+	const runtimeNamespaces = new Set<string>()
+	for (const node of body) {
+		if (node.type !== 'ImportDeclaration') continue
+		if (getNodeName(node.source) !== 'kody:runtime') continue
+		for (const specifier of node.specifiers ?? []) {
+			if (specifier.type !== 'ImportNamespaceSpecifier') continue
+			const local = getNodeName(specifier.local)
+			if (local) runtimeNamespaces.add(local)
+		}
+	}
+	const readsRuntimeBridge = (init: AstNode | undefined) =>
+		isMemberExpression(init) &&
+		init?.object?.type === 'Identifier' &&
+		runtimeNamespaces.has(getNodeName(init.object) ?? '') &&
+		getNodeName(init.property) === 'kody'
+	return body.some((node) => {
+		const declaration =
+			node.type === 'ExportNamedDeclaration' ? node.declaration : node
+		if (declaration?.type === 'VariableDeclaration') {
+			return (declaration.declarations ?? []).some(
+				(declarator: AstNode) =>
+					getNodeName(declarator.id) === name &&
+					!readsRuntimeBridge(declarator.init),
+			)
+		}
+		if (
+			declaration?.type === 'FunctionDeclaration' ||
+			declaration?.type === 'ClassDeclaration'
+		) {
+			return getNodeName(declaration.id) === name
+		}
+		if (node.type === 'ImportDeclaration') {
+			if (getNodeName(node.source) === 'kody:runtime') return false
+			return (node.specifiers ?? []).some(
+				(specifier: AstNode) => getNodeName(specifier.local) === name,
+			)
+		}
+		return false
+	})
+}
+
 function collectKodyAliases(body: Array<AstNode>) {
-	const aliases = new Set<string>(['kody'])
+	const aliases = new Set<string>(
+		declaresTopLevelBinding(body, 'kody') ? [] : ['kody'],
+	)
 	for (const node of body) {
 		if (node.type !== 'ImportDeclaration') continue
 		if (getNodeName(node.source) !== 'kody:runtime') continue
