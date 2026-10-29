@@ -137,6 +137,10 @@ export type RunHistoryRow = {
 	durationMs: number | null
 	outcome: RunHistoryOutcome | null
 	cancelReason: string | null
+	/** Why a run that started here ended badly (failed, lost, cancelled). */
+	failureReason: string | null
+	/** Short, bounded error text for that failure. */
+	errorSummary: string | null
 	fallback: { position: number; ranOn?: string }
 }
 
@@ -182,6 +186,96 @@ async function sha256Hex(text: string) {
 	return Array.from(new Uint8Array(digest), (b) =>
 		b.toString(16).padStart(2, '0'),
 	).join('')
+}
+
+const maxErrorSummaryChars = 500
+const maxFailureReasonChars = 100
+
+type HistorySqlRow = {
+	run_id: string
+	requester_user_id: string
+	requester_handle: string | null
+	run_org_id: string
+	dispatched_at: number
+	started_at: number | null
+	ended_at: number | null
+	outcome: string | null
+	cancel_reason: string | null
+	failure_reason: string | null
+	error_summary: string | null
+	position: number
+	ran_on: string | null
+}
+
+function historyRowFromSql(
+	row: HistorySqlRow,
+	ecid: string | null,
+): RunHistoryRow {
+	const ranOn = row.ran_on === 'here' ? (ecid ?? 'here') : row.ran_on
+	return {
+		runId: row.run_id,
+		requester: {
+			userId: row.requester_user_id,
+			handle: row.requester_handle,
+		},
+		runOrgId: row.run_org_id,
+		dispatchedAt: new Date(row.dispatched_at).toISOString(),
+		startedAt: row.started_at ? new Date(row.started_at).toISOString() : null,
+		endedAt: row.ended_at ? new Date(row.ended_at).toISOString() : null,
+		durationMs:
+			row.started_at && row.ended_at ? row.ended_at - row.started_at : null,
+		outcome: (row.outcome ?? terminalOutcome('')) as RunHistoryOutcome | null,
+		cancelReason: row.cancel_reason,
+		failureReason: row.failure_reason ?? null,
+		errorSummary: row.error_summary ?? null,
+		fallback: { position: row.position, ...(ranOn ? { ranOn } : {}) },
+	}
+}
+
+function boundedSummary(text: string) {
+	const trimmed = text.trim()
+	return trimmed.length > maxErrorSummaryChars
+		? `${trimmed.slice(0, maxErrorSummaryChars - 1)}…`
+		: trimmed
+}
+
+/** Failure reason code and bounded summary for a failed run's result. */
+export function summarizeRunFailure(result: ExecutionContextRunResult): {
+	failureReason: string
+	errorSummary: string
+} {
+	const structured = result.structuredContent
+	const error = structured.error
+	const errorText =
+		typeof error === 'string'
+			? error
+			: error && typeof error === 'object' && 'message' in error
+				? String((error as { message: unknown }).message)
+				: ''
+	const firstText = result.content
+		.map((block) =>
+			block &&
+			typeof block === 'object' &&
+			typeof (block as { text?: unknown }).text === 'string'
+				? (block as { text: string }).text
+				: '',
+		)
+		.find((text) => text.trim())
+	const code = structured.errorCode
+	return {
+		failureReason:
+			typeof code === 'string' && code.trim()
+				? code.trim().slice(0, maxFailureReasonChars)
+				: 'run_error',
+		errorSummary: boundedSummary(errorText || firstText || 'Run failed.'),
+	}
+}
+
+const lostSummary =
+	'The execution context disconnected after the run started and did not report a result (execution_context_lost).'
+
+function cancelledSummary(reason: string) {
+	return `The run was cancelled (${reason}).`
 }
 
 function terminalOutcome(state: string): RunHistoryOutcome | null {
@@ -263,8 +357,17 @@ export class ExecutionContextSessionV1Base extends DurableObject<Env> {
 			cancel_reason TEXT,
 			position INTEGER NOT NULL,
 			ran_on TEXT,
+			failure_reason TEXT,
+			error_summary TEXT,
 			PRIMARY KEY (run_id, attempt)
 		)`)
+		for (const column of ['failure_reason', 'error_summary'] as const) {
+			try {
+				sql.exec(`ALTER TABLE history ADD COLUMN ${column} TEXT`)
+			} catch {
+				// Column already present.
+			}
+		}
 		sql.exec(
 			`CREATE INDEX IF NOT EXISTS history_dispatched ON history (dispatched_at)`,
 		)
@@ -1225,7 +1328,12 @@ export class ExecutionContextSessionV1Base extends DurableObject<Env> {
 	#finishRun(
 		runId: string,
 		state: 'succeeded' | 'failed' | 'cancelled' | 'lost',
-		extra: { resultJson?: string; cancelReason?: string } = {},
+		extra: {
+			resultJson?: string
+			cancelReason?: string
+			failureReason?: string
+			errorSummary?: string
+		} = {},
 	) {
 		const now = Date.now()
 		const changed = this.ctx.storage.sql
@@ -1244,11 +1352,13 @@ export class ExecutionContextSessionV1Base extends DurableObject<Env> {
 		if (!changed) return false
 		this.ctx.storage.sql.exec(
 			`UPDATE history SET outcome = ?, ended_at = ?, cancel_reason = ?,
-			   ran_on = 'here'
+			   failure_reason = ?, error_summary = ?, ran_on = 'here'
 			 WHERE run_id = ? AND started_at IS NOT NULL AND outcome IS NULL`,
 			state,
 			now,
 			extra.cancelReason ?? null,
+			extra.failureReason ?? null,
+			extra.errorSummary ?? null,
 			runId,
 		)
 		for (const waiter of this.#resultWaiters.get(runId) ?? []) {
@@ -1293,7 +1403,10 @@ export class ExecutionContextSessionV1Base extends DurableObject<Env> {
 		const finished = this.#finishRun(
 			runId,
 			finalResult.isError ? 'failed' : 'succeeded',
-			{ resultJson },
+			{
+				resultJson,
+				...(finalResult.isError ? summarizeRunFailure(finalResult) : {}),
+			},
 		)
 		if (finished) await this.#finishRunRecord(run, finalResult)
 	}
@@ -1309,12 +1422,9 @@ export class ExecutionContextSessionV1Base extends DurableObject<Env> {
 				env: this.env,
 				handle,
 				status: 'error',
-				error: Object.assign(
-					new Error(
-						'The execution context disconnected after the run started and did not report a result (execution_context_lost).',
-					),
-					{ name: 'ExecutionContextLost' },
-				),
+				error: Object.assign(new Error(lostSummary), {
+					name: 'ExecutionContextLost',
+				}),
 			})
 			return
 		}
@@ -1323,20 +1433,24 @@ export class ExecutionContextSessionV1Base extends DurableObject<Env> {
 				env: this.env,
 				handle,
 				status: 'error',
-				error: Object.assign(
-					new Error(`The run was cancelled (${result.cancelled}).`),
-					{ name: 'ExecutionContextRunCancelled' },
-				),
+				error: Object.assign(new Error(cancelledSummary(result.cancelled)), {
+					name: 'ExecutionContextRunCancelled',
+				}),
 			})
 			return
 		}
 		const structured = result.structuredContent
+		const failure = result.isError ? summarizeRunFailure(result) : null
 		await finishRunRecord({
 			env: this.env,
 			handle,
-			status: result.isError ? 'error' : 'success',
-			...(result.isError
-				? { error: new Error(String(structured.error ?? 'Run failed.')) }
+			status: failure ? 'error' : 'success',
+			...(failure
+				? {
+						error: Object.assign(new Error(failure.errorSummary), {
+							name: 'ExecutionContextRunFailed',
+						}),
+					}
 				: { result: structured.result }),
 		})
 	}
@@ -1390,6 +1504,8 @@ export class ExecutionContextSessionV1Base extends DurableObject<Env> {
 		if (!run) return { cancelled: false }
 		const ended = this.#finishRun(input.runId, 'cancelled', {
 			cancelReason: input.reason,
+			failureReason: input.reason,
+			errorSummary: cancelledSummary(input.reason),
 		})
 		const ws = this.#socket()
 		if (ws) await this.#send(ws, 'run.cancel', input)
@@ -1568,19 +1684,7 @@ export class ExecutionContextSessionV1Base extends DurableObject<Env> {
 			binds.push(input.cursor)
 		}
 		const rows = this.ctx.storage.sql
-			.exec<{
-				run_id: string
-				requester_user_id: string
-				requester_handle: string | null
-				run_org_id: string
-				dispatched_at: number
-				started_at: number | null
-				ended_at: number | null
-				outcome: string | null
-				cancel_reason: string | null
-				position: number
-				ran_on: string | null
-			}>(
+			.exec<HistorySqlRow>(
 				`SELECT * FROM history WHERE ${clauses.join(' AND ')}
 				 ORDER BY dispatched_at DESC, attempt DESC LIMIT ?`,
 				...binds,
@@ -1588,33 +1692,47 @@ export class ExecutionContextSessionV1Base extends DurableObject<Env> {
 			)
 			.toArray()
 		const snapshot = this.#snapshot()
-		const page = rows.slice(0, limit).map((row) => {
-			const ranOn =
-				row.ran_on === 'here' ? (snapshot?.ecid ?? 'here') : row.ran_on
-			return {
-				runId: row.run_id,
-				requester: {
-					userId: row.requester_user_id,
-					handle: row.requester_handle,
-				},
-				runOrgId: row.run_org_id,
-				dispatchedAt: new Date(row.dispatched_at).toISOString(),
-				startedAt: row.started_at
-					? new Date(row.started_at).toISOString()
-					: null,
-				endedAt: row.ended_at ? new Date(row.ended_at).toISOString() : null,
-				durationMs:
-					row.started_at && row.ended_at ? row.ended_at - row.started_at : null,
-				outcome: (row.outcome ??
-					terminalOutcome('')) as RunHistoryOutcome | null,
-				cancelReason: row.cancel_reason,
-				fallback: { position: row.position, ...(ranOn ? { ranOn } : {}) },
-			}
-		})
+		const page = rows
+			.slice(0, limit)
+			.map((row) => historyRowFromSql(row, snapshot?.ecid ?? null))
 		const last = rows[limit - 1]
 		return {
 			rows: page,
 			nextCursor: rows.length > limit && last ? last.dispatched_at : null,
+		}
+	}
+
+	/**
+	 * The attempt of one requester's run that started here, so `runGet` can
+	 * still answer after the general run record was pruned.
+	 */
+	async getStartedRun(input: {
+		runId: string
+		requesterUserId: string
+		orgId: string
+	}): Promise<{
+		ecid: string | null
+		name: string | null
+		row: RunHistoryRow
+	} | null> {
+		this.#pruneHistory(Date.now())
+		const found = this.ctx.storage.sql
+			.exec<HistorySqlRow>(
+				`SELECT * FROM history
+				 WHERE run_id = ? AND requester_user_id = ? AND run_org_id = ?
+				   AND started_at IS NOT NULL
+				 ORDER BY attempt DESC LIMIT 1`,
+				input.runId,
+				input.requesterUserId,
+				input.orgId,
+			)
+			.toArray()[0]
+		if (!found) return null
+		const snapshot = this.#snapshot()
+		return {
+			ecid: snapshot?.ecid ?? null,
+			name: snapshot?.name ?? null,
+			row: historyRowFromSql(found, snapshot?.ecid ?? null),
 		}
 	}
 
@@ -1739,7 +1857,12 @@ export class ExecutionContextSessionV1Base extends DurableObject<Env> {
 			)
 			.toArray()
 		for (const run of stale) {
-			if (this.#finishRun(run.run_id, 'lost')) {
+			if (
+				this.#finishRun(run.run_id, 'lost', {
+					failureReason: 'execution_context_lost',
+					errorSummary: lostSummary,
+				})
+			) {
 				await this.#finishRunRecord(run, { lost: true })
 			}
 		}
