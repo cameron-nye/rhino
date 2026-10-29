@@ -524,6 +524,51 @@ export default async function main(params) {
 	},
 )
 
+test('runLocalExecute returns cancelled without setup work when its signal is already aborted', async () => {
+	reset()
+	const abort = new AbortController()
+	abort.abort()
+	const result = await runLocalExecute({
+		code: 'export default () => 1',
+		token: goodToken,
+		apiUrl,
+		workerdPath: join(tmpdir(), 'missing-workerd-binary'),
+		signal: abort.signal,
+	})
+	assert.equal(result.isError, true)
+	const structured = result.structuredContent as Record<string, unknown>
+	assert.match(String(structured.error), /cancelled/)
+	assert.equal(proxyRequests.length, 0)
+})
+
+test(
+	'runLocalExecute stops workerd when its signal aborts mid-run',
+	{ timeout: 180_000 },
+	async () => {
+		reset()
+		const abort = new AbortController()
+		const code = `
+export default async function main() {
+	await new Promise((resolve) => setTimeout(resolve, 120_000))
+	return 'finished'
+}
+`
+		const startedAt = Date.now()
+		const running = runLocalExecute({
+			code,
+			token: goodToken,
+			apiUrl,
+			signal: abort.signal,
+		})
+		setTimeout(() => abort.abort(), 3_000)
+		const result = await running
+		assert.equal(result.isError, true)
+		const structured = result.structuredContent as Record<string, unknown>
+		assert.match(String(structured.error), /cancelled/)
+		assert.ok(Date.now() - startedAt < 60_000)
+	},
+)
+
 test('createLocalRuntimeModuleSource exports credential and credentials for ad hoc local execute', () => {
 	const source = createLocalRuntimeModuleSource()
 	assert.match(

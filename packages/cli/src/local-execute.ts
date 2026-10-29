@@ -104,6 +104,8 @@ export type LocalExecuteInput = {
 	/** `--target` for mock fetch gateway gating (default prod → no mocks). */
 	target?: 'prod' | 'mock'
 	onStatus?: (message: string) => void
+	/** Aborting kills workerd and ends the run with a cancelled error. */
+	signal?: AbortSignal
 }
 
 type SandboxResponse = {
@@ -113,6 +115,44 @@ type SandboxResponse = {
 }
 
 const workerdStartTimeoutMs = 30_000
+const cancelledError = 'Local execute was cancelled before it finished.'
+const setupCancelled = Symbol('setup cancelled')
+
+let workerdAcquisition: Promise<string> | undefined
+
+/** One in-flight workerd download per process, so a retry after a cancel reuses it. */
+function acquireWorkerdBinary(onStatus: LocalExecuteInput['onStatus']) {
+	workerdAcquisition ??= ensureWorkerdBinary({
+		onDownload: (url) =>
+			onStatus?.(`Downloading workerd for local execute from ${url}…`),
+	}).finally(() => {
+		workerdAcquisition = undefined
+	})
+	return workerdAcquisition
+}
+
+/** Settles with `setupCancelled` as soon as `signal` aborts, even if `work` stalls. */
+function untilAborted<T>(
+	work: Promise<T>,
+	signal: AbortSignal | undefined,
+): Promise<T | typeof setupCancelled> {
+	if (!signal) return work
+	return new Promise((resolve, reject) => {
+		const onAbort = () => resolve(setupCancelled)
+		if (signal.aborted) onAbort()
+		else signal.addEventListener('abort', onAbort, { once: true })
+		work.then(
+			(value) => {
+				signal.removeEventListener('abort', onAbort)
+				resolve(value)
+			},
+			(error: unknown) => {
+				signal.removeEventListener('abort', onAbort)
+				reject(error)
+			},
+		)
+	})
+}
 const workerdExitGraceMs = 1_000
 
 export const savedPackageImportLocalResolveStatus =
@@ -126,6 +166,15 @@ export async function runLocalExecute(
 ): Promise<ToolCallResult> {
 	assertLocalExecuteNodeEngine()
 	assertTokenSafeApiUrl(input.apiUrl)
+	const setupStartedAt = new Date()
+	const cancelledDuringSetup = () =>
+		buildLocalExecuteResult({
+			sandbox: { error: cancelledError },
+			startedAt: setupStartedAt,
+			endedAt: new Date(),
+			conversationId: input.conversationId,
+		})
+	if (input.signal?.aborted) return cancelledDuringSetup()
 	const code =
 		input.modulePath !== undefined
 			? await bundleLocalUserModule(input.modulePath)
@@ -138,16 +187,24 @@ export async function runLocalExecute(
 	}
 	// Skip the session preflight on the hot path (package-graph authenticates).
 	// `--credential` still opens a session for feature detection + call-map check.
-	if (input.credentials) {
-		const session = await openCapabilityProxySession(client)
-		assertCredentialCallMapSupported(session, input)
-		input.onStatus?.('Checking --credential picks against CapabilityProxy…')
-		const { warnings } = await checkCredentialCallMap({
-			...client,
-			credentials: input.credentials,
-			conversationId: input.conversationId,
-		})
-		for (const warning of warnings) {
+	const credentials = input.credentials
+	if (credentials) {
+		const preflight = await untilAborted(
+			(async () => {
+				const session = await openCapabilityProxySession(client)
+				assertCredentialCallMapSupported(session, input)
+				input.onStatus?.('Checking --credential picks against CapabilityProxy…')
+				const { warnings } = await checkCredentialCallMap({
+					...client,
+					credentials,
+					conversationId: input.conversationId,
+				})
+				return warnings
+			})(),
+			input.signal,
+		)
+		if (preflight === setupCancelled) return cancelledDuringSetup()
+		for (const warning of preflight) {
 			input.onStatus?.(warning)
 		}
 	}
@@ -160,21 +217,24 @@ export async function runLocalExecute(
 			? savedPackageImportLocalResolveStatus
 			: localExecutePackageGraphResolveStatus,
 	)
-	const packageGraph = await resolveLocalPackageGraph({
-		...client,
-		code,
-		conversationId: input.conversationId,
-		...(input.depResolve ? { depResolve: input.depResolve } : {}),
-		...(input.packageRoot ? { packageRoot: input.packageRoot } : {}),
-		onStatus: input.onStatus,
-	})
+	if (input.signal?.aborted) return cancelledDuringSetup()
+	const packageGraph = await untilAborted(
+		resolveLocalPackageGraph({
+			...client,
+			code,
+			conversationId: input.conversationId,
+			...(input.depResolve ? { depResolve: input.depResolve } : {}),
+			...(input.packageRoot ? { packageRoot: input.packageRoot } : {}),
+			onStatus: input.onStatus,
+		}),
+		input.signal,
+	)
+	if (packageGraph === setupCancelled) return cancelledDuringSetup()
 
 	const workerdPath =
 		input.workerdPath ??
-		(await ensureWorkerdBinary({
-			onDownload: (url) =>
-				input.onStatus?.(`Downloading workerd for local execute from ${url}…`),
-		}))
+		(await untilAborted(acquireWorkerdBinary(input.onStatus), input.signal))
+	if (workerdPath === setupCancelled) return cancelledDuringSetup()
 
 	const runSecret = randomBytes(32).toString('hex')
 	const workDir = await mkdtemp(join(tmpdir(), 'kody-local-'))
@@ -182,6 +242,8 @@ export async function runLocalExecute(
 	let bridge: LocalRuntimeBridge | undefined
 	// SIGTERM makes workerd drain in-flight requests, which a hung module never finishes.
 	const stopWorkerd = () => child?.kill('SIGKILL')
+	input.signal?.addEventListener('abort', stopWorkerd, { once: true })
+	const cancelled = () => finish({ error: cancelledError })
 	const releaseSignals = cleanupOnSignal(() => {
 		stopWorkerd()
 		rmSync(workDir, { recursive: true, force: true })
@@ -275,6 +337,7 @@ export async function runLocalExecute(
 			[runSecretEnvVar]: runSecret,
 		}
 		delete env[apiTokenEnvVar]
+		if (input.signal?.aborted) return cancelled()
 		child = spawn(workerdPath, ['serve', configPath, '--control-fd=3'], {
 			cwd: workDir,
 			env,
@@ -282,6 +345,7 @@ export async function runLocalExecute(
 		})
 		const workerd = watchWorkerd(child)
 		const started = await workerd.listening
+		if (input.signal?.aborted) return cancelled()
 		if ('exitDetail' in started) {
 			return finish({
 				error: `Local execute could not load the module${started.exitDetail}`,
@@ -295,6 +359,7 @@ export async function runLocalExecute(
 				body: JSON.stringify({ params: input.params ?? {} }),
 			})
 		} catch (error) {
+			if (input.signal?.aborted) return cancelled()
 			const exitDetail = await Promise.race([
 				workerd.exited,
 				delay(workerdExitGraceMs, null),
@@ -313,6 +378,7 @@ export async function runLocalExecute(
 		}
 		return finish(JSON.parse(response.body) as SandboxResponse)
 	} finally {
+		input.signal?.removeEventListener('abort', stopWorkerd)
 		releaseSignals()
 		stopWorkerd()
 		await bridge?.close()
