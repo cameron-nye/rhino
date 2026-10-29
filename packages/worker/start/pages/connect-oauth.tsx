@@ -50,6 +50,8 @@ import {
 	renderChooser,
 	renderIncompleteConfig,
 	renderStatusCallout,
+	renderPinnedConnectNotice,
+	renderPinnedConnectError,
 	renderLiveAppReplaceWarning,
 	type LiveReplaceState,
 	newConnectionNameError,
@@ -197,6 +199,14 @@ function initialOauthState(
 		chooserOptions = routeData.chooser?.options ?? []
 		if (url.searchParams.get('code') || url.searchParams.get('error')) {
 			return
+		}
+		// `?org=&app=&mode=personal` may omit `provider`; the loader names it.
+		if (
+			!url.searchParams.get('provider')?.trim() &&
+			routeData.pinnedConnect &&
+			routeData.provider
+		) {
+			url.searchParams.set('provider', routeData.provider)
 		}
 		requestedProvider =
 			url.searchParams.get('provider')?.trim() || routeData.provider
@@ -738,6 +748,9 @@ export function ConnectOauthRoute({
 					<h1 css={pageTitleCss}>{title}</h1>
 					{description ? <p css={pageDescriptionCss}>{description}</p> : null}
 				</header>
+				{initialData.pinnedConnectError
+					? renderPinnedConnectError(initialData.pinnedConnectError)
+					: null}
 				{renderStatusCallout({
 					statusTone,
 					statusMessage,
@@ -777,6 +790,11 @@ export function ConnectOauthRoute({
 				<h1 css={pageTitleCss}>{title}</h1>
 				{description ? <p css={pageDescriptionCss}>{description}</p> : null}
 			</header>
+			{initialData.pinnedConnect && currentConfig.pinnedAppSlug
+				? renderPinnedConnectNotice({
+						pinnedConnect: initialData.pinnedConnect,
+					})
+				: null}
 			{renderStatusCallout({
 				statusTone,
 				statusMessage,
