@@ -9,6 +9,13 @@
  */
 import { z } from 'zod'
 import { readBoundedBody } from '#mcp/capabilities/integrations/read-bounded-body.ts'
+import { encryptSecretValue, userSecretContext } from '#mcp/secrets/crypto.ts'
+import { storedCredentialRevision } from '#mcp/secrets/service.ts'
+import { optionalOrgAuditWriter } from '#worker/orgs/org-audit.ts'
+import {
+	credentialAuditActions,
+	recordCredentialAudit,
+} from './credential-audit.ts'
 import {
 	assertHttpsUrl,
 	credentialHostsAllow,
@@ -16,7 +23,12 @@ import {
 	CredentialRequestRefusedError,
 } from './credential-request.ts'
 import { type CredentialResolver } from './credential-resolver.ts'
-import { type LoginSession, obtainLoginSession } from './login-session-store.ts'
+import {
+	type LoginSession,
+	type ObtainedLoginSession,
+	obtainLoginSession,
+	StaleLoginCredentialError,
+} from './login-session-store.ts'
 import {
 	authorizeStoredCredential,
 	findStoredCredential,
@@ -45,8 +57,31 @@ export const loginExchangeSchema = z
 			.positive()
 			.max(maxSessionSeconds)
 			.default(3600),
+		/**
+		 * Where a provider that rotates refresh tokens puts the new one, and
+		 * which login field it replaces. Kody saves it in place of the old one.
+		 */
+		refreshToken: z
+			.object({
+				path: z.string().min(1),
+				field: z.string().regex(/^[A-Za-z0-9_.-]+$/),
+			})
+			.strict()
+			.optional(),
 	})
 	.strict()
+	.refine(
+		(exchange) =>
+			!exchange.refreshToken ||
+			Object.values(exchange.body).some((template) =>
+				template.includes(`{${exchange.refreshToken!.field}}`),
+			),
+		{
+			message:
+				'refreshToken.field must be a login field the exchange body sends.',
+			path: ['refreshToken', 'field'],
+		},
+	)
 
 const sessionInjectSchema = z.discriminatedUnion('kind', [
 	z.object({
@@ -67,9 +102,18 @@ export type ResolvedLoginSession = {
 	placement: LoginSessionPlacement
 	/** Texts that carry the session, for echo redaction of the response. */
 	substitutedValues: ReadonlyArray<string>
+	/** Id of the stored session (never the session), for a 401 retry. */
+	sessionId: string | null
 }
 
-type Session = LoginSession
+type Session = LoginSession & { sessionId: string | null }
+
+type ExchangeResult = {
+	token: string
+	expiresAt: number | null
+	/** A rotated refresh token from the response, when the exchange names one. */
+	rotatedRefreshToken: string | null
+}
 
 /**
  * Front cache of sessions by credential id and revision (a digest of the
@@ -78,10 +122,7 @@ type Session = LoginSession
  * `authorize` still runs on every resolution before a session is used.
  */
 const sessions = new Map<string, Session>()
-const pendingSessions = new Map<
-	string,
-	Promise<{ session: Session; source: 'stored' | 'new' }>
->()
+const pendingSessions = new Map<string, Promise<ObtainedLoginSession>>()
 
 export function clearLoginSessionsForTests() {
 	sessions.clear()
@@ -142,7 +183,7 @@ function readLoginFields(value: string) {
 	for (const [name, field] of Object.entries(parsed)) {
 		if (typeof field === 'string') fields.set(name, field)
 	}
-	return fields
+	return { fields, object: parsed as Record<string, unknown> }
 }
 
 function renderBody(
@@ -192,7 +233,7 @@ function readPath(payload: unknown, path: string) {
 async function runExchange(
 	exchange: ReturnType<typeof readExchange>,
 	fields: ReadonlyMap<string, string>,
-): Promise<Session> {
+): Promise<ExchangeResult> {
 	const { contentType, body } = renderBody(exchange, fields)
 	let response: Response
 	try {
@@ -229,7 +270,19 @@ async function runExchange(
 			? Math.min(reported, maxSessionSeconds)
 			: exchange.ttlSeconds
 	const expiresAt = Date.now() + seconds * 1000 - sessionExpirySkewMs
-	return { token, expiresAt: expiresAt > Date.now() ? expiresAt : null }
+	const rotated = exchange.refreshToken
+		? readPath(payload, exchange.refreshToken.path)
+		: undefined
+	return {
+		token,
+		expiresAt: expiresAt > Date.now() ? expiresAt : null,
+		rotatedRefreshToken:
+			typeof rotated === 'string' &&
+			rotated !== '' &&
+			rotated !== fields.get(exchange.refreshToken!.field)
+				? rotated
+				: null,
+	}
 }
 
 function remember(key: string, session: Session) {
@@ -244,6 +297,7 @@ function remember(key: string, session: Session) {
 function placeSession(
 	inject: ReturnType<typeof readInject>,
 	token: string,
+	sessionId: string | null,
 ): ResolvedLoginSession {
 	switch (inject.kind) {
 		case 'header': {
@@ -251,17 +305,43 @@ function placeSession(
 			return {
 				placement: { kind: 'header', name: inject.name, value },
 				substitutedValues: [...new Set([token, value])],
+				sessionId,
 			}
 		}
 		case 'query':
 			return {
 				placement: { kind: 'query', param: inject.param, value: token },
 				substitutedValues: [token],
+				sessionId,
 			}
 		default: {
 			const exhaustive: never = inject
 			throw new Error(`Unhandled session inject: ${String(exhaustive)}`)
 		}
+	}
+}
+
+/** Audited like a value replacement; the details never carry the value. */
+async function auditRotatedValue(
+	input: { env: Env; actor: Parameters<typeof optionalOrgAuditWriter>[1] },
+	found: { ownerId: string; credentialId: string; name: string },
+) {
+	try {
+		await recordCredentialAudit(
+			optionalOrgAuditWriter(input.env, input.actor),
+			{
+				orgId: found.ownerId,
+				credential: {
+					id: found.credentialId,
+					kind: 'secret',
+					name: found.name,
+				},
+				action: credentialAuditActions.valueReplaced,
+				details: { replacedBy: 'login_exchange.refreshToken' },
+			},
+		)
+	} catch {
+		// The value already committed; a failed audit row is reported, not thrown.
 	}
 }
 
@@ -275,60 +355,150 @@ export const loginCredentialResolver: CredentialResolver<'login'> = {
 	}),
 	async resolve(call) {
 		const { credential } = call
-		const lookup = await findStoredCredential(call, credential.credentialId)
+		let lookup = await findStoredCredential(call, credential.credentialId)
 		let exchange: ReturnType<typeof readExchange> | null = null
 		let inject: ReturnType<typeof readInject> | null = null
-		return {
-			async authorize() {
-				const found = await authorizeStoredCredential(
-					call,
-					credential.credentialId,
-					lookup,
-					'login',
+		const authorize = async () => {
+			const found = await authorizeStoredCredential(
+				call,
+				credential.credentialId,
+				lookup,
+				'login',
+			)
+			assertHttpsUrl(credential.requestUrl)
+			if (
+				!credentialHostsAllow(
+					found.allowedHosts,
+					credential.requestUrl.hostname,
 				)
-				assertHttpsUrl(credential.requestUrl)
-				if (
-					!credentialHostsAllow(
-						found.allowedHosts,
-						credential.requestUrl.hostname,
-					)
-				) {
-					throw new CredentialRequestRefusedError(
-						'host_not_allowed',
-						'This login credential does not sign in to requests for that host.',
-					)
+			) {
+				throw new CredentialRequestRefusedError(
+					'host_not_allowed',
+					'This login credential does not sign in to requests for that host.',
+				)
+			}
+			exchange = readExchange(found.configJson, found.allowedHosts)
+			inject = readInject(found.injectJson)
+		}
+		const applyOnce = async (): Promise<ResolvedLoginSession> => {
+			// `authorize` returned, so the lookup, exchange, and inject are set.
+			const { found, readValue } = lookup!
+			const env = call.input.env
+			const key = `${found.credentialId}|${found.revision}`
+			const rejected = credential.rejectedSessionId ?? null
+			const cached = sessions.get(key)
+			if (rejected) {
+				if (cached?.sessionId === rejected) sessions.delete(key)
+			} else if (cached?.expiresAt && cached.expiresAt > Date.now()) {
+				call.subject.details = { ...call.subject.details, session: 'cached' }
+				return placeSession(inject!, cached.token, cached.sessionId)
+			}
+			const before = found.revisionFields
+			const obtain = async () => {
+				const obtained = await obtainLoginSession({
+					env,
+					ownerId: found.ownerId,
+					credentialId: found.credentialId,
+					revision: found.revision,
+					rejectedSessionId: rejected,
+					isCurrent: async () =>
+						(await env.APP_DB.prepare(
+							`SELECT 1 FROM secret_entries
+							WHERE id = ? AND encrypted_value = ? AND config_json IS ?
+								AND allowed_hosts = ? AND inject_json = ?
+								AND deleted_at IS NULL`,
+						)
+							.bind(
+								found.credentialId,
+								before.encryptedValue,
+								before.configJson,
+								before.allowedHostsJson,
+								before.injectJson,
+							)
+							.first()) !== null,
+					exchange: async (): Promise<LoginSession> => {
+						const { fields, object } = readLoginFields(await readValue())
+						const result = await runExchange(exchange!, fields)
+						const session = {
+							token: result.token,
+							expiresAt: result.expiresAt,
+						}
+						if (!result.rotatedRefreshToken) return session
+						const encryptedValue = await encryptSecretValue(
+							env,
+							JSON.stringify({
+								...object,
+								[exchange!.refreshToken!.field]: result.rotatedRefreshToken,
+							}),
+							userSecretContext(found.ownerId),
+						)
+						return {
+							...session,
+							replacement: {
+								credentialId: found.credentialId,
+								encryptedValue,
+								revision: await storedCredentialRevision({
+									...before,
+									encryptedValue,
+								}),
+								valueStatement: env.APP_DB.prepare(
+									`UPDATE secret_entries SET encrypted_value = ?, updated_at = ?
+									WHERE id = ? AND encrypted_value = ? AND config_json IS ?
+										AND allowed_hosts = ? AND inject_json = ?
+										AND deleted_at IS NULL`,
+								).bind(
+									encryptedValue,
+									new Date().toISOString(),
+									found.credentialId,
+									before.encryptedValue,
+									before.configJson,
+									before.allowedHostsJson,
+									before.injectJson,
+								),
+							},
+						}
+					},
+				})
+				if (obtained.valueReplaced && obtained.source === 'new') {
+					await auditRotatedValue(call.input, found)
 				}
-				exchange = readExchange(found.configJson, found.allowedHosts)
-				inject = readInject(found.injectJson)
-			},
+				return obtained
+			}
+			let pending = rejected ? undefined : pendingSessions.get(key)
+			if (!pending) {
+				pending = obtain()
+				if (!rejected) pendingSessions.set(key, pending)
+			}
+			try {
+				const { session, source, sessionId } = await pending
+				remember(key, { ...session, sessionId })
+				call.subject.details = {
+					...call.subject.details,
+					session: rejected ? `${source}-after-401` : source,
+				}
+				return placeSession(inject!, session.token, sessionId)
+			} finally {
+				if (!rejected) pendingSessions.delete(key)
+			}
+		}
+		return {
+			authorize,
 			async apply(): Promise<ResolvedLoginSession> {
-				// `authorize` returned, so the lookup, exchange, and inject are set.
-				const { found, readValue } = lookup!
-				const key = `${found.credentialId}|${found.revision}`
-				const cached = sessions.get(key)
-				if (cached?.expiresAt && cached.expiresAt > Date.now()) {
-					call.subject.details = { ...call.subject.details, session: 'cached' }
-					return placeSession(inject!, cached.token)
-				}
-				let pending = pendingSessions.get(key)
-				if (!pending) {
-					pending = obtainLoginSession({
-						env: call.input.env,
-						ownerId: found.ownerId,
-						credentialId: found.credentialId,
-						revision: found.revision,
-						exchange: async () =>
-							runExchange(exchange!, readLoginFields(await readValue())),
-					})
-					pendingSessions.set(key, pending)
-				}
 				try {
-					const { session, source } = await pending
-					remember(key, session)
-					call.subject.details = { ...call.subject.details, session: source }
-					return placeSession(inject!, session.token)
-				} finally {
-					pendingSessions.delete(key)
+					return await applyOnce()
+				} catch (error) {
+					if (!(error instanceof StaleLoginCredentialError)) throw error
+				}
+				// Another caller rotated the value; its session is under the new revision.
+				lookup = await findStoredCredential(call, credential.credentialId)
+				await authorize()
+				try {
+					return await applyOnce()
+				} catch (error) {
+					if (error instanceof StaleLoginCredentialError) {
+						throw new CredentialLoginFailedError(null)
+					}
+					throw error
 				}
 			},
 		}
