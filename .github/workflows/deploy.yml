@@ -1124,11 +1124,13 @@ jobs:
           PACKAGE_APP_LEGACY_REDIRECT: ${{ vars.PACKAGE_APP_LEGACY_REDIRECT }}
           USER_EMAIL_DOMAIN: ${{ vars.USER_EMAIL_DOMAIN }}
           SYSTEM_EMAIL_DOMAIN: ${{ vars.SYSTEM_EMAIL_DOMAIN }}
-          # Empty leaves hosted package apps off. Set this only to a second
-          # registrable domain this account owns. Do not use a
-          # nyneelevenlabs.com name: runtime zone routes would detach the
-          # app custom domains. Upstream value is https://kody.run.
-          PACKAGE_APP_BASE_URL: ${{ vars.PACKAGE_APP_BASE_URL }}
+          # Apex of the nyneelevenlabs.dev zone. A non-empty Actions variable
+          # overrides the committed pin. Do not point this at a
+          # nyneelevenlabs.com name: runtime zone routes, including the
+          # catch-all, would detach the app custom domains. Upstream value
+          # is https://kody.run.
+          PACKAGE_APP_BASE_URL:
+            ${{ vars.PACKAGE_APP_BASE_URL || 'https://nyneelevenlabs.dev' }}
           LEGACY_USER_EMAIL_DOMAINS: ${{ vars.LEGACY_USER_EMAIL_DOMAINS }}
           LEGACY_SYSTEM_EMAIL_DOMAINS: ${{ vars.LEGACY_SYSTEM_EMAIL_DOMAINS }}
           # Optional override for DMARC rua forward destination (default
@@ -1139,9 +1141,11 @@ jobs:
           FATHOM_SITE_ID: ${{ vars.FATHOM_SITE_ID }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
-          # Prefer environment secret when Kent (or CI) stored the zone id as a
-          # secret; fall back to a production environment variable. Empty vars
-          # alone left PACKAGE_APP_ZONE_ID blank in deploy logs (#3717 follow-up).
+          # Zone id of nyneelevenlabs.dev (Custom Hostnames API). Prefer an
+          # environment secret; fall back to a production environment
+          # variable. Routing and DNS lookup use the zone name, so an empty
+          # id still publishes {username}.nyneelevenlabs.dev. Custom
+          # hostnames need this id. See docs/contributing/rhino.md.
           PACKAGE_APP_ZONE_ID:
             ${{ secrets.PACKAGE_APP_ZONE_ID || vars.PACKAGE_APP_ZONE_ID }}
         run: |

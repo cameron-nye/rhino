@@ -19,4 +19,5 @@ export function widenCommittedHostnameEnvTypes(source: string) {
 	return source
 		.replace(/USER_EMAIL_DOMAIN: "[^"]+";/g, 'USER_EMAIL_DOMAIN: string;')
 		.replace(/SYSTEM_EMAIL_DOMAIN: "[^"]+";/g, 'SYSTEM_EMAIL_DOMAIN: string;')
+		.replace(/PACKAGE_APP_BASE_URL: "[^"]+";/g, 'PACKAGE_APP_BASE_URL: string;')
 }

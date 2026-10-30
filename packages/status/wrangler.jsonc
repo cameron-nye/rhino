@@ -58,10 +58,10 @@
 	},
 	"vars": {
 		"PRIMARY_ORIGIN": "https://rhino.nyneelevenlabs.com",
-		// Empty: hosted package apps are disabled (no second registrable
-		// domain). Upstream is https://kody.run. The prober treats a blank
-		// origin as not configured instead of requesting that host.
-		"PACKAGE_APP_ORIGIN": "",
+		// Apex of the package-app zone. Upstream is https://kody.run. The
+		// prober requests /__runtime/health here. A blank origin stays
+		// operational and does not open an incident.
+		"PACKAGE_APP_ORIGIN": "https://nyneelevenlabs.dev",
 		"STATUS_PAGE_URL": "https://status.rhino.nyneelevenlabs.com",
 		// Upstream alert recipient is me@kentcdodds.com.
 		"ALERT_EMAIL_TO": "csnye86@gmail.com",

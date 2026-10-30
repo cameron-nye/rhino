@@ -15,15 +15,20 @@ test('widens the production SENTRY_ENVIRONMENT literal so tests can use preview'
 	)
 })
 
-test('widens committed email-domain literals so fixture hosts still typecheck', () => {
+test('widens committed hostname literals so fixture hosts still typecheck', () => {
 	expect(
 		widenCommittedHostnameEnvTypes(
 			[
 				'USER_EMAIL_DOMAIN: "inbox.rhino.nyneelevenlabs.com";',
 				'SYSTEM_EMAIL_DOMAIN: "rhino.nyneelevenlabs.com";',
+				'PACKAGE_APP_BASE_URL: "https://nyneelevenlabs.dev";',
 			].join('\n'),
 		),
 	).toBe(
-		['USER_EMAIL_DOMAIN: string;', 'SYSTEM_EMAIL_DOMAIN: string;'].join('\n'),
+		[
+			'USER_EMAIL_DOMAIN: string;',
+			'SYSTEM_EMAIL_DOMAIN: string;',
+			'PACKAGE_APP_BASE_URL: string;',
+		].join('\n'),
 	)
 })

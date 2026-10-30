@@ -2861,8 +2861,9 @@ function readPackageAppLegacyHostsVar(input: {
  * Environments with neither `APP_BASE_URL` nor `PACKAGE_APP_BASE_URL` (preview,
  * test) publish no routes and keep whatever domains were attached out-of-band.
  * An app origin without a package-app origin still publishes that app custom
- * domain and does not publish package-app zone routes. Rhino production uses
- * that shape until a second registrable domain exists.
+ * domain and does not publish package-app zone routes. Rhino production sets
+ * `PACKAGE_APP_BASE_URL`, so the runtime worker publishes the package-app zone
+ * routes and this worker publishes only the app origin.
  */
 function publishAppOriginCustomDomains(input: {
 	targetEnv: Record<string, unknown>
