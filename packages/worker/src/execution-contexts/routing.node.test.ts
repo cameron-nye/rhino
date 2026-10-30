@@ -12,6 +12,7 @@ import {
 	markQueuedAttemptExpired,
 	markQueuedAttemptRan,
 	planTargets,
+	withRunTiming,
 } from './routing.ts'
 import { type ExecutionContextRow } from './store.ts'
 
@@ -306,6 +307,24 @@ test('a queued run the context took records its queued attempt as ran', () => {
 	})
 })
 
+test('a finished context run keeps its timing on the run record', () => {
+	const timing = {
+		queueMs: 1,
+		setupMs: 20,
+		executeMs: 3,
+		daemonMs: 24,
+		serverMs: 40,
+		transitMs: 16,
+	}
+	const metadata = {
+		executionContext: { id: 'ec_1', name: 'laptop', attempts: [] },
+	}
+	expect(withRunTiming(metadata, timing)).toEqual({
+		executionContext: { ...metadata.executionContext, timing },
+	})
+	expect(withRunTiming({}, timing)).toEqual({})
+})
+
 test('a cloud fallback says which contexts passed on the run and why', () => {
 	expect(
 		describeCloudFallback({
@@ -452,4 +471,35 @@ test('a queued run that revocation ended unrun has no ranOn in history', () => {
 		attempts: [{ outcome: 'expired', reason: 'context_revoked' }],
 	})
 	expect(historyRanOn(metadata.executionContext)).toBeNull()
+})
+
+test('ranOn carries the timing a context reported, and cloud never does', () => {
+	const timing = {
+		queueMs: 1,
+		setupMs: 20,
+		packageGraphMs: 0,
+		packageGraphCached: true,
+		executeMs: 3,
+		daemonMs: 24,
+		serverMs: 40,
+		transitMs: 16,
+	}
+	expect(
+		ranOnFromMetadata({
+			id: 'ec_box',
+			name: 'build-box',
+			fellBackToCloud: false,
+			attempts: [{ target: 'ec_box', name: 'build-box', outcome: 'ran' }],
+			timing,
+		}),
+	).toMatchObject({ kind: 'context', id: 'ec_box', timing })
+	expect(
+		ranOnFromMetadata({
+			id: 'ec_box',
+			name: 'build-box',
+			fellBackToCloud: true,
+			attempts: [{ target: 'ec_box', name: 'build-box', outcome: 'busy' }],
+			timing,
+		}),
+	).not.toHaveProperty('timing')
 })

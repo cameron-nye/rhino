@@ -18,6 +18,7 @@ import {
 	type ExecutionContextLease,
 	type ExecutionContextRunResult,
 } from './session-do.ts'
+import { type ExecutionContextRunTiming } from './run-timing.ts'
 import { runChainShapeError, type ExecuteRequirement } from './chain-rules.ts'
 import {
 	type ChainEntry,
@@ -70,12 +71,21 @@ export type ExecutionContextRunMetadata = {
 	fellBackToCloud: boolean
 	/** The requester runs this context's daemon (their own machine). */
 	yours?: boolean
+	/** Where the run's time went, when the context reported it. */
+	timing?: ExecutionContextRunTiming
 }
 
 /** Where a run happened: Kody cloud or one execution context. */
 export type RanOnTarget =
 	| { kind: 'cloud'; id: 'cloud'; name: 'Kody cloud' }
-	| { kind: 'context'; id: string; name: string; yours?: boolean }
+	| {
+			kind: 'context'
+			id: string
+			name: string
+			yours?: boolean
+			/** Where the run's time went, when the context reported it. */
+			timing?: ExecutionContextRunTiming
+	  }
 
 /** `ranOn` on every execute response: the target plus how it got there. */
 export type ExecuteRanOn = RanOnTarget & {
@@ -117,6 +127,9 @@ export function ranOnFromMetadata(value: unknown): ExecuteRanOn {
 			id: metadata.id,
 			name: typeof metadata.name === 'string' ? metadata.name : metadata.id,
 			...(typeof metadata.yours === 'boolean' ? { yours: metadata.yours } : {}),
+			...(isRecord(metadata.timing)
+				? { timing: metadata.timing as ExecutionContextRunTiming }
+				: {}),
 			attempts,
 			fellBackToCloud: false,
 		}
@@ -582,10 +595,12 @@ export async function routeExecute(input: {
 				waitMs: Math.min(input.waitMs, deadline - Date.now()),
 			})
 			if ('result' in settled) {
+				const { timing, ...result } =
+					settled.result as ExecutionContextRunResult
 				return {
 					kind: 'ran',
-					result: settled.result as ExecutionContextRunResult,
-					metadata: ran,
+					result,
+					metadata: timing ? { ...ran, timing } : ran,
 				}
 			}
 			switch (settled.state) {
@@ -786,6 +801,18 @@ export function markQueuedAttemptRan(
 	metadata: Record<string, unknown>,
 ): Record<string, unknown> {
 	return markQueuedAttempt(metadata, { outcome: 'ran' })
+}
+
+/** Records a finished context run's timing on its run-record metadata. */
+export function withRunTiming(
+	metadata: Record<string, unknown>,
+	timing: ExecutionContextRunTiming,
+): Record<string, unknown> {
+	const context = metadata.executionContext as
+		| ExecutionContextRunMetadata
+		| undefined
+	if (!context) return metadata
+	return { ...metadata, executionContext: { ...context, timing } }
 }
 
 function markQueuedAttempt(
