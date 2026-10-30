@@ -5,6 +5,7 @@ import {
 	isStartupProfilerTimeout,
 	parseStartupProfileSummary,
 	profileStartupWithRetry,
+	rhinoStartupProfilerTimeoutWarning,
 	resolveStartupTimeCwd,
 	resolveStartupTimeTarget,
 	startupTimeTargets,
@@ -76,6 +77,21 @@ test('startup profiling retries timeout measurements but not other errors', asyn
 		}),
 	).rejects.toThrow('invalid wrangler config')
 	expect(attempts).toBe(1)
+})
+
+test('a Rhino startup profiler timeout warns and any other error still fails', () => {
+	const timeout = Object.assign(new Error('Command failed'), {
+		stderr: 'Worker startup profiling timed out after 10 seconds.',
+	})
+	expect(rhinoStartupProfilerTimeoutWarning('origin', timeout)).toBe(
+		"origin startup profiling timed out after Wrangler's 10s limit (warning only; does not fail CI).",
+	)
+	expect(
+		rhinoStartupProfilerTimeoutWarning(
+			'platform',
+			new Error('invalid wrangler config'),
+		),
+	).toBeNull()
 })
 
 test('origin startup profile runs from the Vite snapshot, not the workspace root', () => {

@@ -120,6 +120,8 @@ purpose.
 | `tools/ci/runtime-worker-config.ts`                                       | Production runtime migration does not transfer deleted `PackageServiceInstance`.                                                                                      |
 | `tools/ci/runtime-worker-config.node.test.ts`                             | Pins that migration.                                                                                                                                                  |
 | `tools/ci/deploy-workflow-contract.ts`                                    | Contract bump so older checkouts are not deployed with the fresh-account workflow.                                                                                    |
+| `tools/check-worker-startup-time.ts`                                      | A Wrangler startup-profile timeout warns instead of failing CI. `ubuntu-latest` cannot finish the origin profile inside Wrangler's hard 10s limit.                    |
+| `tools/check-worker-startup-time.node.test.ts`                            | Pins that timeout warning, and that any other profiler error still fails.                                                                                             |
 
 Production hostnames and the CI skips for this fork are in
 [Production hostnames](#production-hostnames). Product copy still names upstream
@@ -176,6 +178,16 @@ green. This auto-merge job itself runs on `ubuntu-latest`.
 Use the matching script while iterating. A green `npm run validate` is what
 "checks passed" means for the auto-merge rule: the `✅ Validate` workflow is
 that same gate, split across jobs.
+
+`worker-startup-time:check` profiles each production entry with
+`wrangler check startup`. Wrangler aborts that profile after 10 seconds, and the
+origin profile cannot finish on GitHub's `ubuntu-latest` runner
+(`vars.CI_RUNNER`). An exhausted timeout prints a warning and skips the rest of
+that worker's samples. It does not fail 🧹 Static or `npm run validate`. A
+sample that did finish is still compared with
+`tools/worker-startup-budget.json`, and any other profiler error still fails.
+Byte budgets and deferred-import checks in `worker-startup-bundles:check` are
+unchanged.
 
 ## Left as Kody
 
