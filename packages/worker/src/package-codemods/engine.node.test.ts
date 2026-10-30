@@ -12,6 +12,7 @@ import {
 	getPackageCodemodRunItemById,
 	insertPackageCodemodRunItem,
 	listPackageCodemodRuns,
+	updatePackageCodemodRunFilters,
 } from './ledger.ts'
 import type * as Registry from './registry.ts'
 import { type PackageCodemod } from './types.ts'
@@ -769,6 +770,80 @@ test('package codemod engine rejects resume steps with mismatched filters or a c
 		).runId,
 	).toBe(first.runId)
 	expect((await step(env, resume)).runId).toBe(first.runId)
+})
+
+test('a continuation step may widen excludePackageIds to step past a package', async () => {
+	setupMocks()
+	const { env } = createEnv()
+	const fleet = [
+		savedPackage('pkg-a'),
+		savedPackage('pkg-b'),
+		savedPackage('pkg-c'),
+	]
+	mocks.listSavedPackagesPage.mockImplementation(
+		async (_db: D1Database, input: { afterId: string | null }) =>
+			fleet.filter(
+				(pkg) =>
+					input.afterId == null || pkg.id.localeCompare(input.afterId) > 0,
+			),
+	)
+	mockSourcesByIdWith(cleanFiles)
+	const fleetStep = {
+		mode: 'apply' as const,
+		initiatedByUserId: 'admin-1',
+		scope: fleetScope,
+		limit: 1,
+	}
+
+	const first = await step(env, {
+		...fleetStep,
+		filters: { excludePackageIds: ['pkg-c'] },
+	})
+	expect(first.items.map((item) => item.packageId)).toEqual(['pkg-a'])
+	const resume = { ...fleetStep, runId: first.runId, cursor: first.nextCursor }
+
+	await expect(
+		step(env, { ...resume, filters: { excludePackageIds: ['pkg-b'] } }),
+	).rejects.toThrow(/filters do not match/i)
+	await expect(
+		step(env, {
+			...resume,
+			filters: { excludePackageIds: ['pkg-b', 'pkg-c'], packageIds: ['pkg-b'] },
+		}),
+	).rejects.toThrow(/filters do not match/i)
+
+	const widened = await step(env, {
+		...resume,
+		limit: 5,
+		filters: { excludePackageIds: ['pkg-b', 'pkg-c'] },
+	})
+	expect(widened.runId).toBe(first.runId)
+	expect(widened.items).toEqual([
+		expect.objectContaining({
+			packageId: 'pkg-b',
+			status: 'needs_manual',
+			findings: [operatorExcludedFinding],
+		}),
+		expect.objectContaining({
+			packageId: 'pkg-c',
+			status: 'needs_manual',
+			findings: [operatorExcludedFinding],
+		}),
+	])
+	const run = await getPackageCodemodRunById(env.APP_DB, first.runId)
+	expect(JSON.parse(run!.filtersJson)).toEqual({
+		excludePackageIds: ['pkg-b', 'pkg-c'],
+	})
+
+	// A continuation that read the run before the widening must not win.
+	const staleWrite = await updatePackageCodemodRunFilters(env.APP_DB, {
+		id: first.runId,
+		expectedFiltersJson: JSON.stringify({ excludePackageIds: ['pkg-c'] }),
+		filtersJson: JSON.stringify({ excludePackageIds: ['pkg-a', 'pkg-c'] }),
+	})
+	expect(staleWrite).toBe(0)
+	const unchanged = await getPackageCodemodRunById(env.APP_DB, first.runId)
+	expect(unchanged!.filtersJson).toBe(run!.filtersJson)
 })
 
 test('omitted continuation filters keep a canary fleet apply on the stored package set', async () => {

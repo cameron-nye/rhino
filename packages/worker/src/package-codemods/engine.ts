@@ -30,6 +30,7 @@ import {
 	insertPackageCodemodRunItem,
 	listPackageCodemodRunItems,
 	updatePackageCodemodRunItem,
+	updatePackageCodemodRunFilters,
 	updatePackageCodemodRunStatus,
 	type PackageCodemodRunRecord,
 	hasPackageCodemodRunItemForPackage,
@@ -360,6 +361,62 @@ function parseStoredFiltersJson(filtersJson: string): PackageCodemodRunFilters {
 	}
 }
 
+/**
+ * True when `requested` keeps every stored filter and only adds package ids
+ * to `excludePackageIds`.
+ */
+function widensExclusionsOnly(
+	stored: PackageCodemodRunFilters,
+	requested: PackageCodemodRunFilters,
+) {
+	const withoutExclusions = (filters: PackageCodemodRunFilters) =>
+		normalizeFiltersJson({ ...filters, excludePackageIds: [] })
+	if (withoutExclusions(stored) !== withoutExclusions(requested)) return false
+	const requestedExclusions = new Set(requested.excludePackageIds ?? [])
+	return (stored.excludePackageIds ?? []).every((id) =>
+		requestedExclusions.has(id),
+	)
+}
+
+/**
+ * Accepts requested continuation filters that equal the stored ones or only
+ * widen `excludePackageIds`, persisting a widening with a compare-and-swap so
+ * concurrent continuations can't drop each other's exclusions.
+ */
+async function reconcileRunFilters(
+	db: D1Database,
+	input: {
+		run: PackageCodemodRunRecord
+		requested: PackageCodemodRunFilters
+		requestedJson: string
+	},
+): Promise<PackageCodemodRunRecord> {
+	let current = input.run
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const stored = parseStoredFiltersJson(current.filtersJson)
+		if (normalizeFiltersJson(stored) === input.requestedJson) return current
+		if (!widensExclusionsOnly(stored, input.requested)) {
+			throw new Error(
+				`Package codemod run "${current.id}" filters do not match the requested filters.`,
+			)
+		}
+		const changed = await updatePackageCodemodRunFilters(db, {
+			id: current.id,
+			expectedFiltersJson: current.filtersJson,
+			filtersJson: input.requestedJson,
+		})
+		if (changed > 0) return { ...current, filtersJson: input.requestedJson }
+		const reloaded = await getPackageCodemodRunById(db, current.id)
+		if (!reloaded) {
+			throw new Error(`Package codemod run "${current.id}" was not found.`)
+		}
+		current = reloaded
+	}
+	throw new Error(
+		`Package codemod run "${input.run.id}" filters kept changing concurrently; retry the step.`,
+	)
+}
+
 async function ensureRun(input: {
 	env: Env
 	runId?: string
@@ -406,17 +463,17 @@ async function ensureRun(input: {
 			)
 		}
 		// Continuation steps may omit filters; the stored run is the source of
-		// truth. Only an explicit mismatched value is rejected.
-		if (input.filters !== undefined) {
-			const existingFiltersJson = normalizeFiltersJson(
-				parseStoredFiltersJson(existing.filtersJson),
-			)
-			if (existingFiltersJson !== filtersJson) {
-				throw new Error(
-					`Package codemod run "${input.runId}" filters do not match the requested filters.`,
-				)
-			}
-		}
+		// truth. Only an explicit mismatched value is rejected, except that an
+		// operator may widen `excludePackageIds` to step past a package that
+		// keeps failing mid-run (apply has no unfinished-attempt skip).
+		const run =
+			input.filters === undefined
+				? existing
+				: await reconcileRunFilters(input.env.APP_DB, {
+						run: existing,
+						requested: input.filters,
+						requestedJson: filtersJson,
+					})
 		if (existing.status !== 'completed') {
 			// Heartbeat: every continuation step re-asserts `running` and bumps
 			// `updated_at`, so stale-run reconciliation only marks runs nobody is
@@ -426,9 +483,9 @@ async function ensureRun(input: {
 				id: existing.id,
 				status: 'running',
 			})
-			return { ...existing, status: 'running' }
+			return { ...run, status: 'running' }
 		}
-		return existing
+		return run
 	}
 	return await createPackageCodemodRun(input.env.APP_DB, {
 		id: crypto.randomUUID(),
