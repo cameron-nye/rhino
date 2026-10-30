@@ -105,6 +105,7 @@ purpose.
 | `tools/ci/production-resources.ts`                                        | `APP_BASE_URL` and `PACKAGE_APP_BASE_URL` fallbacks, and an optional Fathom site id.                                                                                  |
 | `tools/nx-remote-cache-probe.ts`                                          | Default Nx cache server hostname.                                                                                                                                     |
 | `.github/workflows/deploy.yml`                                            | Production hostnames, app and package-app origin fallbacks, optional Fathom site id, the DR job skip, and fresh-account worker bootstrap.                             |
+| `.github/workflows/validate.yml`                                          | 🧹 Static sets `NODE_OPTIONS=--max-old-space-size=6144` so `tsc` can finish on `ubuntu-latest`.                                                                       |
 | `.github/workflows/nx-cache-deploy.yml`                                   | Nx cache hostname and skip when the write token is absent.                                                                                                            |
 | `.github/workflows/cla.yml`                                               | CLA jobs run only on `kody-hq/kody`.                                                                                                                                  |
 | `.github/workflows/weekly-site-perf.yml`                                  | Weekly site perf runs only on `kody-hq/kody`.                                                                                                                         |
@@ -178,6 +179,11 @@ green. This auto-merge job itself runs on `ubuntu-latest`.
 Use the matching script while iterating. A green `npm run validate` is what
 "checks passed" means for the auto-merge rule: the `✅ Validate` workflow is
 that same gate, split across jobs.
+
+🧹 Static sets `NODE_OPTIONS=--max-old-space-size=6144`. That raises V8's heap
+ceiling for the job (it does not reserve the memory). `ubuntu-latest` has about
+7 GB, and the default ~2 GB ceiling kills
+`tsc -p packages/worker/tsconfig-start-*.json` with exit 134.
 
 `worker-startup-time:check` profiles each production entry with
 `wrangler check startup`. Wrangler aborts that profile after 10 seconds, and the

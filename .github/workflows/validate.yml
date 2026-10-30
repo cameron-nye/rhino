@@ -130,6 +130,11 @@ jobs:
       contents: read
       issues: write
       pull-requests: read
+    # Rhino: ubuntu-latest has about 7 GB. V8's default ~2 GB heap kills
+    # `npm run typecheck` (`tsc -p packages/worker/tsconfig-start-*.json`,
+    # exit 134). This raises the ceiling only. It does not reserve the memory.
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
     if: >-
       github.event_name != 'pull_request' || github.event.pull_request.draft ==
       false
