@@ -86,25 +86,25 @@ purpose.
 | `e2e/social-login.spec.ts`                                                | Onboarding heading.                                                                                                   |
 | `packages/worker/src/public-content.mcp-e2e.test.ts`                      | Home markdown heading.                                                                                                |
 | `packages/worker/src/origin-handler.anonymous-html-cache.mcp-e2e.test.ts` | `llms.txt` heading.                                                                                                   |
-| `packages/worker/wrangler.jsonc`                                          | Production email domains, omitted package-app URL, no `sentry-otlp-traces` destination.                               |
-| `packages/worker/worker-type-secrets.env`                                 | Keeps `PACKAGE_APP_BASE_URL` on the generated `Env` type after the wrangler pin is removed.                           |
+| `packages/worker/wrangler.jsonc`                                          | Production email domains, omitted package-app URL, no Fathom site id, no `sentry-otlp-traces` destination.            |
+| `packages/worker/worker-type-secrets.env`                                 | Keeps `PACKAGE_APP_BASE_URL` and `FATHOM_SITE_ID` on the generated `Env` type after those wrangler pins are removed.  |
 | `packages/worker/worker-configuration.d.ts`                               | Regenerated. Email-domain pins are widened to `string` so fixture hosts still typecheck.                              |
 | `tools/generate-worker-configuration-types.ts`                            | Applies that widening after `wrangler types`.                                                                         |
 | `tools/widen-sentry-environment-type.ts`                                  | Widens the committed `USER_EMAIL_DOMAIN` and `SYSTEM_EMAIL_DOMAIN` literals.                                          |
 | `tools/widen-sentry-environment-type.node.test.ts`                        | Pins that widening.                                                                                                   |
 | `packages/runtime-worker/wrangler.jsonc`                                  | Omits `PACKAGE_APP_BASE_URL` and the Sentry trace destination.                                                        |
 | `packages/platform-worker/wrangler.jsonc`                                 | Omits the Sentry trace destination.                                                                                   |
-| `packages/status/wrangler.jsonc`                                          | Status hostname, probe origins, alert from-address, and Cloudflare account id.                                        |
+| `packages/status/wrangler.jsonc`                                          | Status hostname, probe origins, alert addresses, and Cloudflare account id.                                           |
 | `packages/status/probes.ts`                                               | A blank package-app origin does not probe and does not open an incident.                                              |
 | `packages/status/probes.node.test.ts`                                     | Pins that blank-origin behavior.                                                                                      |
 | `packages/api-worker/wrangler.jsonc`                                      | API custom domain.                                                                                                    |
 | `packages/api-docs-worker/wrangler.jsonc`                                 | API docs custom domain and spec URL.                                                                                  |
 | `packages/nx-cache/wrangler.jsonc`                                        | Nx cache custom domain.                                                                                               |
-| `tools/ci/resource-utils.ts`                                              | Publishes the app custom domain when `PACKAGE_APP_BASE_URL` is unset.                                                 |
-| `tools/ci/resource-utils.node.test.ts`                                    | Covers that route shape and still rejects a package-app URL without an app origin.                                    |
-| `tools/ci/production-resources.ts`                                        | `APP_BASE_URL` fallback and optional `PACKAGE_APP_BASE_URL` Actions variable.                                         |
+| `tools/ci/resource-utils.ts`                                              | Publishes the app custom domain when `PACKAGE_APP_BASE_URL` is unset. DMARC reports forward to `csnye86@gmail.com`.   |
+| `tools/ci/resource-utils.node.test.ts`                                    | Covers that route shape, the DMARC forward default, and a package-app URL without an app origin.                      |
+| `tools/ci/production-resources.ts`                                        | `APP_BASE_URL` fallback and optional package-app and Fathom Actions variables.                                        |
 | `tools/nx-remote-cache-probe.ts`                                          | Default Nx cache server hostname.                                                                                     |
-| `.github/workflows/deploy.yml`                                            | Production hostnames, app-origin fallback, and the DR job skip.                                                       |
+| `.github/workflows/deploy.yml`                                            | Production hostnames, app-origin fallback, optional Fathom site id, and the DR job skip.                              |
 | `.github/workflows/nx-cache-deploy.yml`                                   | Nx cache hostname and skip when the write token is absent.                                                            |
 | `.github/workflows/cla.yml`                                               | CLA jobs run only on `kody-hq/kody`.                                                                                  |
 | `.github/workflows/weekly-site-perf.yml`                                  | Weekly site perf runs only on `kody-hq/kody`.                                                                         |
@@ -244,8 +244,13 @@ The status worker's package-runtime card stays operational while the origin is
 blank, so a missing domain does not open an incident. It is not serving package
 apps.
 
-`ALERT_EMAIL_TO` is still `me@kentcdodds.com`. Change it before relying on
-status alerts. The from-address is `kody@rhino.nyneelevenlabs.com`.
+Status alerts go to `csnye86@gmail.com` (`ALERT_EMAIL_TO`). The from-address is
+`kody@rhino.nyneelevenlabs.com`. Upstream alerts went to `me@kentcdodds.com`.
+
+Fathom stays off. Upstream's production site id is `WKKSDJGN`. This fork does
+not commit it, so the tracker script is not rendered and `trackEvent` no-ops.
+Set the `FATHOM_SITE_ID` Actions variable to turn it on. An empty value stays
+off.
 
 ### CI that does not run here
 
@@ -288,10 +293,11 @@ Dashboard and one-time resources this deploy does not create:
   `inbox.rhino.nyneelevenlabs.com`.
 - Email Routing on the zone: MX, the `inbox.rhino` subdomain, and a catch-all on
   that subdomain to the origin Worker. `dmarc@rhino.nyneelevenlabs.com` needs a
-  verified destination. Set Actions variable `DMARC_REPORT_FORWARD_TO` to that
-  address. The default forward target is `me@kentcdodds.com`, and ensure fails
-  if that destination is not verified on this account (a 403 from the routing
-  API skips the rule instead).
+  verified destination. Deploy forwards aggregate reports to `csnye86@gmail.com`
+  unless `DMARC_REPORT_FORWARD_TO` is set. That Gmail address has to be a
+  verified Email Routing destination on this account, or ensure fails (a 403
+  from the routing API skips the rule instead). Upstream's default forward
+  target is `me@kentcdodds.com`.
 - DMARC TXT is written by deploy (`rua=mailto:dmarc@rhino.nyneelevenlabs.com`).
 - Workers Observability destination `sentry-otlp-traces`, then put
   `destinations` back on the production trace blocks. Until then, traces stay in

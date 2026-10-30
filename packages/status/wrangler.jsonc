@@ -63,9 +63,8 @@
 		// origin as not configured instead of requesting that host.
 		"PACKAGE_APP_ORIGIN": "",
 		"STATUS_PAGE_URL": "https://status.rhino.nyneelevenlabs.com",
-		// Upstream alert recipient. Change this before relying on alerts;
-		// the address is not a mailbox on nyneelevenlabs.com.
-		"ALERT_EMAIL_TO": "me@kentcdodds.com",
+		// Upstream alert recipient is me@kentcdodds.com.
+		"ALERT_EMAIL_TO": "csnye86@gmail.com",
 		"ALERT_EMAIL_FROM": "kody@rhino.nyneelevenlabs.com",
 		"STATUS_ALERT_DAILY_LIMIT": "6",
 		// Upstream account a99ee2e72728dd52902ef288b7b1447d. This is the

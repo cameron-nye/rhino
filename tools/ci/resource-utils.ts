@@ -1671,7 +1671,9 @@ export async function ensurePackageAppDnsRecords(input: {
 /** Local-part for DMARC aggregate reports (rua) on the system email domain. */
 const dmarcReportMailboxLocal = 'dmarc'
 
-export const defaultDmarcReportForwardTo = 'me@kentcdodds.com'
+// Upstream default is me@kentcdodds.com. Actions var
+// DMARC_REPORT_FORWARD_TO still overrides this when it is non-empty.
+export const defaultDmarcReportForwardTo = 'csnye86@gmail.com'
 
 function dmarcReportMailboxAddress(systemEmailDomain: string) {
 	return `${dmarcReportMailboxLocal}@${systemEmailDomain}`

@@ -1132,8 +1132,11 @@ jobs:
           LEGACY_USER_EMAIL_DOMAINS: ${{ vars.LEGACY_USER_EMAIL_DOMAINS }}
           LEGACY_SYSTEM_EMAIL_DOMAINS: ${{ vars.LEGACY_SYSTEM_EMAIL_DOMAINS }}
           # Optional override for DMARC rua forward destination (default
-          # me@kentcdodds.com in tools/ci/resource-utils.ts).
+          # csnye86@gmail.com in tools/ci/resource-utils.ts). Upstream
+          # default is me@kentcdodds.com.
           DMARC_REPORT_FORWARD_TO: ${{ vars.DMARC_REPORT_FORWARD_TO }}
+          # Empty leaves the Fathom tracker off. Upstream site id is WKKSDJGN.
+          FATHOM_SITE_ID: ${{ vars.FATHOM_SITE_ID }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
           # Prefer environment secret when Kent (or CI) stored the zone id as a

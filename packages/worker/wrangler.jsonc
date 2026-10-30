@@ -676,9 +676,11 @@
 				// Routing + Email Sending on the nyneelevenlabs.com zone.
 				"USER_EMAIL_DOMAIN": "inbox.rhino.nyneelevenlabs.com",
 				"SYSTEM_EMAIL_DOMAIN": "rhino.nyneelevenlabs.com",
-				// Fathom Analytics site id (public, non-secret). Production
-				// only so local dev, preview, and tests never send pageviews.
-				"FATHOM_SITE_ID": "WKKSDJGN",
+				// Upstream production sets FATHOM_SITE_ID to WKKSDJGN. Rhino
+				// leaves it unset so no analytics script loads and no
+				// pageviews go to that site. Set the FATHOM_SITE_ID Actions
+				// variable to enable it. An empty value stays off.
+				//
 				// Public playlist whose latest Atom-feed videos may open in
 				// the site-wide `/?youtubeId=` overlay. Tests leave this unset.
 				"YOUTUBE_ALLOWED_PLAYLIST_IDS": "PLV5CVI1eNcJhP4nrJt85L7PxHjebFpDfY",

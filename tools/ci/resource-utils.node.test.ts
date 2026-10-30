@@ -15,6 +15,7 @@ import {
 	emptyR2Bucket,
 	encodeR2ObjectKey,
 	deleteEmailSendingEventSubscriptionIfPresent,
+	defaultDmarcReportForwardTo,
 	dmarcReportingRecordNames,
 	dmarcReportingTxtContent,
 	ensureArtifactsAccountEventSubscription,
@@ -1450,6 +1451,10 @@ test('ensureDmarcReportingTxtRecords fails closed on non-TXT conflicts', async (
 	expect(consoleError).toHaveBeenCalledWith(
 		expect.stringContaining('is not TXT'),
 	)
+})
+
+test('the DMARC forward default is the Rhino operator address', () => {
+	expect(defaultDmarcReportForwardTo).toBe('csnye86@gmail.com')
 })
 
 test('ensureDmarcEmailRoutingRule creates and reuses a forward rule', async () => {

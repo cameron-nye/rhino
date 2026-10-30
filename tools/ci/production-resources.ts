@@ -925,6 +925,8 @@ async function ensureProductionResources(options: CliOptions) {
 			LEGACY_USER_EMAIL_DOMAINS: process.env.LEGACY_USER_EMAIL_DOMAINS,
 			LEGACY_SYSTEM_EMAIL_DOMAINS: process.env.LEGACY_SYSTEM_EMAIL_DOMAINS,
 			PACKAGE_APP_ZONE_ID: process.env.PACKAGE_APP_ZONE_ID,
+			// Empty leaves Fathom off. Upstream's committed id is WKKSDJGN.
+			FATHOM_SITE_ID: process.env.FATHOM_SITE_ID,
 		},
 	})
 
