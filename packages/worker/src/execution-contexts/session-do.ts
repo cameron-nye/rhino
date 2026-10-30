@@ -1000,6 +1000,24 @@ export class ExecutionContextSessionV1Base extends DurableObject<Env> {
 				outcome,
 				dispatchedAt: now,
 			})
+		// The run is already offered, committed, or ended here (a queue drain
+		// that restarted before deleting its row). Re-offering it would abort
+		// or overwrite the live run, and a full context must not read as busy.
+		const existing = this.ctx.storage.sql
+			.exec<{ state: string }>(
+				`SELECT state FROM runs WHERE run_id = ?`,
+				lease.runId,
+			)
+			.toArray()[0]
+		if (
+			existing &&
+			existing.state !== 'aborted' &&
+			existing.state !== 'rejected'
+		) {
+			return {
+				outcome: existing.state === 'dispatched' ? 'busy' : 'committed',
+			}
+		}
 		if (this.#revokedReason()) {
 			record('offline')
 			return { outcome: 'offline', code: 'revoked' }
@@ -1357,7 +1375,8 @@ export class ExecutionContextSessionV1Base extends DurableObject<Env> {
 
 	#setRunState(runId: string, state: string) {
 		this.ctx.storage.sql.exec(
-			`UPDATE runs SET state = ?, ended_at = ? WHERE run_id = ?`,
+			`UPDATE runs SET state = ?, ended_at = ? WHERE run_id = ?
+			   AND state NOT IN ('succeeded', 'failed', 'cancelled', 'lost')`,
 			state,
 			Date.now(),
 			runId,
