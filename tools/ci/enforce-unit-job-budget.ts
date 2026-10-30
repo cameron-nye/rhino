@@ -1,6 +1,7 @@
 /**
  * Gate Validate unit legs on wall-clock with a watch threshold and a hard
  * ceiling (each Node shard watch 700s / hard 840s; Workers watch 620s / hard 780s).
+ * `--runner ubuntu-latest` widens Node to watch 960s / hard 1080s.
  * Node retains the conservative ceiling until sharded CI timing is collected.
  * Measured from a start epoch recorded at the beginning of the same job.
  * Cache hit or miss does not change the caps.
@@ -53,8 +54,9 @@ const unitJobBudgets = {
 		/** Near Node p95 (~653–659s) + ~7% headroom. */
 		watchSeconds: 700,
 		/**
-		 * Hard fail under Node `timeout-minutes: 15` (900s). ~p95×1.28; above
-		 * every Oct 4–18 variance trip (budget fails peaked at 741s).
+		 * Hard fail under the 4x-runner Node job cap. ~p95×1.28; above every
+		 * Oct 4–18 variance trip (budget fails peaked at 741s). Rhino's
+		 * `ubuntu-latest` override is `ubuntuLatestNodeJobBudget`.
 		 */
 		maxSeconds: 840,
 	},
@@ -71,7 +73,26 @@ const unitJobBudgets = {
 	},
 } as const
 
+/**
+ * Rhino: GitHub `ubuntu-latest` is about 2 cores. The ceilings above were
+ * measured on 4x WarpBuild runners (Node p95 ~659s, hard 840s). Validate run
+ * 41137427129 passed every Node test and still took 794s and 857s. Watch is
+ * above that sample; hard stays under the Node job's 20-minute timeout.
+ */
+export const ubuntuLatestNodeJobBudget = {
+	watchSeconds: 960,
+	maxSeconds: 1080,
+} as const
+
 export type UnitJobLeg = keyof typeof unitJobBudgets
+
+function budgetFor(leg: UnitJobLeg, runner?: string) {
+	const budget = unitJobBudgets[leg]
+	if (leg === 'node' && runner === 'ubuntu-latest') {
+		return { ...budget, ...ubuntuLatestNodeJobBudget }
+	}
+	return budget
+}
 
 /** Hard ceiling (PR fail / Workers attempt soft-cap). */
 export function getUnitJobMaxSeconds(leg: UnitJobLeg) {
@@ -134,8 +155,10 @@ export function evaluateUnitJobBudget(input: {
 	leg: UnitJobLeg
 	startEpochSeconds: number
 	nowEpochSeconds?: number
+	/** Runner label. `ubuntu-latest` uses the wider Node ceiling. */
+	runner?: string
 }): UnitJobBudgetResult {
-	const budget = unitJobBudgets[input.leg]
+	const budget = budgetFor(input.leg, input.runner)
 	const now =
 		typeof input.nowEpochSeconds === 'number'
 			? input.nowEpochSeconds
@@ -201,6 +224,7 @@ export function main(args = process.argv.slice(2)) {
 	const result = evaluateUnitJobBudget({
 		leg: legRaw,
 		startEpochSeconds,
+		runner: readFlag(args, '--runner') ?? undefined,
 	})
 	const advisory = args.includes('--advisory')
 

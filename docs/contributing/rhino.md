@@ -105,7 +105,7 @@ purpose.
 | `tools/ci/production-resources.ts`                                        | `APP_BASE_URL` and `PACKAGE_APP_BASE_URL` fallbacks, and an optional Fathom site id.                                                                                  |
 | `tools/nx-remote-cache-probe.ts`                                          | Default Nx cache server hostname.                                                                                                                                     |
 | `.github/workflows/deploy.yml`                                            | Production hostnames, app and package-app origin fallbacks, optional Fathom site id, the DR job skip, and fresh-account worker bootstrap.                             |
-| `.github/workflows/validate.yml`                                          | 🧹 Static sets `NODE_OPTIONS=--max-old-space-size=6144` so `tsc` can finish on `ubuntu-latest`.                                                                       |
+| `.github/workflows/validate.yml`                                          | 🧹 Static sets `NODE_OPTIONS=--max-old-space-size=6144`. 🧪 Node on `ubuntu-latest` uses a 20-minute timeout and `--runner ubuntu-latest`.                            |
 | `.github/workflows/nx-cache-deploy.yml`                                   | Nx cache hostname and skip when the write token is absent.                                                                                                            |
 | `.github/workflows/cla.yml`                                               | CLA jobs run only on `kody-hq/kody`.                                                                                                                                  |
 | `.github/workflows/weekly-site-perf.yml`                                  | Weekly site perf runs only on `kody-hq/kody`.                                                                                                                         |
@@ -121,6 +121,7 @@ purpose.
 | `tools/ci/runtime-worker-config.ts`                                       | Production runtime migration does not transfer deleted `PackageServiceInstance`.                                                                                      |
 | `tools/ci/runtime-worker-config.node.test.ts`                             | Pins that migration.                                                                                                                                                  |
 | `tools/ci/deploy-workflow-contract.ts`                                    | Contract bump so older checkouts are not deployed with the fresh-account workflow.                                                                                    |
+| `tools/ci/enforce-unit-job-budget.ts`                                     | `ubuntu-latest` Node shards use watch 960s / hard 1080s. 4x runners keep watch 700s / hard 840s. Workers stay on the 4x ceiling.                                      |
 | `tools/check-worker-startup-time.ts`                                      | A Wrangler startup-profile timeout warns instead of failing CI. `ubuntu-latest` cannot finish the origin profile inside Wrangler's hard 10s limit.                    |
 | `tools/check-worker-startup-time.node.test.ts`                            | Pins that timeout warning, and that any other profiler error still fails.                                                                                             |
 
@@ -184,6 +185,13 @@ that same gate, split across jobs.
 ceiling for the job (it does not reserve the memory). `ubuntu-latest` has about
 7 GB, and the default ~2 GB ceiling kills
 `tsc -p packages/worker/tsconfig-start-*.json` with exit 134.
+
+🧪 Node's wall-clock ceiling was measured on 4x WarpBuild runners (watch 700s,
+hard 840s). On `ubuntu-latest` the same suites passed and still took 794s and
+857s, so the 840s ceiling failed the job. When the budget step is passed
+`--runner ubuntu-latest`, the Node ceiling is watch 960s / hard 1080s, and the
+job timeout is 20 minutes. 4x runners keep 700s / 840s. Workers stay on their 4x
+ceiling. The ceiling is not raised by deleting or skipping tests.
 
 `worker-startup-time:check` profiles each production entry with
 `wrangler check startup`. Wrangler aborts that profile after 10 seconds, and the
