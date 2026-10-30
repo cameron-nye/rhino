@@ -743,6 +743,10 @@
 		{
 			"filename": "0205-dead-letter-messages.sql",
 			"sha256": "70844e2b9878460431cf3ded00132b20e5d03fbaeb96f98ef7e6bd91f9e20eb7"
+		},
+		{
+			"filename": "0206-login-credential-sessions.sql",
+			"sha256": "4f8025d5208873d7761c2f4e78233de172aa547f73b5572e606a645a8d927d6e"
 		}
 	]
 }
