@@ -629,6 +629,20 @@ test('a run that never started here is not returned as a started run', async () 
 	).toBeNull()
 })
 
+test('a live session reports when it last heard from the daemon', async () => {
+	const before = Date.now()
+	const { stub, ws } = await connect('ec_last_seen')
+	const status = await stub.getStatus()
+	expect(status.online).toBe(true)
+	expect(Date.parse(status.lastSeenAt ?? '')).toBeGreaterThanOrEqual(
+		before - 1_000,
+	)
+	ws.close()
+	await expect
+		.poll(() => stub.getStatus())
+		.toMatchObject({ online: false, lastSeenAt: null })
+})
+
 test('a reconnecting daemon ends the committed runs it no longer holds at once', async () => {
 	const ecid = 'ec_reconnect'
 	const first = await connect(ecid, {
