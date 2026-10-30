@@ -39,6 +39,13 @@ import {
  */
 const rhinoProductionAppBaseUrl = 'https://rhino.nyneelevenlabs.com'
 
+/**
+ * Package-app apex when the Actions variable and the wrangler pin are both
+ * empty. Matches `env.production.vars.PACKAGE_APP_BASE_URL` in
+ * `packages/worker/wrangler.jsonc`. A non-empty variable still wins.
+ */
+const rhinoProductionPackageAppBaseUrl = 'https://nyneelevenlabs.dev'
+
 type Command = 'ensure'
 
 type CliOptions = {
@@ -81,6 +88,7 @@ type ResolvedProductionBindings = {
 	webhookDispatchDeadLetterQueueName: string
 	committedUserEmailDomain: string | null
 	committedSystemEmailDomain: string | null
+	packageAppBaseUrl: string
 	packageAppHostname: string | null
 	packageAppLegacyHostnames: Array<string>
 }
@@ -540,13 +548,18 @@ async function resolveProductionBindings({
 		productionVars && typeof productionVars === 'object'
 			? (productionVars as Record<string, unknown>).PACKAGE_APP_BASE_URL
 			: undefined
-	// Actions variable wins so a later second domain does not need another
-	// wrangler edit. Empty leaves the committed value, which Rhino omits.
+	// Actions variable wins. Empty keeps the wrangler pin, then the Rhino
+	// apex, so a blank variable cannot turn hosted package apps off.
 	const overlayPackageAppBaseUrl = process.env.PACKAGE_APP_BASE_URL?.trim()
+	const committedPackageAppBaseUrl =
+		typeof committedPackageAppBaseUrlRaw === 'string' &&
+		committedPackageAppBaseUrlRaw.trim().length > 0
+			? committedPackageAppBaseUrlRaw.trim()
+			: null
 	const packageAppBaseUrlRaw =
 		overlayPackageAppBaseUrl && overlayPackageAppBaseUrl.length > 0
 			? overlayPackageAppBaseUrl
-			: committedPackageAppBaseUrlRaw
+			: (committedPackageAppBaseUrl ?? rhinoProductionPackageAppBaseUrl)
 	const committedPackageAppLegacyHostsRaw =
 		productionVars && typeof productionVars === 'object'
 			? (productionVars as Record<string, unknown>).PACKAGE_APP_LEGACY_HOSTS
@@ -615,6 +628,7 @@ async function resolveProductionBindings({
 		operatorBackupsBucketName,
 		committedUserEmailDomain,
 		committedSystemEmailDomain,
+		packageAppBaseUrl: packageAppBaseUrlRaw,
 		packageAppHostname,
 		packageAppLegacyHostnames,
 		...queueResources,
@@ -914,7 +928,7 @@ async function ensureProductionResources(options: CliOptions) {
 		workerVars: {
 			APP_BASE_URL:
 				process.env.APP_BASE_URL?.trim() || rhinoProductionAppBaseUrl,
-			PACKAGE_APP_BASE_URL: process.env.PACKAGE_APP_BASE_URL,
+			PACKAGE_APP_BASE_URL: bindings.packageAppBaseUrl,
 			APP_LEGACY_HOSTS: process.env.APP_LEGACY_HOSTS,
 			APP_LEGACY_REDIRECT: process.env.APP_LEGACY_REDIRECT,
 			PACKAGE_APP_LEGACY_HOSTS: process.env.PACKAGE_APP_LEGACY_HOSTS,

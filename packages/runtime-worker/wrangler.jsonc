@@ -309,10 +309,11 @@
 				"SENTRY_ENVIRONMENT": "production",
 				"SENTRY_TRACES_SAMPLE_RATE": 0,
 				"ARTIFACTS_NAMESPACE": "production",
-				// Upstream: "PACKAGE_APP_BASE_URL": "https://kody.run".
-				// Omitted here so a production deploy does not publish zone
-				// routes for kody.run. The main worker overlay still copies a
-				// non-empty PACKAGE_APP_BASE_URL when one is set.
+				// Upstream pins PACKAGE_APP_BASE_URL here as well
+				// (https://kody.run). Rhino leaves it unset: runtime generate
+				// copies the main worker pin (https://nyneelevenlabs.dev), and
+				// a pin in this file would overwrite that overlay. Zone routes
+				// are generated at deploy, not committed.
 			},
 		},
 		"preview": {

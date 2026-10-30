@@ -22,97 +22,97 @@ or directory names.
 Intentional differences from upstream. Each row is a file this fork edits on
 purpose.
 
-| File                                                                      | Why                                                                                                                   |
-| ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `docs/contributing/rhino.md`                                              | Additive fork rules (this page).                                                                                      |
-| `.github/workflows/rhino-automerge.yml`                                   | Squash-merge green same-repo `cursor/` pull requests and dispatch production deploy.                                  |
-| `AGENTS.md`                                                               | Opening pointer to this page. Stays inside the 23-line `agents-md` budget.                                            |
-| `docs/contributing/index.md`                                              | Link to this page from the contributing map.                                                                          |
-| `README.md`                                                               | Headline, logo alt text, and the opening product paragraphs. License text stays upstream.                             |
-| `packages/worker/start/components/site-header.tsx`                        | Header wordmark.                                                                                                      |
-| `packages/worker/start/components/site-footer.tsx`                        | Footer wordmark.                                                                                                      |
-| `packages/worker/start/components/workspace-layout.tsx`                   | Sidebar wordmark and home label.                                                                                      |
-| `packages/worker/start/pages/login-sections.tsx`                          | Sign-in brand label.                                                                                                  |
-| `packages/worker/start/pages/login.tsx`                                   | "Back to Rhino" link.                                                                                                 |
-| `packages/worker/start/pages/signup-choose-username.tsx`                  | "Back to Rhino" link.                                                                                                 |
-| `packages/worker/start/components/brand-context-menu.tsx`                 | Brand menu accessible name.                                                                                           |
-| `packages/worker/universal/document-head.ts`                              | Default title and page-title / share-title product suffix.                                                            |
-| `packages/worker/universal/og-pages.ts`                                   | Share-card titles and image titles that name the product. Descriptions stay upstream.                                 |
-| `packages/worker/start/routes/__root.tsx`                                 | Root document title uses `DEFAULT_DOCUMENT_TITLE`.                                                                    |
-| `packages/worker/start/routes/unsubscribe.tips.tsx`                       | Fallback document title.                                                                                              |
-| `packages/worker/start/routes/verify-email.tsx`                           | Fallback document title.                                                                                              |
-| `packages/worker/start/routes/verify-email-change.tsx`                    | Fallback document title.                                                                                              |
-| `packages/worker/start/routes/verify-email-claim-release.tsx`             | Fallback document title.                                                                                              |
-| `packages/worker/start/routes/verify-email-destination.tsx`               | Fallback document title.                                                                                              |
-| `packages/worker/universal/landing-home-copy.ts`                          | Homepage product-name sentences. Other wording stays the upstream homepage.                                           |
-| `packages/worker/start/components/landing-agent-marquee.tsx`              | Homepage accessible name.                                                                                             |
-| `packages/worker/start/components/landing-hero-agents.tsx`                | Homepage accessible name.                                                                                             |
-| `packages/worker/start/components/landing-lantern.tsx`                    | Homepage caption.                                                                                                     |
-| `packages/worker/start/components/landing-loop-player.tsx`                | Homepage section title.                                                                                               |
-| `packages/worker/start/pages/onboarding.tsx`                              | Onboarding heading.                                                                                                   |
-| `packages/worker/start/pages/onboarding-banner.tsx`                       | Onboarding banner accessible name.                                                                                    |
-| `packages/worker/start/pages/about.tsx`                                   | About heading and the product-definition paragraphs. Host facts stay upstream.                                        |
-| `packages/worker/start/pages/contact.tsx`                                 | Contact heading. Body still describes kody.codes contacts.                                                            |
-| `packages/worker/src/app/public-content.ts`                               | Public catalog titles for docs and per-agent pages.                                                                   |
-| `packages/worker/src/blog/rss.ts`                                         | RSS channel title. Channel description stays upstream.                                                                |
-| `packages/worker/src/app/handlers/health.ts`                              | `/health` document title and brand label.                                                                             |
-| `packages/worker/src/app/handlers/docs.ts`                                | `llms.txt` heading and opening product sentence.                                                                      |
-| `packages/worker/src/app/agent-discovery.ts`                              | Home markdown, auth.md opening, 404 markdown labels, MCP card "chat app" sentence, and the homepage JSON-LD CSP hash. |
-| `packages/worker/universal/home-json-ld.ts`                               | Homepage structured-data `name` and description. Canonical URL stays `https://kody.codes`.                            |
-| `packages/worker/src/mcp/kody-mcp-server-info.ts`                         | MCP `serverInfo.title` display name. `name` stays `kody-mcp`.                                                         |
-| `packages/worker/src/mcp-auth.ts`                                         | Browser page shown at the MCP endpoint.                                                                               |
-| `packages/worker/src/oauth-handlers.ts`                                   | Standalone OAuth error eyebrow.                                                                                       |
-| `packages/worker/start/pages/oauth-authorize.tsx`                         | Authorize-page eyebrow.                                                                                               |
-| `packages/worker/start/pages/oauth-callback.tsx`                          | Callback-page eyebrow.                                                                                                |
-| `packages/worker/universal/oauth-connect.ts`                              | "Connect with Rhino's built-in app" option detail.                                                                    |
-| `packages/worker/universal/oauth-connect.node.test.ts`                    | Pins that option detail.                                                                                              |
-| `packages/worker/start/pages/account-integrations-sections.tsx`           | Integrations section heading.                                                                                         |
-| `packages/worker/start/components/doc-diagrams.tsx`                       | Diagram card title. CSS class names stay upstream.                                                                    |
-| `packages/worker/start/markdown-view.native.node.test.ts`                 | Pins the diagram card title.                                                                                          |
-| `packages/worker/start/pages/features/integrations-scenes.tsx`            | Diagram hub labels. Surrounding sentences stay upstream.                                                              |
-| `packages/worker/start/components/primitive-widgets.tsx`                  | Homepage integrations widget hub label.                                                                               |     |
-| `packages/worker/start/pages/acquisition/mcpGateway.tsx`                  | Diagram label, heading, and accessible name. Body paragraphs stay upstream.                                           |
-| `packages/worker/start/pages/acquisition/sharedMemory.tsx`                | Example label.                                                                                                        |
-| `packages/worker/universal/acquisition/metadata.ts`                       | Use-cases page title.                                                                                                 |
-| `packages/worker/start/pages/acquisition/automation.tsx`                  | "Get started with Rhino" link.                                                                                        |
-| `packages/worker/start/pages/acquisition/composioAlternatives.tsx`        | "Get started with Rhino" link.                                                                                        |
-| `packages/worker/start/pages/acquisition/customTools.tsx`                 | "Get started with Rhino" link.                                                                                        |
-| `packages/worker/start/pages/acquisition/gmail.tsx`                       | "Get started with Rhino" link.                                                                                        |
-| `packages/cli/src/login-callback-page.ts`                                 | Localhost `kody login` callback brand. The `kody login` command text stays.                                           |
-| `packages/cli/src/host-catalog.ts`                                        | Goose install display name. Install `id` stays `kody`.                                                                |
-| `e2e/smoke.spec.ts`                                                       | Header brand link name.                                                                                               |
-| `e2e/a11y.spec.ts`                                                        | Onboarding heading.                                                                                                   |
-| `e2e/signup-verify-connect.spec.ts`                                       | Onboarding heading.                                                                                                   |
-| `e2e/social-login.spec.ts`                                                | Onboarding heading.                                                                                                   |
-| `packages/worker/src/public-content.mcp-e2e.test.ts`                      | Home markdown heading.                                                                                                |
-| `packages/worker/src/origin-handler.anonymous-html-cache.mcp-e2e.test.ts` | `llms.txt` heading.                                                                                                   |
-| `packages/worker/wrangler.jsonc`                                          | Production email domains, omitted package-app URL, no Fathom site id, no `sentry-otlp-traces` destination.            |
-| `packages/worker/worker-type-secrets.env`                                 | Keeps `PACKAGE_APP_BASE_URL` and `FATHOM_SITE_ID` on the generated `Env` type after those wrangler pins are removed.  |
-| `packages/worker/worker-configuration.d.ts`                               | Regenerated. Email-domain pins are widened to `string` so fixture hosts still typecheck.                              |
-| `tools/generate-worker-configuration-types.ts`                            | Applies that widening after `wrangler types`.                                                                         |
-| `tools/widen-sentry-environment-type.ts`                                  | Widens the committed `USER_EMAIL_DOMAIN` and `SYSTEM_EMAIL_DOMAIN` literals.                                          |
-| `tools/widen-sentry-environment-type.node.test.ts`                        | Pins that widening.                                                                                                   |
-| `packages/runtime-worker/wrangler.jsonc`                                  | Omits `PACKAGE_APP_BASE_URL` and the Sentry trace destination.                                                        |
-| `packages/platform-worker/wrangler.jsonc`                                 | Omits the Sentry trace destination.                                                                                   |
-| `packages/status/wrangler.jsonc`                                          | Status hostname, probe origins, alert addresses, and Cloudflare account id.                                           |
-| `packages/status/probes.ts`                                               | A blank package-app origin does not probe and does not open an incident.                                              |
-| `packages/status/probes.node.test.ts`                                     | Pins that blank-origin behavior.                                                                                      |
-| `packages/api-worker/wrangler.jsonc`                                      | API custom domain.                                                                                                    |
-| `packages/api-docs-worker/wrangler.jsonc`                                 | API docs custom domain and spec URL.                                                                                  |
-| `packages/nx-cache/wrangler.jsonc`                                        | Nx cache custom domain.                                                                                               |
-| `tools/ci/resource-utils.ts`                                              | Publishes the app custom domain when `PACKAGE_APP_BASE_URL` is unset. DMARC reports forward to `csnye86@gmail.com`.   |
-| `tools/ci/resource-utils.node.test.ts`                                    | Covers that route shape, the DMARC forward default, and a package-app URL without an app origin.                      |
-| `tools/ci/production-resources.ts`                                        | `APP_BASE_URL` fallback and optional package-app and Fathom Actions variables.                                        |
-| `tools/nx-remote-cache-probe.ts`                                          | Default Nx cache server hostname.                                                                                     |
-| `.github/workflows/deploy.yml`                                            | Production hostnames, app-origin fallback, optional Fathom site id, and the DR job skip.                              |
-| `.github/workflows/nx-cache-deploy.yml`                                   | Nx cache hostname and skip when the write token is absent.                                                            |
-| `.github/workflows/cla.yml`                                               | CLA jobs run only on `kody-hq/kody`.                                                                                  |
-| `.github/workflows/weekly-site-perf.yml`                                  | Weekly site perf runs only on `kody-hq/kody`.                                                                         |
-| `.github/workflows/latency-bench.yml`                                     | Weekly latency bench runs only on `kody-hq/kody`.                                                                     |
-| `.github/workflows/publish-cli.yml`                                       | CLI publish runs only on `kody-hq/kody`.                                                                              |
-| `.github/workflows/publish-mcp-registry.yml`                              | MCP registry publish runs only on `kody-hq/kody`.                                                                     |
-| `.github/workflows/status-incident-delete.yml`                            | Status incident delete URL, secret skip, and `cameron-nye` as an approved actor.                                      |
-| `.github/workflows/dr-escrow.yml`                                         | Escrow job skips when DR credentials are absent.                                                                      |
+| File                                                                      | Why                                                                                                                              |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/contributing/rhino.md`                                              | Additive fork rules (this page).                                                                                                 |
+| `.github/workflows/rhino-automerge.yml`                                   | Squash-merge green same-repo `cursor/` pull requests and dispatch production deploy.                                             |
+| `AGENTS.md`                                                               | Opening pointer to this page. Stays inside the 23-line `agents-md` budget.                                                       |
+| `docs/contributing/index.md`                                              | Link to this page from the contributing map.                                                                                     |
+| `README.md`                                                               | Headline, logo alt text, and the opening product paragraphs. License text stays upstream.                                        |
+| `packages/worker/start/components/site-header.tsx`                        | Header wordmark.                                                                                                                 |
+| `packages/worker/start/components/site-footer.tsx`                        | Footer wordmark.                                                                                                                 |
+| `packages/worker/start/components/workspace-layout.tsx`                   | Sidebar wordmark and home label.                                                                                                 |
+| `packages/worker/start/pages/login-sections.tsx`                          | Sign-in brand label.                                                                                                             |
+| `packages/worker/start/pages/login.tsx`                                   | "Back to Rhino" link.                                                                                                            |
+| `packages/worker/start/pages/signup-choose-username.tsx`                  | "Back to Rhino" link.                                                                                                            |
+| `packages/worker/start/components/brand-context-menu.tsx`                 | Brand menu accessible name.                                                                                                      |
+| `packages/worker/universal/document-head.ts`                              | Default title and page-title / share-title product suffix.                                                                       |
+| `packages/worker/universal/og-pages.ts`                                   | Share-card titles and image titles that name the product. Descriptions stay upstream.                                            |
+| `packages/worker/start/routes/__root.tsx`                                 | Root document title uses `DEFAULT_DOCUMENT_TITLE`.                                                                               |
+| `packages/worker/start/routes/unsubscribe.tips.tsx`                       | Fallback document title.                                                                                                         |
+| `packages/worker/start/routes/verify-email.tsx`                           | Fallback document title.                                                                                                         |
+| `packages/worker/start/routes/verify-email-change.tsx`                    | Fallback document title.                                                                                                         |
+| `packages/worker/start/routes/verify-email-claim-release.tsx`             | Fallback document title.                                                                                                         |
+| `packages/worker/start/routes/verify-email-destination.tsx`               | Fallback document title.                                                                                                         |
+| `packages/worker/universal/landing-home-copy.ts`                          | Homepage product-name sentences. Other wording stays the upstream homepage.                                                      |
+| `packages/worker/start/components/landing-agent-marquee.tsx`              | Homepage accessible name.                                                                                                        |
+| `packages/worker/start/components/landing-hero-agents.tsx`                | Homepage accessible name.                                                                                                        |
+| `packages/worker/start/components/landing-lantern.tsx`                    | Homepage caption.                                                                                                                |
+| `packages/worker/start/components/landing-loop-player.tsx`                | Homepage section title.                                                                                                          |
+| `packages/worker/start/pages/onboarding.tsx`                              | Onboarding heading.                                                                                                              |
+| `packages/worker/start/pages/onboarding-banner.tsx`                       | Onboarding banner accessible name.                                                                                               |
+| `packages/worker/start/pages/about.tsx`                                   | About heading and the product-definition paragraphs. Host facts stay upstream.                                                   |
+| `packages/worker/start/pages/contact.tsx`                                 | Contact heading. Body still describes kody.codes contacts.                                                                       |
+| `packages/worker/src/app/public-content.ts`                               | Public catalog titles for docs and per-agent pages.                                                                              |
+| `packages/worker/src/blog/rss.ts`                                         | RSS channel title. Channel description stays upstream.                                                                           |
+| `packages/worker/src/app/handlers/health.ts`                              | `/health` document title and brand label.                                                                                        |
+| `packages/worker/src/app/handlers/docs.ts`                                | `llms.txt` heading and opening product sentence.                                                                                 |
+| `packages/worker/src/app/agent-discovery.ts`                              | Home markdown, auth.md opening, 404 markdown labels, MCP card "chat app" sentence, and the homepage JSON-LD CSP hash.            |
+| `packages/worker/universal/home-json-ld.ts`                               | Homepage structured-data `name` and description. Canonical URL stays `https://kody.codes`.                                       |
+| `packages/worker/src/mcp/kody-mcp-server-info.ts`                         | MCP `serverInfo.title` display name. `name` stays `kody-mcp`.                                                                    |
+| `packages/worker/src/mcp-auth.ts`                                         | Browser page shown at the MCP endpoint.                                                                                          |
+| `packages/worker/src/oauth-handlers.ts`                                   | Standalone OAuth error eyebrow.                                                                                                  |
+| `packages/worker/start/pages/oauth-authorize.tsx`                         | Authorize-page eyebrow.                                                                                                          |
+| `packages/worker/start/pages/oauth-callback.tsx`                          | Callback-page eyebrow.                                                                                                           |
+| `packages/worker/universal/oauth-connect.ts`                              | "Connect with Rhino's built-in app" option detail.                                                                               |
+| `packages/worker/universal/oauth-connect.node.test.ts`                    | Pins that option detail.                                                                                                         |
+| `packages/worker/start/pages/account-integrations-sections.tsx`           | Integrations section heading.                                                                                                    |
+| `packages/worker/start/components/doc-diagrams.tsx`                       | Diagram card title. CSS class names stay upstream.                                                                               |
+| `packages/worker/start/markdown-view.native.node.test.ts`                 | Pins the diagram card title.                                                                                                     |
+| `packages/worker/start/pages/features/integrations-scenes.tsx`            | Diagram hub labels. Surrounding sentences stay upstream.                                                                         |
+| `packages/worker/start/components/primitive-widgets.tsx`                  | Homepage integrations widget hub label.                                                                                          |     |
+| `packages/worker/start/pages/acquisition/mcpGateway.tsx`                  | Diagram label, heading, and accessible name. Body paragraphs stay upstream.                                                      |
+| `packages/worker/start/pages/acquisition/sharedMemory.tsx`                | Example label.                                                                                                                   |
+| `packages/worker/universal/acquisition/metadata.ts`                       | Use-cases page title.                                                                                                            |
+| `packages/worker/start/pages/acquisition/automation.tsx`                  | "Get started with Rhino" link.                                                                                                   |
+| `packages/worker/start/pages/acquisition/composioAlternatives.tsx`        | "Get started with Rhino" link.                                                                                                   |
+| `packages/worker/start/pages/acquisition/customTools.tsx`                 | "Get started with Rhino" link.                                                                                                   |
+| `packages/worker/start/pages/acquisition/gmail.tsx`                       | "Get started with Rhino" link.                                                                                                   |
+| `packages/cli/src/login-callback-page.ts`                                 | Localhost `kody login` callback brand. The `kody login` command text stays.                                                      |
+| `packages/cli/src/host-catalog.ts`                                        | Goose install display name. Install `id` stays `kody`.                                                                           |
+| `e2e/smoke.spec.ts`                                                       | Header brand link name.                                                                                                          |
+| `e2e/a11y.spec.ts`                                                        | Onboarding heading.                                                                                                              |
+| `e2e/signup-verify-connect.spec.ts`                                       | Onboarding heading.                                                                                                              |
+| `e2e/social-login.spec.ts`                                                | Onboarding heading.                                                                                                              |
+| `packages/worker/src/public-content.mcp-e2e.test.ts`                      | Home markdown heading.                                                                                                           |
+| `packages/worker/src/origin-handler.anonymous-html-cache.mcp-e2e.test.ts` | `llms.txt` heading.                                                                                                              |
+| `packages/worker/wrangler.jsonc`                                          | Production email domains, package-app apex `https://nyneelevenlabs.dev`, no Fathom site id, no `sentry-otlp-traces` destination. |
+| `packages/worker/worker-type-secrets.env`                                 | Keeps `FATHOM_SITE_ID` on the generated `Env` type after that wrangler pin is removed.                                           |
+| `packages/worker/worker-configuration.d.ts`                               | Regenerated. Email-domain and package-app URL pins are widened to `string` so fixture hosts still typecheck.                     |
+| `tools/generate-worker-configuration-types.ts`                            | Applies that widening after `wrangler types`.                                                                                    |
+| `tools/widen-sentry-environment-type.ts`                                  | Widens the committed email-domain and `PACKAGE_APP_BASE_URL` literals.                                                           |
+| `tools/widen-sentry-environment-type.node.test.ts`                        | Pins that widening.                                                                                                              |
+| `packages/runtime-worker/wrangler.jsonc`                                  | Inherits `PACKAGE_APP_BASE_URL` from the main worker and omits the Sentry trace destination.                                     |
+| `packages/platform-worker/wrangler.jsonc`                                 | Omits the Sentry trace destination.                                                                                              |
+| `packages/status/wrangler.jsonc`                                          | Status hostname, probe origins, alert addresses, and Cloudflare account id.                                                      |
+| `packages/status/probes.ts`                                               | A blank package-app origin does not probe and does not open an incident.                                                         |
+| `packages/status/probes.node.test.ts`                                     | Pins that blank-origin behavior.                                                                                                 |
+| `packages/api-worker/wrangler.jsonc`                                      | API custom domain.                                                                                                               |
+| `packages/api-docs-worker/wrangler.jsonc`                                 | API docs custom domain and spec URL.                                                                                             |
+| `packages/nx-cache/wrangler.jsonc`                                        | Nx cache custom domain.                                                                                                          |
+| `tools/ci/resource-utils.ts`                                              | Publishes the app custom domain when `PACKAGE_APP_BASE_URL` is unset. DMARC reports forward to `csnye86@gmail.com`.              |
+| `tools/ci/resource-utils.node.test.ts`                                    | Covers the pinned package-app apex, the DMARC forward default, and a package-app URL without an app origin.                      |
+| `tools/ci/production-resources.ts`                                        | `APP_BASE_URL` and `PACKAGE_APP_BASE_URL` fallbacks, and an optional Fathom site id.                                             |
+| `tools/nx-remote-cache-probe.ts`                                          | Default Nx cache server hostname.                                                                                                |
+| `.github/workflows/deploy.yml`                                            | Production hostnames, app and package-app origin fallbacks, optional Fathom site id, and the DR job skip.                        |
+| `.github/workflows/nx-cache-deploy.yml`                                   | Nx cache hostname and skip when the write token is absent.                                                                       |
+| `.github/workflows/cla.yml`                                               | CLA jobs run only on `kody-hq/kody`.                                                                                             |
+| `.github/workflows/weekly-site-perf.yml`                                  | Weekly site perf runs only on `kody-hq/kody`.                                                                                    |
+| `.github/workflows/latency-bench.yml`                                     | Weekly latency bench runs only on `kody-hq/kody`.                                                                                |
+| `.github/workflows/publish-cli.yml`                                       | CLI publish runs only on `kody-hq/kody`.                                                                                         |
+| `.github/workflows/publish-mcp-registry.yml`                              | MCP registry publish runs only on `kody-hq/kody`.                                                                                |
+| `.github/workflows/status-incident-delete.yml`                            | Status incident delete URL, secret skip, and `cameron-nye` as an approved actor.                                                 |
+| `.github/workflows/dr-escrow.yml`                                         | Escrow job skips when DR credentials are absent.                                                                                 |
 
 Production hostnames and the CI skips for this fork are in
 [Production hostnames](#production-hostnames). Product copy still names upstream
@@ -210,13 +210,15 @@ upstream sync, stay Kody until a later pass adds them here:
 
 ## Production hostnames
 
-All of these names are on the zone `nyneelevenlabs.com` (zone id
-`b5451c2715afa787ba188025ebf929a0`, account `fc56d8089384bf6a7806ff0e9a9385a0`).
-Workers custom domains issue their own certificates, so the nested names below
-are not limited to Universal SSL's one label. GitHub Actions variables
-`APP_BASE_URL`, `USER_EMAIL_DOMAIN`, and `SYSTEM_EMAIL_DOMAIN` still override
-the committed pins when they are non-empty. Upstream values stay in comments
-next to the pins.
+The app, email, status, API, and Nx cache names are on the zone
+`nyneelevenlabs.com` (zone id `b5451c2715afa787ba188025ebf929a0`, account
+`fc56d8089384bf6a7806ff0e9a9385a0`). Hosted package apps are on
+`nyneelevenlabs.dev` in that same account. The zone id for `.dev` is a GitHub
+variable, not a committed value. Workers custom domains issue their own
+certificates, so the nested names on `.com` are not limited to Universal SSL's
+one label. GitHub Actions variables `APP_BASE_URL`, `USER_EMAIL_DOMAIN`,
+`SYSTEM_EMAIL_DOMAIN`, and `PACKAGE_APP_BASE_URL` still override the committed
+pins when they are non-empty. Upstream values stay in comments next to the pins.
 
 | Role                 | Name                                                         | Upstream                      |
 | -------------------- | ------------------------------------------------------------ | ----------------------------- |
@@ -227,22 +229,42 @@ next to the pins.
 | Open API             | `https://api.rhino.nyneelevenlabs.com`                       | `https://api.kody.codes`      |
 | API docs             | `https://api-docs.rhino.nyneelevenlabs.com`                  | `https://api-docs.kody.codes` |
 | Nx cache             | `https://nx-cache.rhino.nyneelevenlabs.com`                  | `https://nx-cache.kody.codes` |
-| Hosted package apps  | unset                                                        | `https://kody.run`            |
+| Hosted package apps  | `https://nyneelevenlabs.dev`                                 | `https://kody.run`            |
 
-Hosted package apps stay off. Production package-app requests return 500 until
-`PACKAGE_APP_BASE_URL` is a separate registrable domain. Preview, tests, and
-local dev still serve package apps inline. A subdomain of `nyneelevenlabs.com`
-is not a stand-in: it shares a registrable domain with the app (so the isolation
-check fails) and the runtime worker would publish zone routes, including a
-catch-all, on this zone. That replaces the zone route table and detaches every
-Workers custom domain here, including the app. Leaving `https://kody.run` in the
-committed config would make production ensure look up that zone in this account
-and fail the origin deploy. Set the `PACKAGE_APP_BASE_URL` Actions variable only
-after this account owns that second zone. Do not point it at `kody.run`.
+Hosted package apps use the zone `nyneelevenlabs.dev`, a separate registrable
+domain from the app. The zone id is not in this repo. Cameron sets the GitHub
+variable below before custom hostnames work. Per-user apps are
+`https://{username}.nyneelevenlabs.dev/{leaf}/...`. The apex serves redirects
+only (`/` to the app, legacy `/@user/packages/...` to the owning subdomain).
+`domains.nyneelevenlabs.dev` is the Cloudflare for SaaS fallback origin and the
+CNAME target for a customer hostname.
 
-The status worker's package-runtime card stays operational while the origin is
-blank, so a missing domain does not open an incident. It is not serving package
-apps.
+Production pins `PACKAGE_APP_BASE_URL` to `https://nyneelevenlabs.dev` in
+`packages/worker/wrangler.jsonc`. A non-empty Actions variable of the same name
+overrides that pin. The deploy writes the pin into the generated main config,
+copies it onto the runtime worker, and publishes **zone routes** (not Workers
+custom domains) on `kody-runtime`:
+
+- `nyneelevenlabs.dev/*`
+- `*.nyneelevenlabs.dev/*`
+- `*/*` (SaaS catch-all, this zone only)
+
+Zone routes do not create DNS. Production ensure creates proxied AAAA `100::`
+records for `nyneelevenlabs.dev`, `*.nyneelevenlabs.dev`, and
+`domains.nyneelevenlabs.dev`. A conflicting A, AAAA, or CNAME at those names
+fails the deploy. Universal SSL covers one wildcard label, which is enough for
+`{username}.nyneelevenlabs.dev`. A name under `nyneelevenlabs.com` is not a
+stand-in: it shares a registrable domain with the app, and the catch-all would
+detach every Workers custom domain on that zone.
+
+The runtime wrangler file does not pin `PACKAGE_APP_BASE_URL`. Generate copies
+the main worker value, and a second pin would overwrite it. Preview, tests, and
+local dev still serve package apps inline. `npm run dev` ignores this apex
+because a local server cannot answer on it.
+
+The status worker probes `https://nyneelevenlabs.dev/__runtime/health`. A blank
+`PACKAGE_APP_ORIGIN` would stay operational and would not open an incident. This
+fork does not leave it blank.
 
 Status alerts go to `csnye86@gmail.com` (`ALERT_EMAIL_TO`). The from-address is
 `kody@rhino.nyneelevenlabs.com`. Upstream alerts went to `me@kentcdodds.com`.
@@ -284,6 +306,45 @@ instead of failing the run:
 Per-PR preview deploys stay enabled. Preview sweep and audit bump stay
 upstream-only, so closed-PR preview cleanup does not run on this fork.
 
+### Before a deploy that publishes package apps
+
+Auto-merge dispatches production deploy. Do these before that run. The zone id
+is not committed.
+
+GitHub (production environment, or repository variables if that environment does
+not override them):
+
+| Name                                    | Kind                | What to set                                                                                    |
+| --------------------------------------- | ------------------- | ---------------------------------------------------------------------------------------------- |
+| `PACKAGE_APP_ZONE_ID`                   | variable, or secret | Zone id of `nyneelevenlabs.dev` (zone overview). Deploy prefers the secret, then the variable. |
+| `PACKAGE_APP_BASE_URL`                  | variable, optional  | Leave unset. The workflow and the wrangler pin both use `https://nyneelevenlabs.dev`.          |
+| `CLOUDFLARE_CUSTOM_HOSTNAMES_API_TOKEN` | secret, optional    | **SSL and Certificates: Edit** on `nyneelevenlabs.dev`. Do not reuse `CLOUDFLARE_API_TOKEN`.   |
+
+`PACKAGE_APP_ZONE_ID` is a Worker var for the Custom Hostnames API. Apex and
+`{username}` routing look the zone up by name, so package apps on
+`{username}.nyneelevenlabs.dev` deploy without the id. Customer custom hostnames
+do not: add, sync, and reconcile throw until the id is set. Add the variable
+before relying on custom domains.
+
+Cloudflare dashboard, zone `nyneelevenlabs.dev` (same account as
+`nyneelevenlabs.com`, account `fc56d8089384bf6a7806ff0e9a9385a0`):
+
+- The zone is Active and on this account. Confirm the deploy token
+  `CLOUDFLARE_API_TOKEN` includes this zone, not only `nyneelevenlabs.com`:
+  **DNS: Edit** (the ensure step writes the three AAAA records) and **Workers
+  Routes: Edit** (the runtime worker publishes the zone route table).
+- Do not attach a Workers custom domain anywhere on this zone. Replacing the
+  route table detaches it and deletes its DNS record.
+- Remove any apex, `*`, or `domains` record that is not a proxied AAAA `100::`.
+  Ensure creates those three records and fails on a conflicting type.
+- Universal SSL must cover the apex and `*.nyneelevenlabs.dev` before browsers
+  can open a per-user app. A certificate that is still pending makes the first
+  requests fail even after the worker route exists.
+- For customer custom hostnames, enable Cloudflare for SaaS on this zone. The
+  fallback origin is `domains.nyneelevenlabs.dev`. Customers CNAME their
+  hostname there. First-party `{username}.nyneelevenlabs.dev` apps do not need
+  SaaS.
+
 ### Before the first production deploy
 
 Dashboard and one-time resources this deploy does not create:
@@ -309,6 +370,8 @@ Dashboard and one-time resources this deploy does not create:
   Deploy fails in `require-worker-tokens` when any of them is missing.
 
 `npm run dev` still uses the production Wrangler environment, so the committed
-email domains are visible locally. `APP_BASE_URL` is not committed; local dev
-keeps using localhost. The production deploy writes
-`https://rhino.nyneelevenlabs.com` when the Actions variable is empty.
+email domains and `PACKAGE_APP_BASE_URL` are visible locally. Local dev ignores
+that package-app apex and keeps serving package apps inline. `APP_BASE_URL` is
+not committed; local dev keeps using localhost. The production deploy writes
+`https://rhino.nyneelevenlabs.com` when that Actions variable is empty, and
+`https://nyneelevenlabs.dev` when `PACKAGE_APP_BASE_URL` is empty.

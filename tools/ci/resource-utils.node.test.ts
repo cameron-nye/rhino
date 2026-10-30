@@ -266,9 +266,11 @@ test('writeGeneratedWranglerConfig preserves migrations and copies environment a
 	])
 	// Routes are generated from the base-URL vars rather than committed (a
 	// committed route would make `wrangler dev` resolve every local request as
-	// that production host). With PACKAGE_APP_BASE_URL unset, the main Worker
-	// still publishes the app origin and does not attach a package-app zone.
-	expect(production?.vars?.PACKAGE_APP_BASE_URL).toBeUndefined()
+	// that production host). The package-app apex is pinned; its zone routes
+	// are attached to the runtime worker, not this one.
+	expect(production?.vars?.PACKAGE_APP_BASE_URL).toBe(
+		'https://nyneelevenlabs.dev',
+	)
 	expect(production?.routes).toEqual([
 		{ pattern: 'heykody.dev', custom_domain: true },
 	])
