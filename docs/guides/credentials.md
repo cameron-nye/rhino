@@ -204,6 +204,15 @@ the credential only travels to its own hosts. A 401 or 403 response carries an
 `credentials(key)` returns an array of clients for a need declared with
 `multiple: true`.
 
+The client's type is `KodyCredentialClient`, exported from `kody:runtime`
+(`import type { KodyCredentialClient } from 'kody:runtime'`). Use it to type a
+helper that takes a client, and call `credential('key')` with a literal key
+where the client is opened (the same goes for `credential.visitor('key')`):
+publish refuses code that passes `credential`, `credentials`, or
+`credential.visitor` itself around at run time, but type-only uses such as
+`typeof credential` are fine
+([stamp rule](../use/packages.md#declare-what-a-stamped-package-may-use)).
+
 ### Scope in code
 
 `client.scope` uses the same two values as `credentialList` and call maps: `org`
