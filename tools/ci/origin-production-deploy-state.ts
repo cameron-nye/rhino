@@ -512,6 +512,35 @@ export function stripOriginCrossScriptClassBindings(
 }
 
 /**
+ * Fresh origin bootstrap runs before `kody-runtime` exists. Durable Object
+ * `script_name`s are already local; this drops the `RUNTIME_WORKER` service
+ * binding so the upload is not rejected with Cloudflare 10143. The slim
+ * origin deploy that follows restores it once runtime is live.
+ */
+function stripOriginBootstrapServiceBindings(
+	config: Record<string, unknown>,
+	serviceNames: ReadonlySet<string> = new Set([productionRuntimeScriptName]),
+) {
+	const stripTarget = (target: Record<string, unknown> | null) => {
+		if (!target) return
+		const services = target.services
+		if (!Array.isArray(services)) return
+		const kept = services.filter((entry) => {
+			const binding = asRecord(entry)
+			if (!binding || typeof binding.service !== 'string') return true
+			return !serviceNames.has(binding.service)
+		})
+		if (kept.length === 0) delete target.services
+		else target.services = kept
+	}
+	stripTarget(config)
+	const env = asRecord(config.env)
+	if (!env) return config
+	for (const value of Object.values(env)) stripTarget(asRecord(value))
+	return config
+}
+
+/**
  * Ambiguous mixed ownership: origin still has some transferred classes
  * while destinations already own others. Keep cross-script bindings for
  * classes origin no longer owns; bind the rest locally so requests do not
@@ -621,6 +650,7 @@ export async function writeOriginBootstrapWranglerConfig(input: {
 	const bootstrap = structuredClone(input.generatedConfig)
 	bootstrap.main = defaultDevEntryPath
 	stripOriginCrossScriptClassBindings(bootstrap)
+	stripOriginBootstrapServiceBindings(bootstrap)
 	const resolvedOut = path.resolve(input.outConfigPath)
 	await writeFile(
 		resolvedOut,

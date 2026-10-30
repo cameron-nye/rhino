@@ -380,6 +380,25 @@ function parseArgs(argv: Array<string>): CliOptions {
 	}
 }
 
+/**
+ * Drop one class from top-level `transferred_classes` without touching
+ * `new_sqlite_classes` or later delete tags. No-op when the class is absent.
+ */
+function omitUnexportedRuntimeTransfer(config: JsonRecord, className: string) {
+	if (!Array.isArray(config.migrations)) return
+	for (const entry of config.migrations) {
+		if (!entry || typeof entry !== 'object') continue
+		const migration = entry as JsonRecord
+		if (!Array.isArray(migration.transferred_classes)) continue
+		migration.transferred_classes = migration.transferred_classes.filter(
+			(item) => {
+				if (!item || typeof item !== 'object') return true
+				return (item as JsonRecord).from !== className
+			},
+		)
+	}
+}
+
 export async function generate(options: CliOptions) {
 	const names = {
 		runtimeWorkerName: options.runtimeWorkerName,
@@ -434,6 +453,15 @@ export async function generate(options: CliOptions) {
 		}
 	}
 	addPackageAppRoute(runtimeEnv, options.envName)
+	if (options.envName === 'production') {
+		// PackageServiceInstance was deleted after upstream's transfer. A fresh
+		// account has no namespace to move, and the class is not exported, so
+		// transferring it fails the first runtime deploy. Keep the create+delete
+		// pair (wrangler's local sqlite map still needs the create) and transfer
+		// only the classes the origin bootstrap actually leaves behind. Later
+		// production deploys upload this same tag.
+		omitUnexportedRuntimeTransfer(runtimeConfig, 'PackageServiceInstance')
+	}
 	await writeFile(
 		options.outConfigPath,
 		`${JSON.stringify(runtimeConfig, null, '\t')}\n`,
