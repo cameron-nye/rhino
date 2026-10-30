@@ -148,7 +148,7 @@ test('anonymous llms.txt and auth pages are stored in caches.default; cookies st
 		)
 		expect(miss.headers.get(anonymousHtmlEdgeCacheHeader)).toBe('MISS')
 		const missBody = await miss.text()
-		expect(missBody.startsWith('# Kody')).toBe(true)
+		expect(missBody.startsWith('# Rhino')).toBe(true)
 
 		const hit = await workerFetch(new Request(url))
 		expect(hit.status).toBe(200)

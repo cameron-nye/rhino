@@ -15,7 +15,7 @@ export const Route = createFileRoute('/verify-email-change')({
 		return loadVerifyEmailChange({ data: { token: search.get('token') } })
 	},
 	head: ({ loaderData }) => ({
-		meta: [{ title: loaderData?.title ?? 'Kody' }],
+		meta: [{ title: loaderData?.title ?? 'Rhino' }],
 	}),
 	component: Page,
 })

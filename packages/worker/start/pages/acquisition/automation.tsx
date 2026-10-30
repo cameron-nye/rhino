@@ -235,7 +235,7 @@ export function AutomationPage() {
 						failures and repeated runs before adding a schedule.
 					</p>
 					<SiteLink href="/onboarding" css={getPillButtonCss()}>
-						Get started with Kody ↗
+						Get started with Rhino ↗
 					</SiteLink>
 				</div>
 				<div className="prompt">

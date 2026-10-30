@@ -5,6 +5,8 @@ style, tests, MCP capabilities, and runtime architecture.
 
 ## Setup and workflow
 
+- [Rhino fork](./rhino.md) (this repository: stay close to upstream
+  kody-hq/kody; the visible product name is Rhino)
 - [Engineering principles](../principles/index.md) (including
   [error prompt for agents](../principles/error-prompt-for-agents.md))
 - [Getting started](./getting-started.md), [project intent](./project-intent.md)

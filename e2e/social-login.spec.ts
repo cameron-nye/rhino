@@ -42,7 +42,7 @@ ${buildDeleteUserAndPersonalOrgSql({
 	// page, matching where password signups go after verification.
 	await expect(page).toHaveURL(/\/onboarding\/step-1\?accountCreated=1$/)
 	await expect(
-		page.getByRole('heading', { name: /Get started with\s*Kody/i }),
+		page.getByRole('heading', { name: /Get started with\s*Rhino/i }),
 	).toBeVisible()
 
 	await page.goto('/account')

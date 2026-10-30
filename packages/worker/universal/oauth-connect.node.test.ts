@@ -158,7 +158,7 @@ test('connect chooser offers published built-ins the user has not connected and 
 	expect(options[2]).toMatchObject({
 		href: '/connect/oauth?provider=notion-platform&platform=notion-platform',
 		kind: 'platform',
-		detail: "Connect with Kody's built-in app",
+		detail: "Connect with Rhino's built-in app",
 		providerKey: 'notion',
 	})
 })

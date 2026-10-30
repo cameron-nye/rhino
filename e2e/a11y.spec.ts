@@ -85,7 +85,7 @@ const authenticatedRoutes: RouteScenario[] = [
 		path: '/onboarding',
 		ready: async (page) => {
 			await expect(
-				page.getByRole('heading', { name: /Get started with\s*Kody/i }),
+				page.getByRole('heading', { name: /Get started with\s*Rhino/i }),
 			).toBeVisible()
 		},
 	},

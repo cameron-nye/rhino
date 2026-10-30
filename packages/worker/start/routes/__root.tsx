@@ -59,7 +59,10 @@ import { documentForbiddenMessage } from '../document-failure.ts'
 import { SiteLink } from '../components/site-link.tsx'
 import { verifySession } from '#start/server/shell'
 import { shellQuery, ensureShellQuery } from '../shell-query.ts'
-import { NOT_FOUND_DOCUMENT_TITLE } from '#universal/document-head.ts'
+import {
+	DEFAULT_DOCUMENT_TITLE,
+	NOT_FOUND_DOCUMENT_TITLE,
+} from '#universal/document-head.ts'
 import { SiteHeader } from '../components/site-header.tsx'
 import { SiteFooter } from '../components/site-footer.tsx'
 import { visuallyHiddenUntilFocusedCss } from '#universal/styles/style-primitives.ts'
@@ -180,7 +183,7 @@ export const Route = createRootRouteWithContext<{
 	},
 	head: ({ loaderData }) => ({
 		meta: [
-			{ title: 'Kody' },
+			{ title: DEFAULT_DOCUMENT_TITLE },
 			...(loaderData?.sentryConfig
 				? [
 						{

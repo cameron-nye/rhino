@@ -12,9 +12,9 @@ export function buildHomeSoftwareApplicationJsonLd(
 	return {
 		'@context': 'https://schema.org',
 		'@type': 'SoftwareApplication',
-		name: 'Kody',
+		name: 'Rhino',
 		description:
-			"Kody is Your agents' cloud for individuals and teams (orgs, teams, and grants). Connect the AI agent you already use over MCP for durable memory, credentials, packages, jobs, and apps.",
+			"Rhino is Your agents' cloud for individuals and teams (orgs, teams, and grants). Connect the AI agent you already use over MCP for durable memory, credentials, packages, jobs, and apps.",
 		url: origin,
 		applicationCategory: 'DeveloperApplication',
 		offers: {

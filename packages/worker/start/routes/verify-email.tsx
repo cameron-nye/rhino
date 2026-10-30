@@ -20,7 +20,7 @@ export const Route = createFileRoute('/verify-email')({
 		})
 	},
 	head: ({ loaderData }) => ({
-		meta: [{ title: loaderData?.title ?? 'Kody' }],
+		meta: [{ title: loaderData?.title ?? 'Rhino' }],
 	}),
 	component: Page,
 })

@@ -168,7 +168,7 @@ test('native home Markdown retains agent discovery headers and content', async (
 	)
 	expect(response.headers.get('link')).toContain('rel="api-catalog"')
 	expect(response.headers.get('vary')).toMatch(/accept/i)
-	expect(await response.text()).toMatch(/^# Kody\n/)
+	expect(await response.text()).toMatch(/^# Rhino\n/)
 })
 
 test('homepage testimonial story links land on anchors in the case-study post', async () => {

@@ -243,7 +243,7 @@ export function GmailPage() {
 						inspect before you use it.
 					</p>
 					<SiteLink href={routes.onboarding.href()} css={getPillButtonCss()}>
-						Get started with Kody
+						Get started with Rhino
 					</SiteLink>
 				</div>
 				<div className="prompt">

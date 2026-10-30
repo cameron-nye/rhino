@@ -39,7 +39,7 @@ export function LandingAgentMarquee({
 		<nav
 			ref={stage}
 			className="landing-agents fade-x"
-			aria-label="Agents that work with Kody"
+			aria-label="Agents that work with Rhino"
 		>
 			<span id={hintId} hidden>
 				Use the arrow keys to move between agents.

@@ -18,7 +18,7 @@ export const Route = createFileRoute('/unsubscribe/tips')({
 		return loadUnsubscribeTips({ data: { token: search.get('token') } })
 	},
 	head: ({ loaderData }) => ({
-		meta: [{ title: loaderData?.title ?? 'Kody' }],
+		meta: [{ title: loaderData?.title ?? 'Rhino' }],
 	}),
 	component: Page,
 })

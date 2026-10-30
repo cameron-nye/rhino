@@ -53,11 +53,11 @@ const errorCopy: Record<
 	},
 	failed: {
 		title: 'Sign-in failed',
-		body: 'Kody could not finish signing the CLI in.',
+		body: 'Rhino could not finish signing the CLI in.',
 	},
 	save_failed: {
 		title: 'Approved, but not saved',
-		body: 'You approved the connection, but the Kody CLI could not save your sign-in on this computer. Your terminal shows what went wrong and how to fix it.',
+		body: 'You approved the connection, but Rhino could not save your sign-in on this computer. Your terminal shows what went wrong and how to fix it.',
 	},
 }
 
@@ -84,7 +84,7 @@ function accountLabel(account: LoginCallbackAccount): string | undefined {
 function brandMarkSvg(): string {
 	// Official koala mark (PNG) embedded inside SVG so the page stays
 	// CSS + SVG with no external image requests.
-	return `<svg class="mark" xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40" role="img" aria-label="Kody">
+	return `<svg class="mark" xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40" role="img" aria-label="Rhino">
   <image href="${kodyMarkPngDataUri}" width="40" height="40" preserveAspectRatio="xMidYMid meet"/>
 </svg>`
 }
@@ -319,21 +319,21 @@ function renderSuccess(page: LoginCallbackSuccess): string {
 	const factsHtml =
 		facts.length > 0 ? `<ul class="facts">${facts.join('')}</ul>` : ''
 	const lead = org
-		? `Kody CLI is signed in to <strong>${escapeHtml(org)}</strong>.`
-		: 'Kody CLI is signed in.'
+		? `Rhino is signed in to <strong>${escapeHtml(org)}</strong>.`
+		: 'Rhino is signed in.'
 	return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <meta name="color-scheme" content="light dark"/>
-<title>Signed in · Kody CLI</title>
+<title>Signed in · Rhino</title>
 <style>${pageCss()}</style>
 </head>
 <body>
 <main class="page">
   <section class="panel" data-state="success">
-    <div class="brand">${brandMarkSvg()}<span>Kody</span></div>
+    <div class="brand">${brandMarkSvg()}<span>Rhino</span></div>
     <div class="status">
       ${statusIconSvg('success')}
       <div>
@@ -358,13 +358,13 @@ function renderError(page: LoginCallbackError): string {
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <meta name="color-scheme" content="light dark"/>
-<title>${escapeHtml(copy.title)} · Kody CLI</title>
+<title>${escapeHtml(copy.title)} · Rhino</title>
 <style>${pageCss()}</style>
 </head>
 <body>
 <main class="page">
   <section class="panel" data-state="error" data-error="${escapeHtml(page.error)}">
-    <div class="brand">${brandMarkSvg()}<span>Kody</span></div>
+    <div class="brand">${brandMarkSvg()}<span>Rhino</span></div>
     <div class="status">
       ${statusIconSvg('error')}
       <div>

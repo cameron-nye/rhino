@@ -406,7 +406,7 @@ export function LandingHeroAgents({ hosts }: { hosts?: WalkthroughHostPick }) {
 				></div>
 				{renderOrbLayer(agents)}
 				<ul
-					aria-label="Agents Kody plugs into"
+					aria-label="Agents Rhino plugs into"
 					className="landing-hero-agents-list"
 				>
 					{agents.map((agent) => (

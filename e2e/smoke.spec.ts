@@ -9,11 +9,11 @@ test('smoke test covers shell, auth redirect, and login', async ({ page }) => {
 	await page.goto('/')
 	// The redesigned header has no "Home" link — the brand mark is the link
 	// home, so this is scoped to the header because the footer carries its own
-	// "Kody" brand link. The headline assertion goes with it, so the test
+	// "Rhino" brand link. The headline assertion goes with it, so the test
 	// covers the landing page rendering and not just the shell mounting.
 	await expect(
 		page.getByRole('navigation', { name: 'Main' }).getByRole('link', {
-			name: 'Kody',
+			name: 'Rhino',
 		}),
 	).toBeVisible()
 	await expect(page.getByRole('heading', { level: 1 })).toBeVisible()

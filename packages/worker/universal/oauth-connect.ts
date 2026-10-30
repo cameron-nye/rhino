@@ -193,7 +193,7 @@ export function buildConnectOauthChooserOptions(input: {
 		id: `platform:${app.slug}`,
 		href: buildPlatformConnectOauthHref(app.slug, orgSlug),
 		label: app.label,
-		detail: "Connect with Kody's built-in app",
+		detail: "Connect with Rhino's built-in app",
 		providerKey: normalizeProviderKey(app.provider) || app.slug,
 		logoPath: app.logoPath,
 		autoLogoPath: null,

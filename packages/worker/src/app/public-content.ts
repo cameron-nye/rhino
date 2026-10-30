@@ -22,13 +22,13 @@ export function listPublicWebsitePages() {
 			})),
 		...withAgents.map((agent) => ({
 			path: withAgentHref(agent.slug),
-			title: `Kody for ${agent.name}`,
+			title: `Rhino for ${agent.name}`,
 			description: agent.pitch,
 		})),
 		{
 			path: '/docs',
-			title: 'Kody Docs',
-			description: 'Learn how to use Kody.',
+			title: 'Rhino Docs',
+			description: 'Learn how to use Rhino.',
 		},
 		{
 			path: '/docs/connect',

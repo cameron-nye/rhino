@@ -159,7 +159,7 @@ export function ComposioAlternativesPage() {
 						same saved tool from another agent.
 					</p>
 					<SiteLink href="/onboarding" css={getPillButtonCss()}>
-						Get started with Kody
+						Get started with Rhino
 					</SiteLink>
 				</div>
 				<div className="prompt">

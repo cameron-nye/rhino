@@ -15,7 +15,7 @@ export const Route = createFileRoute('/verify-email-claim-release')({
 		return loadVerifyEmailClaimRelease({ data: { token: search.get('token') } })
 	},
 	head: ({ loaderData }) => ({
-		meta: [{ title: loaderData?.title ?? 'Kody' }],
+		meta: [{ title: loaderData?.title ?? 'Rhino' }],
 	}),
 	component: Page,
 })

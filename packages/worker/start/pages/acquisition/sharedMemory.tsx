@@ -94,7 +94,7 @@ export function SharedMemoryPage() {
 							<div className="memory-retrieval">
 								<span aria-hidden="true">↳</span>
 								<div>
-									<strong>Relevant memory from Kody</strong>
+									<strong>Relevant memory from Rhino</strong>
 									<p>Maple is the customer portal project.</p>
 								</div>
 							</div>
