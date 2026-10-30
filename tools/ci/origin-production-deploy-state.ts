@@ -540,6 +540,129 @@ function stripOriginBootstrapServiceBindings(
 	return config
 }
 
+function stringClassNames(value: unknown): Array<string> {
+	if (!Array.isArray(value)) return []
+	return value.filter((entry): entry is string => typeof entry === 'string')
+}
+
+/**
+ * Classes a script can bind locally after every migration tag has applied.
+ * `new_sqlite_classes` and `new_classes` create a class. `transferred_classes`
+ * moves one onto this script. Renames and deletes change the final name.
+ * A class that was never added, or that a later tag deletes, is not bindable
+ * (Cloudflare error 10061).
+ */
+export function durableObjectClassesConfiguredByMigrations(
+	migrations: unknown,
+): ReadonlySet<string> {
+	const configured = new Set<string>()
+	if (!Array.isArray(migrations)) return configured
+	for (const step of migrations) {
+		const record = asRecord(step)
+		if (!record) continue
+		for (const name of stringClassNames(record.new_sqlite_classes)) {
+			configured.add(name)
+		}
+		for (const name of stringClassNames(record.new_classes)) {
+			configured.add(name)
+		}
+		const transferred = record.transferred_classes
+		if (Array.isArray(transferred)) {
+			for (const entry of transferred) {
+				const transfer = asRecord(entry)
+				if (transfer && typeof transfer.to === 'string') {
+					configured.add(transfer.to)
+				}
+			}
+		}
+		const renamed = record.renamed_classes
+		if (Array.isArray(renamed)) {
+			for (const entry of renamed) {
+				const rename = asRecord(entry)
+				if (!rename) continue
+				if (typeof rename.from === 'string') configured.delete(rename.from)
+				if (typeof rename.to === 'string') configured.add(rename.to)
+			}
+		}
+		for (const name of stringClassNames(record.deleted_classes)) {
+			configured.delete(name)
+		}
+	}
+	return configured
+}
+
+/**
+ * Env sections inherit top-level migrations when they do not declare their
+ * own. A missing migrations array is not "no classes": callers that deploy
+ * a real wrangler file must treat local bindings without a resolvable
+ * migration history as unbound.
+ */
+export function migrationsForDurableObjectTarget(
+	config: Record<string, unknown>,
+	target: Record<string, unknown>,
+): unknown {
+	if (Array.isArray(target.migrations)) return target.migrations
+	if (target !== config && Array.isArray(config.migrations)) {
+		return config.migrations
+	}
+	return undefined
+}
+
+/**
+ * Local Durable Object bindings. Cross-script `script_name` bindings are
+ * omitted: the other script owns that class.
+ */
+export function localDurableObjectClassNames(
+	target: Record<string, unknown>,
+): Array<string> {
+	const durableObjects = asRecord(target.durable_objects)
+	const bindings = durableObjects?.bindings
+	if (!Array.isArray(bindings)) return []
+	const names: Array<string> = []
+	for (const entry of bindings) {
+		const binding = asRecord(entry)
+		if (!binding) continue
+		if (typeof binding.script_name === 'string') continue
+		if (typeof binding.class_name !== 'string') continue
+		names.push(binding.class_name)
+	}
+	return names
+}
+
+/**
+ * Drop local Durable Object bindings whose class the target's migrations
+ * do not create, transfer in, or rename into. Cross-script bindings stay.
+ * A target with no migrations array is left unchanged so unit fixtures that
+ * are not wrangler configs keep their bindings.
+ */
+export function omitLocalDurableObjectBindingsWithoutMigration(
+	config: Record<string, unknown>,
+) {
+	const env = asRecord(config.env)
+	const productionEnv = env ? asRecord(env.production) : null
+	const targets = [config, productionEnv].filter(
+		(entry): entry is Record<string, unknown> => entry !== null,
+	)
+	for (const target of targets) {
+		const migrations = migrationsForDurableObjectTarget(config, target)
+		if (!Array.isArray(migrations)) continue
+		const configured = durableObjectClassesConfiguredByMigrations(migrations)
+		const durableObjects = asRecord(target.durable_objects)
+		const bindings = durableObjects?.bindings
+		if (!durableObjects || !Array.isArray(bindings)) continue
+		const kept = bindings.filter((entry) => {
+			const binding = asRecord(entry)
+			if (!binding) return true
+			if (typeof binding.script_name === 'string') return true
+			if (typeof binding.class_name !== 'string') return true
+			return configured.has(binding.class_name)
+		})
+		if (kept.length === 0) delete target.durable_objects
+		else durableObjects.bindings = kept
+	}
+	return config
+}
+
 /**
  * Ambiguous mixed ownership: origin still has some transferred classes
  * while destinations already own others. Keep cross-script bindings for
@@ -651,6 +774,14 @@ export async function writeOriginBootstrapWranglerConfig(input: {
 	bootstrap.main = defaultDevEntryPath
 	stripOriginCrossScriptClassBindings(bootstrap)
 	stripOriginBootstrapServiceBindings(bootstrap)
+	// Classes that only exist on platform or runtime (today
+	// ExecutionContextSessionV1, created by platform migration v2) become
+	// local when their script_name is stripped. Origin migrations do not
+	// create them, and Cloudflare rejects the binding with error 10061.
+	// Drop those bindings on the bootstrap upload. The slim origin deploy
+	// restores script_name from the unstripped generated config once
+	// platform owns the class.
+	omitLocalDurableObjectBindingsWithoutMigration(bootstrap)
 	const resolvedOut = path.resolve(input.outConfigPath)
 	await writeFile(
 		resolvedOut,

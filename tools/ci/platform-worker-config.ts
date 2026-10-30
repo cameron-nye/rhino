@@ -208,7 +208,7 @@ function copyResourceIdentifiers(input: {
  * Nothing calls the platform Worker in the window before its full redeploy
  * (origin deploys last), so the missing bindings are never dereferenced.
  */
-function removeRuntimeReferencesFromPlatformEnv(
+export function removeRuntimeReferencesFromPlatformEnv(
 	platformEnv: JsonRecord,
 	runtimeWorkerName: string,
 ) {
