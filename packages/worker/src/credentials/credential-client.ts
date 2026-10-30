@@ -896,6 +896,12 @@ async function issueClient(
 		packageAppIssue?: PackageAppCredentialHandleIssue | null
 	} = {},
 ): Promise<OpenedCredentialClient> {
+	if (!ctx.binding.trim()) {
+		throw refusal(
+			'invalid_request',
+			'credential() cannot open a client here: this call has no request-scoped credential client binding, so the client could never be used. Call credential() while handling a request or run.',
+		)
+	}
 	const request = packageAppRequest ?? requireActorRequest(ctx)
 	if (picked.kind === 'mcp' && picked.scope === 'personal') {
 		throw refusal(
