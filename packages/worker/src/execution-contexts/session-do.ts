@@ -38,6 +38,8 @@ import {
 	markQueuedAttemptExpired,
 	markQueuedAttemptRan,
 } from './routing.ts'
+import { contextIsShared, contextRunCredentials } from './credential-grant.ts'
+import { type RunCredentialUse } from './run-credential-use.ts'
 import {
 	getExecutionContext,
 	loadContextAccess,
@@ -85,8 +87,12 @@ export type ExecutionContextLease = {
 	orgId: string
 	/** The requester's caller credential scopes (null does not narrow). */
 	callerScopes: Array<string> | null
-	credentialIds: Array<string>
 	runtime: EcpGrant['runtime']
+	/**
+	 * Set on queued runs: what the run can do with credentials, so the drain
+	 * re-checks a grant that changed while it waited. Absent means unknown.
+	 */
+	credentialUse?: RunCredentialUse
 	deadline: number
 	sharedRun: boolean
 }
@@ -1251,12 +1257,16 @@ export class ExecutionContextSessionV1Base extends DurableObject<Env> {
 			)
 		}
 		const grant = parseGrant(row)
-		const picks = Object.entries(request.credentialPicks ?? {})
 		const refusal = grantRefusal({
 			grant,
 			requires,
-			credentials: picks.length > 0 ? (new Map(picks) as never) : null,
-			code: request.source.code,
+			credentials: contextRunCredentials(grant, {
+				shared:
+					grant.credentials.mode === 'requester' &&
+					(await contextIsShared(this.env.APP_DB, row)),
+				requesterIsOperator: row.operator_user_id === lease.requester.userId,
+			}),
+			credentialUse: lease.credentialUse ?? { kind: 'unknown' },
 			capabilities: parseCapabilities(row),
 		})
 		if (refusal) {
@@ -1283,8 +1293,6 @@ export class ExecutionContextSessionV1Base extends DurableObject<Env> {
 				...lease,
 				deadline,
 				runtime: grant.runtime,
-				credentialIds:
-					grant.credentials.mode === 'list' ? grant.credentials.ids : [],
 			},
 			runRecord: handle
 				? {

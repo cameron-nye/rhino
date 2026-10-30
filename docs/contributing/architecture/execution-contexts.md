@@ -66,6 +66,19 @@ sequenceDiagram
   `gatewayFetch`, `oauthClientCredentials`, `credentialClient*`) need a grant
   that allows credentials and run from Kody cloud, so credential values never
   reach the machine.
+- Grant credentials are `none`, a `list` of credential ids, or `requester`
+  (every credential the requester can use). `requester` is the default for new
+  contexts and works only while the context is unshared: only the operator sets
+  it, sharing or attaching is refused until it is narrowed, and each hop
+  re-checks sharing (`credential-grant.ts`).
+- Before a run starts, routing works out which credentials it can use
+  (`run-credential-use.ts`): the entry module and every `kody:` package its
+  static imports reach, read from publish metadata (needs closure, credential
+  stamp) or, once per source and commit, from the published files (KV
+  `credential-use:v1`). A context whose grant cannot serve that is skipped
+  (`credentials_not_allowed`, `credentials_not_in_grant`,
+  `credentials_unverified`, `credentials_need_unshared_context`), so the chain
+  falls through to the next entry or cloud.
 - The daemon enforces the grant's `egress` (from `welcome`, re-applied on
   `grant.update`) inside local workerd: outbound `fetch` goes through an
   egress-gate worker (`packages/cli/src/local-egress.ts`) set as
