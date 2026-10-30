@@ -385,6 +385,15 @@ test('bootstrap config keeps the full entry and locally owns transferred classes
 							script_name: productionRuntimeScriptName,
 						},
 					],
+					services: [
+						{
+							binding: 'RUNTIME_WORKER',
+							service: productionRuntimeScriptName,
+						},
+						{ binding: 'JOBS', service: 'kody-jobs' },
+						{ binding: 'HIGHLIGHT', service: 'kody-highlight' },
+						{ binding: 'REPO_PUSH_QUEUE', service: 'kody-push-queue' },
+					],
 				},
 			},
 		}
@@ -401,6 +410,7 @@ test('bootstrap config keeps the full entry and locally owns transferred classes
 						bindings: Array<{ class_name: string; script_name?: string }>
 					}
 					workflows: Array<{ name?: string; script_name?: string }>
+					services?: Array<{ binding: string; service: string }>
 				}
 			}
 		}
@@ -419,6 +429,11 @@ test('bootstrap config keeps the full entry and locally owns transferred classes
 		expect(written.env.production.workflows[0]?.name).toBe(
 			productionOriginBootstrapWorkflowName,
 		)
+		expect(written.env.production.services).toEqual([
+			{ binding: 'JOBS', service: 'kody-jobs' },
+			{ binding: 'HIGHLIGHT', service: 'kody-highlight' },
+			{ binding: 'REPO_PUSH_QUEUE', service: 'kody-push-queue' },
+		])
 		// The generated input is not mutated.
 		expect(generated.main).toBe('./src/production-worker.ts')
 		expect(

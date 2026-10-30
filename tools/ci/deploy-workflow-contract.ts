@@ -23,7 +23,7 @@ import path from 'node:path'
 import { isExecutedDirectly } from '../node-runtime.ts'
 
 /** Bump together with EXPECTED_DEPLOY_WORKFLOW_CONTRACT in deploy.yml. */
-export const DEPLOY_WORKFLOW_CONTRACT_VERSION = 1
+export const DEPLOY_WORKFLOW_CONTRACT_VERSION = 2
 
 export const expectedContractEnvName = 'EXPECTED_DEPLOY_WORKFLOW_CONTRACT'
 

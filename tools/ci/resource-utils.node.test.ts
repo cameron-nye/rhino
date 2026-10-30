@@ -18,6 +18,7 @@ import {
 	defaultDmarcReportForwardTo,
 	dmarcReportingRecordNames,
 	dmarcReportingTxtContent,
+	mergeDmarcReportingTxt,
 	ensureArtifactsAccountEventSubscription,
 	ensureArtifactsNamespace,
 	ensureCloudflareQueue,
@@ -1457,6 +1458,98 @@ test('ensureDmarcReportingTxtRecords fails closed on non-TXT conflicts', async (
 
 test('the DMARC forward default is the Rhino operator address', () => {
 	expect(defaultDmarcReportForwardTo).toBe('csnye86@gmail.com')
+})
+
+test('mergeDmarcReportingTxt adds rua and keeps extra tags', () => {
+	expect(
+		mergeDmarcReportingTxt({
+			existing: 'v=DMARC1; p=reject;',
+			systemEmailDomain: 'rhino.nyneelevenlabs.com',
+		}),
+	).toBe('v=DMARC1; p=reject; rua=mailto:dmarc@rhino.nyneelevenlabs.com')
+	expect(
+		mergeDmarcReportingTxt({
+			existing: '"v=DMARC1; p=reject; fo=1"',
+			systemEmailDomain: 'rhino.nyneelevenlabs.com',
+		}),
+	).toBe('v=DMARC1; p=reject; fo=1; rua=mailto:dmarc@rhino.nyneelevenlabs.com')
+})
+
+test('ensureDmarcReportingTxtRecords updates Email Sending TXT records in place', async () => {
+	consoleError.mockImplementation(() => {})
+	const system = 'rhino.nyneelevenlabs.com'
+	const user = 'inbox.rhino.nyneelevenlabs.com'
+	const desired = dmarcReportingTxtContent(system)
+	const mergedWithFo = mergeDmarcReportingTxt({
+		existing: 'v=DMARC1; p=reject; fo=1',
+		systemEmailDomain: system,
+	})
+	const fetcher = mockFetch(
+		ok([
+			{
+				id: 'txt-system',
+				type: 'TXT',
+				name: `_dmarc.${system}.`,
+				content: 'v=DMARC1; p=reject;',
+			},
+		]),
+		ok({
+			id: 'txt-system',
+			type: 'TXT',
+			name: `_dmarc.${system}`,
+			content: desired,
+		}),
+		ok([
+			{
+				id: 'txt-inbox',
+				type: 'TXT',
+				name: `_dmarc.${user}`,
+				content: '"v=DMARC1; p=reject; fo=1"',
+			},
+		]),
+		ok({
+			id: 'txt-inbox',
+			type: 'TXT',
+			name: `_dmarc.${user}`,
+			content: mergedWithFo,
+		}),
+	)
+	await ensureDmarcReportingTxtRecords({
+		apiToken: 'token-1',
+		zoneId: 'zone-mail',
+		systemEmailDomain: system,
+		userEmailDomain: user,
+		dryRun: false,
+		fetcher,
+	})
+	const records = `${zoneApi}/zone-mail/dns_records`
+	expect(fetcher).toHaveBeenNthCalledWith(
+		2,
+		`${records}/txt-system`,
+		expect.objectContaining({
+			method: 'PUT',
+			body: JSON.stringify({
+				type: 'TXT',
+				name: `_dmarc.${system}`,
+				content: desired,
+				ttl: 1,
+			}),
+		}),
+	)
+	expect(fetcher).toHaveBeenNthCalledWith(
+		4,
+		`${records}/txt-inbox`,
+		expect.objectContaining({
+			method: 'PUT',
+			body: JSON.stringify({
+				type: 'TXT',
+				name: `_dmarc.${user}`,
+				content: mergedWithFo,
+				ttl: 1,
+			}),
+		}),
+	)
+	expect(fetcher).toHaveBeenCalledTimes(4)
 })
 
 test('ensureDmarcEmailRoutingRule creates and reuses a forward rule', async () => {

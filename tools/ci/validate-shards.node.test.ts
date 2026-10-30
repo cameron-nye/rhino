@@ -45,6 +45,7 @@ test('CI matrices hash shards, retain crash retry and aggregate every shard at t
 	expect(e2e).toContain('path: blob-report')
 	expect(workflow).toContain("needs.node.result == 'success'")
 	expect(workflow).toContain("needs.node.result != 'success'")
+	expect(workflow).toMatch(/name: 🧹 Static[\s\S]*?timeout-minutes: 15/)
 	expect(workflow).toContain("needs.workers.result == 'success'")
 	expect(workflow).toContain("needs.workers.result != 'success'")
 })

@@ -1,6 +1,12 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
+import { isExecutedDirectly } from '../node-runtime.ts'
+import {
+	getCloudflareWorkerScriptExists,
+	productionOriginScriptName,
+} from './origin-production-deploy-state.ts'
+import { previewResourceNamePattern } from './preview-resources.ts'
 import {
 	ensureCloudflareQueue,
 	fail,
@@ -9,7 +15,6 @@ import {
 	parseJsonc,
 	runWrangler,
 } from './resource-utils.ts'
-import { previewResourceNamePattern } from './preview-resources.ts'
 
 type EnvName = 'production' | 'preview'
 
@@ -167,6 +172,89 @@ function ensureD1Database({
 	return { name, id: created.uuid }
 }
 
+function omitHostServiceBinding(env: Record<string, unknown>) {
+	const services = env.services
+	if (!Array.isArray(services)) return
+	const kept = services.filter((entry) => {
+		if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return true
+		return (entry as Record<string, unknown>).binding !== 'HOST'
+	})
+	if (kept.length === 0) delete env.services
+	else env.services = kept
+}
+
+/**
+ * This account never had `JobManager` on `kody-production` (origin does not
+ * export it). The committed transfer tag cannot apply here. Rewrite that tag
+ * to `new_sqlite_classes` on every production ensure so the applied migration
+ * matches later deploys. When origin is missing, also return a bootstrap
+ * config with the HOST binding removed: Cloudflare rejects a service binding
+ * to a script that does not exist yet (error 10143).
+ */
+export function planProductionJobsWorkerConfig(
+	baseConfig: Record<string, unknown>,
+	input: { originScriptExists: boolean },
+): {
+	deferHostBinding: boolean
+	bootstrapConfig: Record<string, unknown> | null
+} {
+	const migrations = baseConfig.migrations
+	if (!Array.isArray(migrations)) {
+		throw new Error('jobs wrangler config is missing migrations.')
+	}
+	let rewroteTransfer = false
+	let alreadyInPlace = false
+	baseConfig.migrations = migrations.map((entry) => {
+		if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+			return entry
+		}
+		const migration = entry as Record<string, unknown>
+		const created = migration.new_sqlite_classes
+		if (
+			Array.isArray(created) &&
+			created.includes('JobManager') &&
+			!Array.isArray(migration.transferred_classes)
+		) {
+			alreadyInPlace = true
+		}
+		const transferred = migration.transferred_classes
+		if (!Array.isArray(transferred)) return entry
+		const transfersJobManager = transferred.some((item) => {
+			if (!item || typeof item !== 'object' || Array.isArray(item)) return false
+			const row = item as Record<string, unknown>
+			return row.from === 'JobManager' && row.to === 'JobManager'
+		})
+		if (!transfersJobManager) return entry
+		rewroteTransfer = true
+		const { transferred_classes: _transferred, ...rest } = migration
+		return { ...rest, new_sqlite_classes: ['JobManager'] }
+	})
+	if (!rewroteTransfer && !alreadyInPlace) {
+		throw new Error(
+			'production jobs config has no JobManager migration to create in place.',
+		)
+	}
+
+	if (input.originScriptExists) {
+		return { deferHostBinding: false, bootstrapConfig: null }
+	}
+	const bootstrapConfig = structuredClone(baseConfig)
+	const envs = bootstrapConfig.env
+	if (!envs || typeof envs !== 'object' || Array.isArray(envs)) {
+		throw new Error('jobs bootstrap config is missing env.')
+	}
+	const productionEnv = (envs as Record<string, unknown>).production
+	if (
+		!productionEnv ||
+		typeof productionEnv !== 'object' ||
+		Array.isArray(productionEnv)
+	) {
+		throw new Error('jobs bootstrap config is missing env.production.')
+	}
+	omitHostServiceBinding(productionEnv as Record<string, unknown>)
+	return { deferHostBinding: true, bootstrapConfig }
+}
+
 async function ensureJobsWorkerResources(options: CliOptions) {
 	const baseConfig = parseJsonc<Record<string, unknown>>(
 		readFileSync(options.wranglerConfigPath, 'utf8'),
@@ -209,6 +297,7 @@ async function ensureJobsWorkerResources(options: CliOptions) {
 	})
 	jobsDb.database_id = d1.id
 
+	let originScriptExists = true
 	if (options.envName === 'production') {
 		const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim()
 		const apiToken = process.env.CLOUDFLARE_API_TOKEN?.trim()
@@ -257,6 +346,13 @@ async function ensureJobsWorkerResources(options: CliOptions) {
 		console.log(
 			`scheduled_dispatch_dead_letter_queue_name=${deadLetterQueueName}`,
 		)
+		if (!options.dryRun && accountId && apiToken) {
+			originScriptExists = await getCloudflareWorkerScriptExists({
+				accountId,
+				apiToken,
+				scriptName: productionOriginScriptName,
+			})
+		}
 	}
 
 	let workerName = baseConfig.name as string
@@ -296,6 +392,21 @@ async function ensureJobsWorkerResources(options: CliOptions) {
 		host.service = options.hostWorkerName
 	}
 
+	let productionBootstrapConfig: Record<string, unknown> | null = null
+	let deferHostBinding = false
+	if (options.envName === 'production') {
+		const plan = planProductionJobsWorkerConfig(baseConfig, {
+			originScriptExists,
+		})
+		deferHostBinding = plan.deferHostBinding
+		productionBootstrapConfig = plan.bootstrapConfig
+		console.error(
+			originScriptExists
+				? 'Jobs worker: kody-production exists; deploying with the HOST binding.'
+				: 'Jobs worker: kody-production is missing; deploying without HOST. Origin deploy binds HOST after that script exists.',
+		)
+	}
+
 	mkdirSync(path.dirname(options.outConfigPath), { recursive: true })
 	writeFileSync(
 		options.outConfigPath,
@@ -328,6 +439,21 @@ async function ensureJobsWorkerResources(options: CliOptions) {
 		console.log(`jobs_wrangler_bootstrap_config=${bootstrapConfigPath}`)
 	}
 
+	if (productionBootstrapConfig) {
+		const bootstrapConfigPath = options.outConfigPath.replace(
+			/\.json$/,
+			'-bootstrap.json',
+		)
+		writeFileSync(
+			bootstrapConfigPath,
+			`${JSON.stringify(productionBootstrapConfig, null, '\t')}\n`,
+		)
+		console.log(`jobs_wrangler_bootstrap_config=${bootstrapConfigPath}`)
+	}
+	if (options.envName === 'production') {
+		console.log(`jobs_host_deferred=${deferHostBinding ? 'true' : 'false'}`)
+	}
+
 	// Emit GitHub Actions-friendly outputs (stdout only).
 	console.log(`jobs_wrangler_config=${options.outConfigPath}`)
 	console.log(`jobs_worker_name=${workerName}`)
@@ -347,4 +473,6 @@ async function main() {
 	await ensureJobsWorkerResources(options)
 }
 
-await main()
+if (isExecutedDirectly(import.meta.url)) {
+	await main()
+}

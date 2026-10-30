@@ -320,9 +320,22 @@ test('generate publishes the package-app custom domain for production', async ()
 	expect(runtime.env?.production?.routes).toEqual(packageAppRoutes)
 	expect(runtime.env?.production?.name).toBe('kody-runtime')
 	expect(runtime.env?.production?.workers_dev).toBe(true)
-	// The storage transfer migration survives generation untouched.
-	expect(runtime.migrations?.[0]?.tag).toBe('v1')
-	expect(Array.isArray(runtime.migrations?.[0]?.transferred_classes)).toBe(true)
+	// Live classes still transfer off the origin bootstrap script. PackageServiceInstance
+	// was deleted upstream and is not exported, so a fresh account cannot transfer it.
+	const v1 = runtime.migrations?.[0] as {
+		tag?: string
+		transferred_classes?: Array<{ from?: string }>
+		new_sqlite_classes?: Array<string>
+	}
+	const v2 = runtime.migrations?.[1] as { deleted_classes?: Array<string> }
+	expect(v1?.tag).toBe('v1')
+	expect(v1?.transferred_classes?.map((entry) => entry.from)).toEqual([
+		'StorageRunner',
+		'RunLog',
+		'PackageRealtimeSession',
+	])
+	expect(v1?.new_sqlite_classes).toEqual(['PackageServiceInstance'])
+	expect(v2?.deleted_classes).toEqual(['PackageServiceInstance'])
 })
 
 test('generate keeps a GitHub PACKAGE_APP_LEGACY_HOSTS overlay on runtime zone routes', async () => {

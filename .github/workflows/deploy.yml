@@ -449,7 +449,7 @@ jobs:
           # Tip-of-main workflow ↔ checkout contract. Bump together with
           # DEPLOY_WORKFLOW_CONTRACT_VERSION in tools/ci/deploy-workflow-contract.ts
           # when this workflow gains a checkout-coupled requirement.
-          EXPECTED_DEPLOY_WORKFLOW_CONTRACT: '1'
+          EXPECTED_DEPLOY_WORKFLOW_CONTRACT: '2'
         run: |
           set -euo pipefail
           DEPLOY_SHA="$WORKFLOW_RUN_SHA"
@@ -872,6 +872,8 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
     name: ⏰ Deploy jobs worker
     timeout-minutes: 8
+    outputs:
+      jobs_host_deferred: ${{ steps.jobs_resources.outputs.jobs_host_deferred }}
     needs:
       - sha-guard
       - require-worker-tokens
@@ -956,14 +958,32 @@ jobs:
           DEPLOY_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
           WRANGLER_CONFIG:
             ${{ steps.jobs_resources.outputs.jobs_wrangler_config }}
+          JOBS_BOOTSTRAP_CONFIG:
+            ${{ steps.jobs_resources.outputs.jobs_wrangler_bootstrap_config }}
+          JOBS_HOST_DEFERRED:
+            ${{ steps.jobs_resources.outputs.jobs_host_deferred }}
           # Split deploy (tools/ci/split-worker-deploy.ts): versions upload
           # tagged with this run, then versions deploy of that same id. A
           # retry redeploys the uploaded version instead of uploading again.
+          # A missing kody-production defers HOST and keeps the classic
+          # `wrangler deploy`: versions upload cannot apply the first
+          # JobManager migration ("pending Durable Object migration").
           KODY_SPLIT_DEPLOY_TAG:
-            gh-${{ github.run_id }}-${{ github.run_attempt }}
+            ${{ steps.jobs_resources.outputs.jobs_host_deferred != 'true' &&
+            format('gh-{0}-{1}', github.run_id, github.run_attempt) || '' }}
           KODY_SPLIT_DEPLOY_MESSAGE: ${{ needs.sha-guard.outputs.deploy_sha }}
         run: |
           set -euo pipefail
+
+          deploy_config="$WRANGLER_CONFIG"
+          if [ "${JOBS_HOST_DEFERRED}" = "true" ]; then
+            deploy_config="${JOBS_BOOTSTRAP_CONFIG}"
+            if [ -z "$deploy_config" ]; then
+              echo "Jobs HOST is deferred but jobs_wrangler_bootstrap_config is empty." >&2
+              exit 1
+            fi
+            echo "kody-production is missing. Deploying kody-jobs without HOST via classic wrangler deploy."
+          fi
 
           deploy_attempts=3
           deploy_delay_seconds=10
@@ -973,7 +993,7 @@ jobs:
             # Explicit --name: without it wrangler would append the
             # environment to the script name (kody-jobs-production), which
             # would not match the main worker's JOBS service binding.
-            node ./wrangler-env.ts deploy --config "$WRANGLER_CONFIG" \
+            node ./wrangler-env.ts deploy --config "$deploy_config" \
               --name kody-jobs \
               --var "APP_COMMIT_SHA:${DEPLOY_COMMIT_SHA}" 2>&1 | tee jobs-deploy.log
             deploy_status="${PIPESTATUS[0]}"
@@ -1068,7 +1088,7 @@ jobs:
   deploy:
     runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
     name: 🚀 Deploy to production
-    timeout-minutes: 20
+    timeout-minutes: 30
     needs:
       - sha-guard
       - require-worker-tokens
@@ -1181,13 +1201,22 @@ jobs:
           steps.resources.outputs.origin_deploy_mode == 'fresh'
         run: |
           set -euo pipefail
-          node tools/ci/platform-worker-config.ts generate \
-            --env production \
-            --main-config packages/worker/wrangler-production.generated.json \
-            --worker-name kody-platform \
-            --runtime-worker-name kody-runtime \
-            --main-worker-name kody-production \
-            --out-config packages/platform-worker/wrangler-production.generated.json | tee -a "$GITHUB_OUTPUT"
+          generate_args=(
+            node tools/ci/platform-worker-config.ts generate
+            --env production
+            --main-config packages/worker/wrangler-production.generated.json
+            --worker-name kody-platform
+            --runtime-worker-name kody-runtime
+            --main-worker-name kody-production
+            --out-config packages/platform-worker/wrangler-production.generated.json
+          )
+          if [ "${{ steps.resources.outputs.origin_deploy_mode }}" = "fresh" ]; then
+            generate_args+=(
+              --out-platform-bootstrap-config
+              packages/platform-worker/wrangler-production-bootstrap.generated.json
+            )
+          fi
+          "${generate_args[@]}" | tee -a "$GITHUB_OUTPUT"
 
       # Read-only: compare each Worker's newest version with its active
       # deployment. A mismatch (an uploaded-but-undeployed version) is what
@@ -1391,6 +1420,8 @@ jobs:
 
       # Fresh production origin only: replay new_sqlite_classes with the full
       # entry so platform/runtime transferred_classes have a source script.
+      # The bootstrap config omits RUNTIME_WORKER because kody-runtime does
+      # not exist yet (Cloudflare 10143). The slim deploy below restores it.
       # Steady-state production never takes this path.
       - name: ☁️ Bootstrap fresh origin Worker (full entry)
         if: steps.resources.outputs.origin_deploy_mode == 'fresh'
@@ -1439,14 +1470,65 @@ jobs:
             deploy_delay_seconds=$((deploy_delay_seconds * 2))
           done
 
+      # Fresh accounts: platform's runtime Durable Object bindings cannot
+      # resolve until kody-runtime exists. Upload without those bindings
+      # first (same break preview uses), then the full config after runtime.
+      - name: ☁️ Bootstrap fresh platform Worker (no runtime bindings)
+        if: steps.resources.outputs.origin_deploy_mode == 'fresh'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DEPLOY_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
+          WRANGLER_CONFIG:
+            ${{ steps.platform_config.outputs.platform_bootstrap_wrangler_config
+            }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WRANGLER_CONFIG:-}" ]; then
+            echo "Fresh platform bootstrap is missing platform_bootstrap_wrangler_config." >&2
+            exit 1
+          fi
+
+          is_retryable_deploy_failure() {
+            node tools/ci/retry-classifiers.ts deploy deploy-platform-bootstrap.log
+          }
+
+          deploy_attempts=3
+          deploy_delay_seconds=10
+          for attempt in $(seq 1 "$deploy_attempts"); do
+            echo "Platform bootstrap deploy attempt $attempt/$deploy_attempts"
+            set +e
+            npm run deploy -- --name kody-platform --config "$WRANGLER_CONFIG" --var "APP_COMMIT_SHA:${DEPLOY_COMMIT_SHA}" 2>&1 | tee deploy-platform-bootstrap.log
+            deploy_status="${PIPESTATUS[0]}"
+            set -e
+
+            if [ "$deploy_status" -eq 0 ]; then
+              break
+            fi
+
+            if [ "$attempt" -eq "$deploy_attempts" ]; then
+              echo "Platform bootstrap deploy failed after $deploy_attempts attempts." >&2
+              exit "$deploy_status"
+            fi
+
+            if ! is_retryable_deploy_failure; then
+              echo "Platform bootstrap deploy failed with a non-retryable error." >&2
+              exit "$deploy_status"
+            fi
+
+            echo "Retryable Cloudflare deploy failure detected; retrying in ${deploy_delay_seconds}s."
+            sleep "$deploy_delay_seconds"
+            deploy_delay_seconds=$((deploy_delay_seconds * 2))
+          done
+
       # Deploys before runtime and origin so cross-script Durable Object
       # bindings stay valid. See
       # docs/contributing/architecture/platform-worker-migration-runbook.md.
+      # Fresh accounts skip this and deploy the full config after runtime.
       - name: ☁️ Deploy platform worker to Cloudflare Workers
         id: deploy_platform
         if: >-
-          needs.sha-guard.outputs.deploy_platform == 'true' ||
-          steps.resources.outputs.origin_deploy_mode == 'fresh'
+          needs.sha-guard.outputs.deploy_platform == 'true' &&
+          steps.resources.outputs.origin_deploy_mode != 'fresh'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           DEPLOY_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
@@ -1565,6 +1647,57 @@ jobs:
           RUNTIME_URL="$(node -e 'const fs = require("node:fs"); const text = fs.readFileSync(process.argv[1], "utf8").replace(/\u001b\[[0-9;]*m/g, ""); const worker = process.argv[2]; const escaped = worker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); const workerUrlRegex = new RegExp(`https://(?:[a-zA-Z0-9-]+\\.)?${escaped}\\.[a-zA-Z0-9._-]+\\.workers\\.dev`, "g"); const matches = text.match(workerUrlRegex); process.stdout.write(matches?.at(-1) ?? "")' deploy-runtime.log kody-runtime)"
           if [ -n "$RUNTIME_URL" ]; then
             echo "url=$RUNTIME_URL" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Restores runtime Durable Object and workflow bindings now that
+      # kody-runtime exists. The bootstrap upload above already applied the
+      # class transfer.
+      - name: ☁️ Deploy fresh platform Worker (runtime bindings)
+        id: deploy_platform_fresh
+        if: steps.resources.outputs.origin_deploy_mode == 'fresh'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DEPLOY_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
+          WRANGLER_CONFIG:
+            ${{ steps.platform_config.outputs.platform_wrangler_config }}
+        run: |
+          set -euo pipefail
+
+          is_retryable_deploy_failure() {
+            node tools/ci/retry-classifiers.ts deploy deploy-platform-fresh.log
+          }
+
+          deploy_attempts=3
+          deploy_delay_seconds=10
+          for attempt in $(seq 1 "$deploy_attempts"); do
+            echo "Fresh platform deploy attempt $attempt/$deploy_attempts"
+            set +e
+            npm run deploy -- --name kody-platform --config "$WRANGLER_CONFIG" --var "APP_COMMIT_SHA:${DEPLOY_COMMIT_SHA}" 2>&1 | tee deploy-platform-fresh.log
+            deploy_status="${PIPESTATUS[0]}"
+            set -e
+
+            if [ "$deploy_status" -eq 0 ]; then
+              break
+            fi
+
+            if [ "$attempt" -eq "$deploy_attempts" ]; then
+              echo "Fresh platform deploy failed after $deploy_attempts attempts." >&2
+              exit "$deploy_status"
+            fi
+
+            if ! is_retryable_deploy_failure; then
+              echo "Fresh platform deploy failed with a non-retryable error." >&2
+              exit "$deploy_status"
+            fi
+
+            echo "Retryable Cloudflare deploy failure detected; retrying in ${deploy_delay_seconds}s."
+            sleep "$deploy_delay_seconds"
+            deploy_delay_seconds=$((deploy_delay_seconds * 2))
+          done
+
+          PLATFORM_URL="$(node -e 'const fs = require("node:fs"); const text = fs.readFileSync(process.argv[1], "utf8").replace(/\u001b\[[0-9;]*m/g, ""); const worker = process.argv[2]; const escaped = worker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); const workerUrlRegex = new RegExp(`https://(?:[a-zA-Z0-9-]+\\.)?${escaped}\\.[a-zA-Z0-9._-]+\\.workers\\.dev`, "g"); const matches = text.match(workerUrlRegex); process.stdout.write(matches?.at(-1) ?? "")' deploy-platform-fresh.log kody-platform)"
+          if [ -n "$PLATFORM_URL" ]; then
+            echo "url=$PLATFORM_URL" >> "$GITHUB_OUTPUT"
           fi
 
       - name: 🧾 Collect deploy info
@@ -1693,6 +1826,40 @@ jobs:
             echo "url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
           fi
 
+      # The jobs job omitted HOST while kody-production was missing. Bind it
+      # now that the origin script exists. A later run sees the script and
+      # deploys HOST from the jobs job directly.
+      - name: ☁️ Bind jobs worker HOST to origin
+        if: >-
+          needs.deploy-jobs-worker.outputs.jobs_host_deferred == 'true' &&
+          steps.deploy.outcome == 'success'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          DEPLOY_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
+          # JobManager's migration already applied on the classic bootstrap
+          # deploy. This upload only adds the HOST service binding.
+          KODY_SPLIT_DEPLOY_TAG:
+            ${{ format('gh-{0}-{1}-jobs-host', github.run_id,
+            github.run_attempt) }}
+          KODY_SPLIT_DEPLOY_MESSAGE: ${{ needs.sha-guard.outputs.deploy_sha }}
+        run: |
+          set -euo pipefail
+          ensure_log="$(mktemp)"
+          node tools/ci/jobs-worker-resources.ts ensure --env production --out-config packages/jobs-worker/wrangler-production.generated.json | tee "$ensure_log"
+          if grep -q '^jobs_host_deferred=true$' "$ensure_log"; then
+            echo "kody-production is still missing; refusing to bind jobs HOST." >&2
+            exit 1
+          fi
+          jobs_config="$(sed -n 's/^jobs_wrangler_config=//p' "$ensure_log" | tail -n 1)"
+          if [ -z "$jobs_config" ]; then
+            echo "Jobs ensure did not print jobs_wrangler_config." >&2
+            exit 1
+          fi
+          node ./wrangler-env.ts deploy --config "$jobs_config" \
+            --name kody-jobs \
+            --var "APP_COMMIT_SHA:${DEPLOY_COMMIT_SHA}"
+
       - name: Save deployed production client assets
         if: steps.deploy.outcome == 'success'
         uses: actions/upload-artifact@v4
@@ -1771,7 +1938,9 @@ jobs:
           steps.resources.outputs.origin_deploy_mode == 'fresh'
         shell: bash
         env:
-          PLATFORM_URL: ${{ steps.deploy_platform.outputs.url }}
+          PLATFORM_URL:
+            ${{ steps.deploy_platform.outputs.url ||
+            steps.deploy_platform_fresh.outputs.url }}
           EXPECTED_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
         run: |
           set -euo pipefail

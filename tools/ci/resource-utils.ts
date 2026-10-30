@@ -1683,6 +1683,57 @@ export function dmarcReportingTxtContent(systemEmailDomain: string) {
 	return `v=DMARC1; p=reject; rua=mailto:${dmarcReportMailboxAddress(systemEmailDomain)}`
 }
 
+/** Unwrap surrounding quotes Cloudflare sometimes returns on TXT content. */
+function normalizeDmarcTxtContent(content: string) {
+	let value = content.trim()
+	while (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+		value = value.slice(1, -1).trim()
+	}
+	return value
+}
+
+function cloudflareDnsNamesEqual(left: string, right: string) {
+	const normalize = (name: string) =>
+		name.trim().replace(/\.$/u, '').toLowerCase()
+	return normalize(left) === normalize(right)
+}
+
+/**
+ * Keep tags Email Sending (or an operator) already set, and make sure the
+ * record is `v=DMARC1`, `p=reject`, and `rua=mailto:dmarc@<system domain>`.
+ * A wholesale replace would drop `fo` / `pct` / `ruf`; a second TXT at the
+ * same name would fail the next ensure.
+ */
+export function mergeDmarcReportingTxt(input: {
+	existing: string
+	systemEmailDomain: string
+}) {
+	const desiredRua = `mailto:${dmarcReportMailboxAddress(input.systemEmailDomain)}`
+	const tags: Array<{ key: string; value: string }> = []
+	for (const part of normalizeDmarcTxtContent(input.existing).split(';')) {
+		const trimmed = part.trim()
+		if (!trimmed) continue
+		const eq = trimmed.indexOf('=')
+		if (eq <= 0) continue
+		tags.push({
+			key: trimmed.slice(0, eq).trim().toLowerCase(),
+			value: trimmed.slice(eq + 1).trim(),
+		})
+	}
+	const setTag = (key: string, value: string) => {
+		const found = tags.find((tag) => tag.key === key)
+		if (found) {
+			found.value = value
+			return
+		}
+		tags.push({ key, value })
+	}
+	setTag('v', 'DMARC1')
+	setTag('p', 'reject')
+	setTag('rua', desiredRua)
+	return tags.map((tag) => `${tag.key}=${tag.value}`).join('; ')
+}
+
 export function dmarcReportingRecordNames(input: {
 	systemEmailDomain: string
 	userEmailDomain: string
@@ -1733,7 +1784,9 @@ export async function ensureDmarcReportingTxtRecords(input: {
 		})
 		const records = listed.result ?? []
 		const conflicting = records.find(
-			(record) => record.name === recordName && record.type !== 'TXT',
+			(record) =>
+				cloudflareDnsNamesEqual(record.name, recordName) &&
+				record.type !== 'TXT',
 		)
 		if (conflicting) {
 			return fail(
@@ -1741,7 +1794,9 @@ export async function ensureDmarcReportingTxtRecords(input: {
 			)
 		}
 		const existingTxt = records.filter(
-			(record) => record.name === recordName && record.type === 'TXT',
+			(record) =>
+				cloudflareDnsNamesEqual(record.name, recordName) &&
+				record.type === 'TXT',
 		)
 		if (existingTxt.length > 1) {
 			return fail(
@@ -1750,8 +1805,12 @@ export async function ensureDmarcReportingTxtRecords(input: {
 		}
 		const existing = existingTxt[0]
 		if (existing) {
-			const current = existing.content.replace(/^"|"$/g, '')
-			if (current === desired) {
+			const current = normalizeDmarcTxtContent(existing.content)
+			const merged = mergeDmarcReportingTxt({
+				existing: current,
+				systemEmailDomain: input.systemEmailDomain,
+			})
+			if (current === merged) {
 				console.error(`DMARC TXT exists: ${existing.name} (${existing.id})`)
 				continue
 			}
@@ -1765,7 +1824,7 @@ export async function ensureDmarcReportingTxtRecords(input: {
 				body: {
 					type: 'TXT',
 					name: recordName,
-					content: desired,
+					content: merged,
 					ttl: 1,
 				},
 			})

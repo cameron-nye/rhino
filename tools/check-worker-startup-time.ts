@@ -153,6 +153,25 @@ export async function profileStartupWithRetry<T>(
 	throw new Error('Startup profile retries exhausted unexpectedly.')
 }
 
+/**
+ * Rhino: GitHub `ubuntu-latest` cannot finish the origin profile inside
+ * Wrangler's hard 10s limit (`Worker startup profiling timed out after 10
+ * seconds`). Upstream fails 🧹 Static on that timeout. This fork warns and
+ * skips the rest of that worker's samples. A sample that did finish still
+ * counts against the budget. Any other profiler error still fails the check.
+ * See docs/contributing/rhino.md.
+ */
+export function rhinoStartupProfilerTimeoutWarning(
+	workerName: string,
+	error: unknown,
+) {
+	if (!isStartupProfilerTimeout(error)) return null
+	return (
+		`${workerName} startup profiling timed out after Wrangler's 10s limit ` +
+		`(warning only; does not fail CI).`
+	)
+}
+
 export async function readStartupBudget(
 	budgetPath = startupBudgetPath,
 ): Promise<StartupBudget> {
@@ -244,12 +263,25 @@ export async function checkWorkerStartupTime() {
 			)
 			const samples: Array<StartupProfileSummary> = []
 			for (let run = 0; run < budget.runs; run++) {
-				samples.push(
-					await profileStartupWithRetry(() =>
-						profileStartupOnce(resolvedTarget, outputRoot, wranglerBinary, run),
-					),
-				)
+				try {
+					samples.push(
+						await profileStartupWithRetry(() =>
+							profileStartupOnce(
+								resolvedTarget,
+								outputRoot,
+								wranglerBinary,
+								run,
+							),
+						),
+					)
+				} catch (error) {
+					const warning = rhinoStartupProfilerTimeoutWarning(target.name, error)
+					if (!warning) throw error
+					console.warn(warning)
+					break
+				}
 			}
+			if (samples.length === 0) continue
 			results.push({
 				name: target.name,
 				bestActiveMs: Math.min(...samples.map((sample) => sample.activeMs)),

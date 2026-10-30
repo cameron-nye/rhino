@@ -7,6 +7,7 @@ import {
 	getUnitJobWatchSeconds,
 	isRetryableUnitJobAttemptExit,
 	main,
+	ubuntuLatestNodeJobBudget,
 	unitJobAttemptKillAfterExitCode,
 	unitJobAttemptTimeoutExitCode,
 } from './enforce-unit-job-budget.ts'
@@ -140,8 +141,9 @@ test('unit job budgets warn at watch and fail only past the hard ceiling', () =>
 		/name: ☁️ Workers \(\$\{\{ matrix.shard \}\}\/2\)[\s\S]*?# Room for one ≤780s attempt[\s\S]*?timeout-minutes: 30/,
 	)
 	expect(workflow).toMatch(
-		/name: 🧪 Node \(\$\{\{ matrix.shard \}\}\/2\)[\s\S]*?timeout-minutes: 15/,
+		/name: 🧪 Node \(\$\{\{ matrix.shard \}\}\/2\)[\s\S]*?timeout-minutes: 20/,
 	)
+	expect(workflow).toContain('--runner ubuntu-latest')
 	expect(workflow).toContain('Unit shard budget (watch 700s / hard 840s)')
 	expect(workflow).toContain('Unit shard budget (watch 620s / hard 780s)')
 
@@ -233,4 +235,56 @@ test('the unit job hard ceiling is advisory outside pull requests and merge grou
 
 	consoleLog.mockRestore()
 	process.exitCode = previousExitCode
+})
+
+test('ubuntu-latest uses a wider Node ceiling and leaves the 4x ceiling in place', () => {
+	expect(ubuntuLatestNodeJobBudget).toEqual({
+		watchSeconds: 960,
+		maxSeconds: 1080,
+	})
+	expect(
+		evaluateUnitJobBudget({
+			leg: 'node',
+			startEpochSeconds: 1_000,
+			nowEpochSeconds: 1_000 + 857,
+			runner: 'ubuntu-latest',
+		}),
+	).toMatchObject({
+		ok: true,
+		level: 'ok',
+		maxSeconds: 1080,
+		watchSeconds: 960,
+	})
+	expect(
+		evaluateUnitJobBudget({
+			leg: 'node',
+			startEpochSeconds: 1_000,
+			nowEpochSeconds: 1_000 + 961,
+			runner: 'ubuntu-latest',
+		}),
+	).toMatchObject({ ok: true, level: 'watch' })
+	expect(
+		evaluateUnitJobBudget({
+			leg: 'node',
+			startEpochSeconds: 1_000,
+			nowEpochSeconds: 1_000 + 1081,
+			runner: 'ubuntu-latest',
+		}),
+	).toMatchObject({ ok: false, level: 'fail', maxSeconds: 1080 })
+	expect(
+		evaluateUnitJobBudget({
+			leg: 'node',
+			startEpochSeconds: 1_000,
+			nowEpochSeconds: 1_000 + 857,
+			runner: 'warp-ubuntu-latest-x64-4x',
+		}),
+	).toMatchObject({ ok: false, level: 'fail', maxSeconds: 840 })
+	expect(
+		evaluateUnitJobBudget({
+			leg: 'workers',
+			startEpochSeconds: 1_000,
+			nowEpochSeconds: 1_000 + 781,
+			runner: 'ubuntu-latest',
+		}),
+	).toMatchObject({ ok: false, level: 'fail', maxSeconds: 780 })
 })

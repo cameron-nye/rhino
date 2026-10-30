@@ -125,11 +125,20 @@ jobs:
       ${{ (inputs.runner != '' && inputs.runner != '(repo default)' &&
       inputs.runner) || vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
     name: 🧹 Static
-    timeout-minutes: 10
+    # Rhino: ubuntu-latest reached worker-startup-time:check with about a
+    # minute left of this 10-minute cap, and GitHub cancelled the profile.
+    # Fifteen minutes lets the timeout warning finish. The check itself is
+    # unchanged.
+    timeout-minutes: 15
     permissions:
       contents: read
       issues: write
       pull-requests: read
+    # Rhino: ubuntu-latest has about 7 GB. V8's default ~2 GB heap kills
+    # `npm run typecheck` (`tsc -p packages/worker/tsconfig-start-*.json`,
+    # exit 134). This raises the ceiling only. It does not reserve the memory.
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
     if: >-
       github.event_name != 'pull_request' || github.event.pull_request.draft ==
       false
@@ -334,16 +343,19 @@ jobs:
         shard: [1, 2]
     env:
       NODE_TEST_SHARD: ${{ matrix.shard }}/2
-    timeout-minutes: 15
+    # Rhino: ubuntu-latest Node shards measured 794s and 857s. Fifteen minutes
+    # is the 4x-runner cap. Twenty minutes lets the ubuntu-latest ceiling
+    # (hard 1080s) report before GitHub kills the job.
+    timeout-minutes: 20
     if: >-
       github.event_name != 'pull_request' || github.event.pull_request.draft ==
       false
     steps:
       # Self-driving test-time budget (tools/ci/enforce-unit-job-budget.ts):
-      # warn at watch 700s (~Node p95 + headroom); hard-fail at 840s on PRs
-      # and merge groups (under this job's 15m timeout). Cache hit or miss does not change
-      # either threshold. Setup + tests both count; do not delete tests to
-      # stay under.
+      # 4x runners warn at watch 700s and hard-fail at 840s. Rhino passes
+      # `--runner ubuntu-latest`, which uses watch 960s / hard 1080s. Cache
+      # hit or miss does not change either threshold. Setup + tests both
+      # count; do not delete tests to stay under.
       - name: ⏱️ Mark job start
         run: |
           epoch=$(date +%s)
@@ -379,7 +391,9 @@ jobs:
         run: >-
           node tools/ci/enforce-unit-job-budget.ts --leg node --start-epoch
           "$UNIT_JOB_START_EPOCH" ${{ github.event_name != 'pull_request' &&
-          github.event_name != 'merge_group' && '--advisory' || '' }}
+          github.event_name != 'merge_group' && '--advisory' || '' }} ${{
+          env.VALIDATE_RUNNER == 'ubuntu-latest' && '--runner ubuntu-latest' ||
+          '' }}
 
       - name: ⏱️ Job wall-clock
         if: always() && !cancelled()
