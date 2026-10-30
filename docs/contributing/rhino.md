@@ -86,10 +86,37 @@ purpose.
 | `e2e/social-login.spec.ts`                                                | Onboarding heading.                                                                                                   |
 | `packages/worker/src/public-content.mcp-e2e.test.ts`                      | Home markdown heading.                                                                                                |
 | `packages/worker/src/origin-handler.anonymous-html-cache.mcp-e2e.test.ts` | `llms.txt` heading.                                                                                                   |
+| `packages/worker/wrangler.jsonc`                                          | Production email domains, omitted package-app URL, no Fathom site id, no `sentry-otlp-traces` destination.            |
+| `packages/worker/worker-type-secrets.env`                                 | Keeps `PACKAGE_APP_BASE_URL` and `FATHOM_SITE_ID` on the generated `Env` type after those wrangler pins are removed.  |
+| `packages/worker/worker-configuration.d.ts`                               | Regenerated. Email-domain pins are widened to `string` so fixture hosts still typecheck.                              |
+| `tools/generate-worker-configuration-types.ts`                            | Applies that widening after `wrangler types`.                                                                         |
+| `tools/widen-sentry-environment-type.ts`                                  | Widens the committed `USER_EMAIL_DOMAIN` and `SYSTEM_EMAIL_DOMAIN` literals.                                          |
+| `tools/widen-sentry-environment-type.node.test.ts`                        | Pins that widening.                                                                                                   |
+| `packages/runtime-worker/wrangler.jsonc`                                  | Omits `PACKAGE_APP_BASE_URL` and the Sentry trace destination.                                                        |
+| `packages/platform-worker/wrangler.jsonc`                                 | Omits the Sentry trace destination.                                                                                   |
+| `packages/status/wrangler.jsonc`                                          | Status hostname, probe origins, alert addresses, and Cloudflare account id.                                           |
+| `packages/status/probes.ts`                                               | A blank package-app origin does not probe and does not open an incident.                                              |
+| `packages/status/probes.node.test.ts`                                     | Pins that blank-origin behavior.                                                                                      |
+| `packages/api-worker/wrangler.jsonc`                                      | API custom domain.                                                                                                    |
+| `packages/api-docs-worker/wrangler.jsonc`                                 | API docs custom domain and spec URL.                                                                                  |
+| `packages/nx-cache/wrangler.jsonc`                                        | Nx cache custom domain.                                                                                               |
+| `tools/ci/resource-utils.ts`                                              | Publishes the app custom domain when `PACKAGE_APP_BASE_URL` is unset. DMARC reports forward to `csnye86@gmail.com`.   |
+| `tools/ci/resource-utils.node.test.ts`                                    | Covers that route shape, the DMARC forward default, and a package-app URL without an app origin.                      |
+| `tools/ci/production-resources.ts`                                        | `APP_BASE_URL` fallback and optional package-app and Fathom Actions variables.                                        |
+| `tools/nx-remote-cache-probe.ts`                                          | Default Nx cache server hostname.                                                                                     |
+| `.github/workflows/deploy.yml`                                            | Production hostnames, app-origin fallback, optional Fathom site id, and the DR job skip.                              |
+| `.github/workflows/nx-cache-deploy.yml`                                   | Nx cache hostname and skip when the write token is absent.                                                            |
+| `.github/workflows/cla.yml`                                               | CLA jobs run only on `kody-hq/kody`.                                                                                  |
+| `.github/workflows/weekly-site-perf.yml`                                  | Weekly site perf runs only on `kody-hq/kody`.                                                                         |
+| `.github/workflows/latency-bench.yml`                                     | Weekly latency bench runs only on `kody-hq/kody`.                                                                     |
+| `.github/workflows/publish-cli.yml`                                       | CLI publish runs only on `kody-hq/kody`.                                                                              |
+| `.github/workflows/publish-mcp-registry.yml`                              | MCP registry publish runs only on `kody-hq/kody`.                                                                     |
+| `.github/workflows/status-incident-delete.yml`                            | Status incident delete URL, secret skip, and `cameron-nye` as an approved actor.                                      |
+| `.github/workflows/dr-escrow.yml`                                         | Escrow job skips when DR credentials are absent.                                                                      |
 
-One follow-up stays out of the tree: custom-domain configuration for
-`rhino.nyneelevenlabs.com`. This page does not change deploy config, domain,
-Wrangler routing, or secrets.
+Production hostnames and the CI skips for this fork are in
+[Production hostnames](#production-hostnames). Product copy still names upstream
+hosts; see Left as Kody.
 
 ## Pull requests
 
@@ -153,9 +180,11 @@ upstream sync, stay Kody until a later pass adds them here:
 - MCP server `name` (`kody-mcp`), Goose install `id` (`kody`), and the `kody`
   CLI command.
 - `server.json` registry name, title, and `websiteUrl`.
-- Hosts and mail: `kody.codes`, `api.kody.codes`, `support@kody.codes`,
-  `kody@kody.codes`. Contact-page body, JSON-LD `url` / `sameAs`, and the About
-  paragraph that names Kent C. Dodds as operator of kody.codes.
+- Hosts and mail in product copy: `kody.codes`, `api.kody.codes`,
+  `support@kody.codes`, `kody@kody.codes`. Production routing is in
+  [Production hostnames](#production-hostnames). Contact-page body, JSON-LD
+  `url` / `sameAs`, and the About paragraph that names Kent C. Dodds as operator
+  of kody.codes.
 - Guide pages under `docs/guides/` and the sidebar labels that copy their titles
   (`What is Kody?`, `How Kody works`, `Kody Open API`, `OpenMuse and Kody`).
   Slugs such as `what-is-kody` stay. Some Rhino links point at those slugs with
@@ -169,7 +198,8 @@ upstream sync, stay Kody until a later pass adds them here:
 - Agent skill bodies and skill ids in `agent-discovery.ts` (`connect-kody`,
   `what-is-kody`, `kody-cli`) and the MCP prompt in
   `packages/worker/src/mcp/register-prompts.ts`.
-- `## Kody Open API` discovery heading (the API host is still `api.kody.codes`).
+- `## Kody Open API` discovery heading (discovery copy still says
+  `api.kody.codes`).
 - Longer marketing paragraphs on acquisition, feature, and legal pages.
 - Mascot image alt text. The artwork files stay upstream.
 - README license paragraphs (the Functional Source License names the upstream
@@ -177,3 +207,108 @@ upstream sync, stay Kody until a later pass adds them here:
 - Outbound MCP client name `{ name: 'Kody' }` and the git-notes author name in
   `packages/worker/src/repo/publish-git-notes.ts`.
 - Test fixtures that use `Kody` as sample data rather than product chrome.
+
+## Production hostnames
+
+All of these names are on the zone `nyneelevenlabs.com` (zone id
+`b5451c2715afa787ba188025ebf929a0`, account `fc56d8089384bf6a7806ff0e9a9385a0`).
+Workers custom domains issue their own certificates, so the nested names below
+are not limited to Universal SSL's one label. GitHub Actions variables
+`APP_BASE_URL`, `USER_EMAIL_DOMAIN`, and `SYSTEM_EMAIL_DOMAIN` still override
+the committed pins when they are non-empty. Upstream values stay in comments
+next to the pins.
+
+| Role                 | Name                                                         | Upstream                      |
+| -------------------- | ------------------------------------------------------------ | ----------------------------- |
+| App (`APP_BASE_URL`) | `https://rhino.nyneelevenlabs.com`                           | `https://kody.codes`          |
+| System email         | `rhino.nyneelevenlabs.com` (`kody@rhino.nyneelevenlabs.com`) | `kody.codes`                  |
+| User email           | `inbox.rhino.nyneelevenlabs.com`                             | `inbox.kody.codes`            |
+| Status               | `https://status.rhino.nyneelevenlabs.com`                    | `https://status.kody.codes`   |
+| Open API             | `https://api.rhino.nyneelevenlabs.com`                       | `https://api.kody.codes`      |
+| API docs             | `https://api-docs.rhino.nyneelevenlabs.com`                  | `https://api-docs.kody.codes` |
+| Nx cache             | `https://nx-cache.rhino.nyneelevenlabs.com`                  | `https://nx-cache.kody.codes` |
+| Hosted package apps  | unset                                                        | `https://kody.run`            |
+
+Hosted package apps stay off. Production package-app requests return 500 until
+`PACKAGE_APP_BASE_URL` is a separate registrable domain. Preview, tests, and
+local dev still serve package apps inline. A subdomain of `nyneelevenlabs.com`
+is not a stand-in: it shares a registrable domain with the app (so the isolation
+check fails) and the runtime worker would publish zone routes, including a
+catch-all, on this zone. That replaces the zone route table and detaches every
+Workers custom domain here, including the app. Leaving `https://kody.run` in the
+committed config would make production ensure look up that zone in this account
+and fail the origin deploy. Set the `PACKAGE_APP_BASE_URL` Actions variable only
+after this account owns that second zone. Do not point it at `kody.run`.
+
+The status worker's package-runtime card stays operational while the origin is
+blank, so a missing domain does not open an incident. It is not serving package
+apps.
+
+Status alerts go to `csnye86@gmail.com` (`ALERT_EMAIL_TO`). The from-address is
+`kody@rhino.nyneelevenlabs.com`. Upstream alerts went to `me@kentcdodds.com`.
+
+Fathom stays off. Upstream's production site id is `WKKSDJGN`. This fork does
+not commit it, so the tracker script is not rendered and `trackEvent` no-ops.
+Set the `FATHOM_SITE_ID` Actions variable to turn it on. An empty value stays
+off.
+
+### CI that does not run here
+
+These jobs use `if: github.repository == 'kody-hq/kody'`, the same guard as
+audit bump and preview sweep:
+
+- CLA (`cla.yml`). This fork has no `cla-signatures` branch.
+- Weekly site perf (`weekly-site-perf.yml`). It measures `kody.codes`.
+- Weekly MCP latency bench (`latency-bench.yml`).
+- CLI publish (`publish-cli.yml`) and MCP registry publish
+  (`publish-mcp-registry.yml`).
+
+Job-level `if` cannot read `secrets` (GitHub rejects the workflow). These checks
+live where the secrets context is allowed, and an empty secret skips the work
+instead of failing the run:
+
+- `deploy-backup-control-plane` stays skipped unless `DR_DEPLOY_TOKEN` and
+  `DR_BACKUP_ACCOUNT_ID` are both set. The production deploy guard writes
+  `deploy_backup_control_plane=false` in that case. Its wrangler file still
+  names Kent's DR account, `https://kody.codes`, and
+  `https://kody-dr.kentcdodds.com`. Do not set those secrets until that file is
+  retargeted.
+- DR secret escrow (`dr-escrow.yml`) skips its steps without the escrow
+  passphrase and `DR_BACKUP_*` credentials.
+- Nx cache deploy (`nx-cache-deploy.yml`) skips its steps without
+  `NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN`. Production deploy also withholds
+  the workflow call when that secret is unset, so it does not ensure the R2
+  bucket first.
+- Status incident delete skips its steps without `STATUS_INCIDENT_EVENT_SECRET`.
+
+Per-PR preview deploys stay enabled. Preview sweep and audit bump stay
+upstream-only, so closed-PR preview cleanup does not run on this fork.
+
+### Before the first production deploy
+
+Dashboard and one-time resources this deploy does not create:
+
+- Vectorize index `kody-capabilities-prod` (384 dimensions, cosine).
+- Email Sending verification for `rhino.nyneelevenlabs.com` and
+  `inbox.rhino.nyneelevenlabs.com`.
+- Email Routing on the zone: MX, the `inbox.rhino` subdomain, and a catch-all on
+  that subdomain to the origin Worker. `dmarc@rhino.nyneelevenlabs.com` needs a
+  verified destination. Deploy forwards aggregate reports to `csnye86@gmail.com`
+  unless `DMARC_REPORT_FORWARD_TO` is set. That Gmail address has to be a
+  verified Email Routing destination on this account, or ensure fails (a 403
+  from the routing API skips the rule instead). Upstream's default forward
+  target is `me@kentcdodds.com`.
+- DMARC TXT is written by deploy (`rua=mailto:dmarc@rhino.nyneelevenlabs.com`).
+- Workers Observability destination `sentry-otlp-traces`, then put
+  `destinations` back on the production trace blocks. Until then, traces stay in
+  the Workers Observability dashboard and are not exported.
+- `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` on the production Worker.
+  Production boot refuses to start without them.
+- Worker API tokens `CLOUDFLARE_APP_API_TOKEN`, `CLOUDFLARE_RUNTIME_API_TOKEN`,
+  and `CLOUDFLARE_STATUS_API_TOKEN`, distinct from `CLOUDFLARE_API_TOKEN`.
+  Deploy fails in `require-worker-tokens` when any of them is missing.
+
+`npm run dev` still uses the production Wrangler environment, so the committed
+email domains are visible locally. `APP_BASE_URL` is not committed; local dev
+keeps using localhost. The production deploy writes
+`https://rhino.nyneelevenlabs.com` when the Actions variable is empty.

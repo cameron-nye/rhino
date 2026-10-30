@@ -15,6 +15,7 @@ import {
 	emptyR2Bucket,
 	encodeR2ObjectKey,
 	deleteEmailSendingEventSubscriptionIfPresent,
+	defaultDmarcReportForwardTo,
 	dmarcReportingRecordNames,
 	dmarcReportingTxtContent,
 	ensureArtifactsAccountEventSubscription,
@@ -265,9 +266,9 @@ test('writeGeneratedWranglerConfig preserves migrations and copies environment a
 	])
 	// Routes are generated from the base-URL vars rather than committed (a
 	// committed route would make `wrangler dev` resolve every local request as
-	// that production host). The package-app host is attached to the runtime
-	// Worker (ADR 0016), so the main Worker publishes only the app origin.
-	expect(typeof production?.vars?.PACKAGE_APP_BASE_URL).toBe('string')
+	// that production host). With PACKAGE_APP_BASE_URL unset, the main Worker
+	// still publishes the app origin and does not attach a package-app zone.
+	expect(production?.vars?.PACKAGE_APP_BASE_URL).toBeUndefined()
 	expect(production?.routes).toEqual([
 		{ pattern: 'heykody.dev', custom_domain: true },
 	])
@@ -375,9 +376,10 @@ test('writeGeneratedWranglerConfig preserves migrations and copies environment a
 	// and deleting its DNS record. That must fail the deploy, not ship.
 	using _exit = mockProcessExit()
 	await expect(
-		writeGeneratedWranglerConfig(
-			productionArgs(path.join(temp.dir, 'wrangler-no-app-origin.json')),
-		),
+		writeGeneratedWranglerConfig({
+			...productionArgs(path.join(temp.dir, 'wrangler-no-app-origin.json')),
+			workerVars: { PACKAGE_APP_BASE_URL: 'https://kody.run' },
+		}),
 	).rejects.toThrow('process.exit called')
 	expect(consoleError).toHaveBeenCalledWith(
 		expect.stringContaining('without "APP_BASE_URL"'),
@@ -396,11 +398,14 @@ test('writeGeneratedWranglerConfig keeps legacy app hosts attached during a doma
 		workerVars: {
 			APP_BASE_URL: 'https://heykody.app',
 			APP_LEGACY_HOSTS: 'heykody.dev',
+			// Upstream's committed package-app origin. Passed explicitly so this
+			// migration case does not depend on the fork leaving that var unset.
+			PACKAGE_APP_BASE_URL: 'https://kody.run',
 		},
 	})
 	const production = (await readConfig(outPath)).env?.production
 	const packageAppBaseUrl = production?.vars?.PACKAGE_APP_BASE_URL
-	expect(typeof packageAppBaseUrl).toBe('string')
+	expect(packageAppBaseUrl).toBe('https://kody.run')
 	expect(production?.routes).toEqual([
 		{ pattern: 'heykody.app', custom_domain: true },
 		{ pattern: 'heykody.dev', custom_domain: true },
@@ -420,6 +425,7 @@ test('writeGeneratedWranglerConfig keeps legacy app hosts attached during a doma
 				workerVars: {
 					APP_BASE_URL: 'https://heykody.app',
 					APP_LEGACY_HOSTS: legacyHosts,
+					PACKAGE_APP_BASE_URL: 'https://kody.run',
 				},
 			}),
 		).rejects.toThrow('process.exit called')
@@ -1445,6 +1451,10 @@ test('ensureDmarcReportingTxtRecords fails closed on non-TXT conflicts', async (
 	expect(consoleError).toHaveBeenCalledWith(
 		expect.stringContaining('is not TXT'),
 	)
+})
+
+test('the DMARC forward default is the Rhino operator address', () => {
+	expect(defaultDmarcReportForwardTo).toBe('csnye86@gmail.com')
 })
 
 test('ensureDmarcEmailRoutingRule creates and reuses a forward rule', async () => {

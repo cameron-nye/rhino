@@ -33,6 +33,12 @@ import {
 	type OriginProductionScriptState,
 } from './origin-production-deploy-state.ts'
 
+/**
+ * Used when the APP_BASE_URL Actions variable is unset. Upstream fails closed
+ * instead. A non-empty variable still wins. See docs/contributing/rhino.md.
+ */
+const rhinoProductionAppBaseUrl = 'https://rhino.nyneelevenlabs.com'
+
 type Command = 'ensure'
 
 type CliOptions = {
@@ -530,10 +536,17 @@ async function resolveProductionBindings({
 			? committedSystemEmailDomainRaw.trim().toLowerCase().replace(/\.$/, '')
 			: null
 
-	const packageAppBaseUrlRaw =
+	const committedPackageAppBaseUrlRaw =
 		productionVars && typeof productionVars === 'object'
 			? (productionVars as Record<string, unknown>).PACKAGE_APP_BASE_URL
 			: undefined
+	// Actions variable wins so a later second domain does not need another
+	// wrangler edit. Empty leaves the committed value, which Rhino omits.
+	const overlayPackageAppBaseUrl = process.env.PACKAGE_APP_BASE_URL?.trim()
+	const packageAppBaseUrlRaw =
+		overlayPackageAppBaseUrl && overlayPackageAppBaseUrl.length > 0
+			? overlayPackageAppBaseUrl
+			: committedPackageAppBaseUrlRaw
 	const committedPackageAppLegacyHostsRaw =
 		productionVars && typeof productionVars === 'object'
 			? (productionVars as Record<string, unknown>).PACKAGE_APP_LEGACY_HOSTS
@@ -899,7 +912,9 @@ async function ensureProductionResources(options: CliOptions) {
 		repoSessionBlobsBucketName: repoSessionBlobs.name,
 		operatorBackupsBucketName: operatorBackups.name,
 		workerVars: {
-			APP_BASE_URL: process.env.APP_BASE_URL,
+			APP_BASE_URL:
+				process.env.APP_BASE_URL?.trim() || rhinoProductionAppBaseUrl,
+			PACKAGE_APP_BASE_URL: process.env.PACKAGE_APP_BASE_URL,
 			APP_LEGACY_HOSTS: process.env.APP_LEGACY_HOSTS,
 			APP_LEGACY_REDIRECT: process.env.APP_LEGACY_REDIRECT,
 			PACKAGE_APP_LEGACY_HOSTS: process.env.PACKAGE_APP_LEGACY_HOSTS,
@@ -910,6 +925,8 @@ async function ensureProductionResources(options: CliOptions) {
 			LEGACY_USER_EMAIL_DOMAINS: process.env.LEGACY_USER_EMAIL_DOMAINS,
 			LEGACY_SYSTEM_EMAIL_DOMAINS: process.env.LEGACY_SYSTEM_EMAIL_DOMAINS,
 			PACKAGE_APP_ZONE_ID: process.env.PACKAGE_APP_ZONE_ID,
+			// Empty leaves Fathom off. Upstream's committed id is WKKSDJGN.
+			FATHOM_SITE_ID: process.env.FATHOM_SITE_ID,
 		},
 	})
 

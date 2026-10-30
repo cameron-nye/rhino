@@ -2,7 +2,10 @@ import { writeFile } from 'node:fs/promises'
 import { experimental_generateTypes } from 'wrangler'
 import { isExecutedDirectly } from './node-runtime.ts'
 import { stripWorkerProcessEnvTypes } from './strip-worker-process-env-types.ts'
-import { widenSentryEnvironmentType } from './widen-sentry-environment-type.ts'
+import {
+	widenCommittedHostnameEnvTypes,
+	widenSentryEnvironmentType,
+} from './widen-sentry-environment-type.ts'
 
 export const workerConfigurationTypesPath =
 	'packages/worker/worker-configuration.d.ts'
@@ -31,7 +34,9 @@ export async function generateWorkerConfigurationTypes(outputPath: string) {
 		includeEnv: true,
 	})
 	const stripped = ensureTrailingNewline(
-		widenSentryEnvironmentType(stripWorkerProcessEnvTypes(generated.content)),
+		widenCommittedHostnameEnvTypes(
+			widenSentryEnvironmentType(stripWorkerProcessEnvTypes(generated.content)),
+		),
 	)
 	await writeFile(outputPath, stripped)
 	return stripped

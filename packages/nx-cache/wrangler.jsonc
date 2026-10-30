@@ -16,7 +16,9 @@
 	// and GitHub Actions share one URL without a workers.dev account slug.
 	"routes": [
 		{
-			"pattern": "nx-cache.kody.codes",
+			// Upstream: nx-cache.kody.codes. Deploy of this worker is skipped
+			// until NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN is set.
+			"pattern": "nx-cache.rhino.nyneelevenlabs.com",
 			"custom_domain": true,
 		},
 	],

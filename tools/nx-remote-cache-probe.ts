@@ -11,7 +11,10 @@ import { isExecutedDirectly } from './node-runtime.ts'
 
 export const nxRemoteCacheServerEnv = 'NX_SELF_HOSTED_REMOTE_CACHE_SERVER'
 export const nxRemoteCacheTokenEnv = 'NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN'
-export const defaultNxRemoteCacheServer = 'https://nx-cache.kody.codes'
+// Upstream default is https://nx-cache.kody.codes. The probe only runs when
+// a cache token is set; this host matches the Rhino worker custom domain.
+export const defaultNxRemoteCacheServer =
+	'https://nx-cache.rhino.nyneelevenlabs.com'
 
 /** Never a real Nx hash (u64 decimal); matches the server's hash pattern. */
 export const readProbeHash = '0000000000000000'

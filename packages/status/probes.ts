@@ -160,10 +160,35 @@ async function probeMcp(
 	}
 }
 
+function configuredHttpOrigin(origin: string | undefined | null) {
+	const trimmed = origin?.trim() ?? ''
+	if (!trimmed) return null
+	try {
+		const url = new URL(trimmed)
+		if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
+		return url.origin
+	} catch {
+		return null
+	}
+}
+
 async function probePackageRuntime(
 	fetcher: typeof fetch,
 	packageAppOrigin: string,
 ): Promise<{ outcome: ProbeOutcome; runtimeCommitSha: string | null }> {
+	// Blank origin means hosted package apps are not configured. Reporting
+	// the component down would open an incident on every tick.
+	if (!configuredHttpOrigin(packageAppOrigin)) {
+		return {
+			outcome: {
+				component: 'package_apps',
+				ok: true,
+				latencyMs: 0,
+				detail: 'not configured',
+			},
+			runtimeCommitSha: null,
+		}
+	}
 	const result = await timedFetch(
 		fetcher,
 		`${packageAppOrigin}/__runtime/health`,

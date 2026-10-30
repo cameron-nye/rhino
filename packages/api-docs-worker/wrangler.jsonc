@@ -1,9 +1,10 @@
 {
 	"$schema": "../../node_modules/wrangler/config-schema.json",
-	// Interactive OpenAPI docs at `api-docs.kody.codes`. Serves Scalar HTML and
+	// Interactive OpenAPI docs at `api-docs.rhino.nyneelevenlabs.com`
+	// (upstream `api-docs.kody.codes`). Serves Scalar HTML and
 	// proxies `/openapi.json` from the live API so the UI stays JSON-only on
-	// `api.kody.codes` (no Accept-HTML there). DNS + cert come from
-	// `custom_domain: true` on deploy, same as `api.kody.codes`.
+	// `api.rhino.nyneelevenlabs.com` (no Accept-HTML there). DNS + cert come from
+	// `custom_domain: true` on deploy, same as the API host.
 	"name": "kody-api-docs",
 	"main": "./src/index.ts",
 	"compatibility_date": "2026-04-16",
@@ -25,11 +26,11 @@
 	"workers_dev": false,
 	"routes": [
 		{
-			"pattern": "api-docs.kody.codes",
+			"pattern": "api-docs.rhino.nyneelevenlabs.com",
 			"custom_domain": true,
 		},
 	],
 	"vars": {
-		"OPENAPI_SPEC_URL": "https://api.kody.codes/openapi.json",
+		"OPENAPI_SPEC_URL": "https://api.rhino.nyneelevenlabs.com/openapi.json",
 	},
 }
