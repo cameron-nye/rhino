@@ -25,6 +25,7 @@ purpose.
 | File                                                                      | Why                                                                                                                   |
 | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `docs/contributing/rhino.md`                                              | Additive fork rules (this page).                                                                                      |
+| `.github/workflows/rhino-automerge.yml`                                   | Squash-merge green same-repo `cursor/` pull requests and dispatch production deploy.                                  |
 | `AGENTS.md`                                                               | Opening pointer to this page. Stays inside the 23-line `agents-md` budget.                                            |
 | `docs/contributing/index.md`                                              | Link to this page from the contributing map.                                                                          |
 | `README.md`                                                               | Headline, logo alt text, and the opening product paragraphs. License text stays upstream.                             |
@@ -86,16 +87,42 @@ purpose.
 | `packages/worker/src/public-content.mcp-e2e.test.ts`                      | Home markdown heading.                                                                                                |
 | `packages/worker/src/origin-handler.anonymous-html-cache.mcp-e2e.test.ts` | `llms.txt` heading.                                                                                                   |
 
-Two follow-ups stay out of the tree: an auto-merge workflow for green `cursor/`
-pull requests, and custom-domain configuration for `rhino.nyneelevenlabs.com`.
-This page does not change deploy, domain, GitHub workflow, Wrangler routing, or
-secrets.
+One follow-up stays out of the tree: custom-domain configuration for
+`rhino.nyneelevenlabs.com`. This page does not change deploy config, domain,
+Wrangler routing, or secrets.
 
 ## Pull requests
 
-Agent pull requests use `cursor/` branches. Those pull requests auto-merge once
-checks pass. A `no-automerge` label opts a pull request out. The workflow that
-performs the merge is one of the follow-ups above.
+Agent pull requests use `cursor/` branches.
+`.github/workflows/rhino-automerge.yml` squash-merges them after `✅ Validate`
+(`.github/workflows/validate.yml`) finishes with conclusion `success`.
+
+The workflow runs from `main` via `workflow_run`. It does not check out the pull
+request. It squash-merges only when all of these are true:
+
+- The Validate run was a `pull_request` event, and the head branch is in this
+  repository and starts with `cursor/`. Fork pull requests are ignored.
+- That head SHA is still the pull request's current head. The pull request is
+  open against `main` and is not a draft.
+- The pull request does not have the `no-automerge` label.
+- GitHub reports the pull request mergeable. Merge conflicts leave it open.
+
+A squash merge made with `GITHUB_TOKEN` does not start `push` workflows.
+`🚀 Deploy (production)` (`.github/workflows/deploy.yml`) follows Validate only
+for a successful `push` to `main`, so that path does not see an agent merge.
+After the squash merge, this workflow dispatches Deploy on `main` with `mode`
+set to `production`.
+
+The workflow file has to be on `main` before it runs. The pull request that adds
+it does not merge itself.
+
+Before this can merge anything, the fork needs Actions enabled (including
+GitHub-owned actions such as `actions/checkout`), workflow permissions set to
+read and write, and squash merges allowed. Repository variable `CI_RUNNER` must
+be `ubuntu-latest` unless a WarpBuild runner labeled `warp-ubuntu-latest-x64-4x`
+is connected. Validate and the other heavy jobs use `vars.CI_RUNNER` and
+otherwise request that Warp label, so they stay queued and Validate never goes
+green. This auto-merge job itself runs on `ubuntu-latest`.
 
 ## Validation before push
 
@@ -113,7 +140,8 @@ performs the merge is one of the follow-ups above.
 - `npm run test:mcp`
 
 Use the matching script while iterating. A green `npm run validate` is what
-"checks passed" means for the auto-merge rule.
+"checks passed" means for the auto-merge rule: the `✅ Validate` workflow is
+that same gate, split across jobs.
 
 ## Left as Kody
 
