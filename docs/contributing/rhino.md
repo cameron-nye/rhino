@@ -67,6 +67,7 @@ purpose.
 | `packages/worker/universal/oauth-connect.node.test.ts`                    | Pins that option detail.                                                                                              |
 | `packages/worker/start/pages/account-integrations-sections.tsx`           | Integrations section heading.                                                                                         |
 | `packages/worker/start/components/doc-diagrams.tsx`                       | Diagram card title. CSS class names stay upstream.                                                                    |
+| `packages/worker/start/markdown-view.native.node.test.ts`                 | Pins the diagram card title.                                                                                          |
 | `packages/worker/start/pages/features/integrations-scenes.tsx`            | Diagram hub labels. Surrounding sentences stay upstream.                                                              |
 | `packages/worker/start/components/primitive-widgets.tsx`                  | Homepage integrations widget hub label.                                                                               |     |
 | `packages/worker/start/pages/acquisition/mcpGateway.tsx`                  | Diagram label, heading, and accessible name. Body paragraphs stay upstream.                                           |
