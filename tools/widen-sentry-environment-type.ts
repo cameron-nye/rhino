@@ -9,3 +9,14 @@ export function widenSentryEnvironmentType(source: string) {
 		'SENTRY_ENVIRONMENT: string;',
 	)
 }
+
+/**
+ * Production wrangler pins these hostnames, and `wrangler types` turns each
+ * pin into a string literal. Worker tests still pass upstream fixture hosts
+ * through `Partial<Env>`. A literal rejects those assignments.
+ */
+export function widenCommittedHostnameEnvTypes(source: string) {
+	return source
+		.replace(/USER_EMAIL_DOMAIN: "[^"]+";/g, 'USER_EMAIL_DOMAIN: string;')
+		.replace(/SYSTEM_EMAIL_DOMAIN: "[^"]+";/g, 'SYSTEM_EMAIL_DOMAIN: string;')
+}

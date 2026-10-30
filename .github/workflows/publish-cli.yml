@@ -19,6 +19,8 @@ permissions:
 
 jobs:
   publish:
+    # Do not publish @kodycodes/cli from this fork.
+    if: github.repository == 'kody-hq/kody'
     # npm --provenance rejects self-hosted runners ("Unsupported GitHub
     # Actions runner environment: self-hosted"). Keep this job on
     # GitHub-hosted ubuntu-latest even though Validate/Deploy use Warp.

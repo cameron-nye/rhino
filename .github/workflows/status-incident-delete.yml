@@ -1,7 +1,8 @@
 name: 🧹 Status Incident Delete
 
 # Deletes one resolved, health-check-only status incident through
-# DELETE https://status.kody.codes/__maintenance/incidents/:id. The bearer is
+# DELETE https://status.rhino.nyneelevenlabs.com/__maintenance/incidents/:id.
+# Upstream URL was https://status.kody.codes. The bearer is
 # the STATUS_INCIDENT_EVENT_SECRET Actions secret, which no operator shell
 # holds. Record the impact-check evidence before running this (see the
 # Retrospectives section of packages/status/readme.md).
@@ -28,11 +29,22 @@ concurrency:
 jobs:
   delete:
     name: 🧹 Delete status incident ${{ inputs.incident_id }}
+    # Job-level `if` cannot read secrets. A missing bearer skips the steps.
     runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
     timeout-minutes: 5
     environment: production
+    env:
+      STATUS_INCIDENT_CONFIGURED:
+        ${{ secrets.STATUS_INCIDENT_EVENT_SECRET != '' }}
     steps:
+      - name: ⏭️ Skip when the bearer secret is absent
+        if: env.STATUS_INCIDENT_CONFIGURED != 'true'
+        run: >-
+          echo "Skipping status incident delete: STATUS_INCIDENT_EVENT_SECRET is
+          unset."
+
       - name: 🛂 Check inputs and actor
+        if: env.STATUS_INCIDENT_CONFIGURED == 'true'
         shell: bash
         env:
           ACTOR: ${{ github.actor }}
@@ -48,9 +60,9 @@ jobs:
           # Cloud Agent gh cannot dispatch workflows, so agents dispatch
           # through @kentcdodds/github as kody-bot.
           case "$ACTOR" in
-            kentcdodds|cursor|kody-bot) ;;
+            kentcdodds|cameron-nye|cursor|kody-bot) ;;
             *)
-              echo "Approved actors only (kentcdodds, cursor, or kody-bot); got $ACTOR." >&2
+              echo "Approved actors only (kentcdodds, cameron-nye, cursor, or kody-bot); got $ACTOR." >&2
               exit 1
               ;;
           esac
@@ -64,6 +76,7 @@ jobs:
           fi
 
       - name: 🧹 Delete the incident
+        if: env.STATUS_INCIDENT_CONFIGURED == 'true'
         shell: bash
         env:
           INCIDENT_ID: ${{ inputs.incident_id }}
@@ -72,11 +85,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${STATUS_INCIDENT_EVENT_SECRET:-}" ]; then
-            echo "Missing GitHub Actions secret STATUS_INCIDENT_EVENT_SECRET." >&2
-            exit 1
+            echo "STATUS_INCIDENT_EVENT_SECRET is unset; nothing to delete."
+            exit 0
           fi
           status=$(curl -sS -o response.json -w '%{http_code}' -X DELETE \
-            "https://status.kody.codes/__maintenance/incidents/${INCIDENT_ID}" \
+            "https://status.rhino.nyneelevenlabs.com/__maintenance/incidents/${INCIDENT_ID}" \
             -H "Authorization: Bearer ${STATUS_INCIDENT_EVENT_SECRET}")
           cat response.json
           echo

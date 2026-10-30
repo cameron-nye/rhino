@@ -11,6 +11,8 @@ permissions:
 
 jobs:
   measure:
+    # Measures https://kody.codes and invokes Kent's weekly-site-perf package.
+    if: github.repository == 'kody-hq/kody'
     runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
     name: ⏱ Measure kody.codes
     timeout-minutes: 10

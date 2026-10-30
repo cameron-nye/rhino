@@ -20,6 +20,9 @@ permissions:
 
 jobs:
   measure:
+    # Upstream bench against Kent's origin. Steps also no-op without
+    # LATENCY_BENCH_ORIGIN and LATENCY_BENCH_TOKEN.
+    if: github.repository == 'kody-hq/kody'
     runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
     name: ⏱ Measure MCP latency
     timeout-minutes: 15

@@ -1,6 +1,7 @@
 {
 	"$schema": "../../node_modules/wrangler/config-schema.json",
-	// Public Kody Open API edge (`api.kody.codes`). JSON only. Owns CORS,
+	// Public Kody Open API edge (`api.rhino.nyneelevenlabs.com`; upstream
+	// `api.kody.codes`). JSON only. Owns CORS,
 	// rate limits, header stripping, and the body cap, then forwards to the
 	// origin's `KodyApi` entrypoint over the KODY_API service binding, where
 	// the API token is authenticated and the operation runs next to D1.
@@ -26,11 +27,12 @@
 	"env": {
 		"production": {
 			// Only the custom domain serves the API; Cloudflare creates the
-			// proxied DNS record for `api.kody.codes` on deploy.
+			// proxied DNS record for `api.rhino.nyneelevenlabs.com` on deploy
+			// (upstream `api.kody.codes`).
 			"workers_dev": false,
 			"routes": [
 				{
-					"pattern": "api.kody.codes",
+					"pattern": "api.rhino.nyneelevenlabs.com",
 					"custom_domain": true,
 				},
 			],

@@ -21,7 +21,9 @@
 	// has its own domain and its own Durable Object storage.
 	"routes": [
 		{
-			"pattern": "status.kody.codes",
+			// Upstream: status.kody.codes. Workers custom domains issue their
+			// own certificate, including this nested name on a Free zone.
+			"pattern": "status.rhino.nyneelevenlabs.com",
 			"custom_domain": true,
 		},
 	],
@@ -55,16 +57,20 @@
 		"not_found_handling": "none",
 	},
 	"vars": {
-		"PRIMARY_ORIGIN": "https://kody.codes",
-		"PACKAGE_APP_ORIGIN": "https://kody.run",
-		"STATUS_PAGE_URL": "https://status.kody.codes",
+		"PRIMARY_ORIGIN": "https://rhino.nyneelevenlabs.com",
+		// Empty: hosted package apps are disabled (no second registrable
+		// domain). Upstream is https://kody.run. The prober treats a blank
+		// origin as not configured instead of requesting that host.
+		"PACKAGE_APP_ORIGIN": "",
+		"STATUS_PAGE_URL": "https://status.rhino.nyneelevenlabs.com",
+		// Upstream alert recipient. Change this before relying on alerts;
+		// the address is not a mailbox on nyneelevenlabs.com.
 		"ALERT_EMAIL_TO": "me@kentcdodds.com",
-		"ALERT_EMAIL_FROM": "kody@kody.codes",
+		"ALERT_EMAIL_FROM": "kody@rhino.nyneelevenlabs.com",
 		"STATUS_ALERT_DAILY_LIMIT": "6",
-		// Production Kody Cloudflare account (same as the main worker); the
-		// matching CLOUDFLARE_API_TOKEN (Email Sending only) is a Worker secret
-		// the deploy workflow syncs from CLOUDFLARE_STATUS_API_TOKEN.
-		"CLOUDFLARE_ACCOUNT_ID": "a99ee2e72728dd52902ef288b7b1447d",
+		// Upstream account a99ee2e72728dd52902ef288b7b1447d. This is the
+		// Rhino account the Email Sending token must belong to.
+		"CLOUDFLARE_ACCOUNT_ID": "fc56d8089384bf6a7806ff0e9a9385a0",
 		"BUILD_COMMIT": "REPLACE_AT_DEPLOY_TIME",
 	},
 }

@@ -20,6 +20,8 @@ concurrency:
 
 jobs:
   publish:
+    # server.json is the upstream kody-hq registry entry.
+    if: github.repository == 'kody-hq/kody'
     runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
     name: Publish server.json to MCP Registry
     timeout-minutes: 10

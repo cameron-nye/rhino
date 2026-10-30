@@ -24,9 +24,10 @@ permissions:
 jobs:
   cla:
     # opened/reopened/synchronize only; closed drives record-on-merge below.
+    # This fork has no cla-signatures branch. Upstream runs on kody-hq/kody.
     if: >
-      github.event_name == 'pull_request_target' && github.event.action !=
-      'closed'
+      github.repository == 'kody-hq/kody' && github.event_name ==
+      'pull_request_target' && github.event.action != 'closed'
     runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
     name: ✍️ CLA
     timeout-minutes: 5
@@ -176,7 +177,8 @@ jobs:
 
   record:
     if: >
-      github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+      github.repository == 'kody-hq/kody' && github.event_name ==
+      'issue_comment' && github.event.issue.pull_request &&
       github.event.comment.user.type == 'User' &&
       (contains(github.event.comment.body, 'I hereby sign the CLA') ||
       (github.event.action == 'edited' &&
@@ -289,9 +291,9 @@ jobs:
 
   record-on-merge:
     if: >
-      (github.event_name == 'pull_request_target' &&
-      github.event.pull_request.merged == true) || github.event_name ==
-      'workflow_dispatch'
+      github.repository == 'kody-hq/kody' && ((github.event_name ==
+      'pull_request_target' && github.event.pull_request.merged == true) ||
+      github.event_name == 'workflow_dispatch')
     runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
     name: 📝 Record CLA after merge
     timeout-minutes: 15

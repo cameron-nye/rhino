@@ -90,6 +90,19 @@ function outcome(
 	return result.outcomes.find((entry) => entry.component === component)
 }
 
+test('a blank package-app origin does not probe and stays up', async () => {
+	const result = await runAllProbes({
+		primaryOrigin,
+		packageAppOrigin: '',
+		fetcher: fakeFetcher(healthyRoutes()),
+	})
+	expect(outcome(result, 'package_apps')).toMatchObject({
+		ok: true,
+		detail: 'not configured',
+	})
+	expect(result.runtimeCommitSha).toBeNull()
+})
+
 test('a fully healthy pass reports every component ok', async () => {
 	const result = await probe(healthyRoutes())
 	expect(result.outcomes.map((entry) => entry.component).toSorted()).toEqual(

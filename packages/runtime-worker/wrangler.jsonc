@@ -140,10 +140,11 @@
 					"head_sampling_rate": 1,
 					"invocation_logs": true,
 				},
+				// Upstream lists destinations: ["sentry-otlp-traces"]. Rhino
+				// omits it until that account destination exists.
 				"traces": {
 					"enabled": true,
 					"head_sampling_rate": 0.1,
-					"destinations": ["sentry-otlp-traces"],
 				},
 			},
 			"worker_loaders": [
@@ -308,7 +309,10 @@
 				"SENTRY_ENVIRONMENT": "production",
 				"SENTRY_TRACES_SAMPLE_RATE": 0,
 				"ARTIFACTS_NAMESPACE": "production",
-				"PACKAGE_APP_BASE_URL": "https://kody.run",
+				// Upstream: "PACKAGE_APP_BASE_URL": "https://kody.run".
+				// Omitted here so a production deploy does not publish zone
+				// routes for kody.run. The main worker overlay still copies a
+				// non-empty PACKAGE_APP_BASE_URL when one is set.
 			},
 		},
 		"preview": {

@@ -255,13 +255,11 @@
 				},
 			],
 			// Replaces the top-level observability block (wrangler env keys
-			// override wholesale, so "enabled" is restated): same tracing,
-			// plus the account-level Sentry OTLP export destination
-			// "sentry-otlp-traces" (Workers Observability -> Destinations),
-			// which points at the kody-cloudflare Sentry project's OTLP
-			// traces endpoint. The destination must exist in the target
-			// account before deploy; forks create their own or remove it.
-			// See docs/contributing/setup-manifest.md.
+			// override wholesale, so "enabled" is restated). Upstream also
+			// lists destinations: ["sentry-otlp-traces"]. Rhino omits that
+			// until the account-level Traces destination exists; an unknown
+			// destination fails the deploy. Workers Observability dashboard
+			// traces stay on. See docs/contributing/rhino.md.
 			"observability": {
 				"enabled": true,
 				"logs": {
@@ -272,7 +270,6 @@
 				"traces": {
 					"enabled": true,
 					"head_sampling_rate": 0.1,
-					"destinations": ["sentry-otlp-traces"],
 				},
 			},
 			"worker_loaders": [
@@ -657,35 +654,28 @@
 				"SENTRY_ENVIRONMENT": "production",
 				// JSON number on purpose: buildSentryOptions reads the raw
 				// runtime env and only honors a number here (string secrets
-				// are ignored). 0 disables Sentry SDK trace sampling because
-				// Workers native tracing already exports OTLP traces to
-				// Sentry via the sentry-otlp-traces destination; error
-				// capture is unaffected.
+				// are ignored). 0 disables Sentry SDK trace sampling.
+				// Upstream also exports Workers traces through the
+				// sentry-otlp-traces destination; Rhino omits that destination
+				// until it exists in this account. Error capture is unaffected.
 				"SENTRY_TRACES_SAMPLE_RATE": 0,
 				"ARTIFACTS_NAMESPACE": "production",
-				// Origin hosted package apps are served from. Must stay a
-				// separate registrable domain from APP_BASE_URL — that is what
-				// makes package code cross-site from the app origin, so
-				// `kody_session` never attaches to it. Intentionally unset for
-				// preview and tests, which keep serving package apps inline on
-				// the app origin.
+				// Upstream production sets PACKAGE_APP_BASE_URL to
+				// https://kody.run (a second registrable domain). Rhino leaves
+				// it unset: there is no second zone, and a subdomain of
+				// nyneelevenlabs.com would publish runtime zone routes,
+				// including the catch-all, on this zone and detach the app custom
+				// domains. Set the PACKAGE_APP_BASE_URL Actions variable to a
+				// hostname on a zone this account owns when that domain
+				// exists. See docs/contributing/rhino.md.
 				//
-				// Production deploy publishes apex and wildcard zone routes for
-				// this host on the runtime Worker (never a custom domain in the
-				// package-app zone); DNS placeholder records are ensured
-				// separately. The routes deliberately do not live here, because
-				// Wrangler resolves *local dev* request URLs against the first
-				// configured route — every `npm run dev` request would arrive
-				// as https://kody.run/... and send local logins to the real
-				// domain. See docs/contributing/setup-manifest.md.
-				"PACKAGE_APP_BASE_URL": "https://kody.run",
 				// Email domains are committed (not just GitHub Actions vars) so
-				// they can never silently rederive from APP_BASE_URL. Canonical
-				// email lives on kody.codes. Outbound always sends from the
-				// canonical domains, which requires Email Routing + Email
-				// Sending verification on the kody.codes zone.
-				"USER_EMAIL_DOMAIN": "inbox.kody.codes",
-				"SYSTEM_EMAIL_DOMAIN": "kody.codes",
+				// they can never silently rederive from APP_BASE_URL. Upstream
+				// pins are inbox.kody.codes and kody.codes. Same-named Actions
+				// variables still override these. Both names need Email
+				// Routing + Email Sending on the nyneelevenlabs.com zone.
+				"USER_EMAIL_DOMAIN": "inbox.rhino.nyneelevenlabs.com",
+				"SYSTEM_EMAIL_DOMAIN": "rhino.nyneelevenlabs.com",
 				// Fathom Analytics site id (public, non-secret). Production
 				// only so local dev, preview, and tests never send pageviews.
 				"FATHOM_SITE_ID": "WKKSDJGN",

@@ -437,7 +437,15 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
           WORKFLOW_DISPATCH_SHA: ${{ github.sha }}
-          PRODUCTION_URL: ${{ vars.APP_BASE_URL || 'https://kody.codes' }}
+          PRODUCTION_URL:
+            ${{ vars.APP_BASE_URL || 'https://rhino.nyneelevenlabs.com' }}
+          # Job-level `if` cannot read secrets. Fold the presence check into
+          # these outputs so the DR and Nx cache jobs are skipped entirely.
+          DR_DEPLOY_CONFIGURED:
+            ${{ secrets.DR_DEPLOY_TOKEN != '' && secrets.DR_BACKUP_ACCOUNT_ID !=
+            '' }}
+          NX_CACHE_CONFIGURED:
+            ${{ secrets.NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN != '' }}
           # Tip-of-main workflow ↔ checkout contract. Bump together with
           # DEPLOY_WORKFLOW_CONTRACT_VERSION in tools/ci/deploy-workflow-contract.ts
           # when this workflow gains a checkout-coupled requirement.
@@ -497,8 +505,10 @@ jobs:
           fi
           node tools/ci/deploy-workflow-contract.ts
 
-          # Always redeploy the DR control plane and status worker on manual
-          # workflow_dispatch. On push-driven deploys, path-filter against a
+          # Manual workflow_dispatch redeploys the always-on workers. DR and Nx
+          # cache stay off unless their secrets are set (job-level `if` cannot
+          # read secrets, so the outputs carry that). On push-driven deploys,
+          # path-filter against a
           # short ancestor window (not tip^..tip alone): a cancelled Validate
           # on an intermediate main commit (e.g. squash-merge raced by the
           # next merge) would otherwise skip optional workers forever, because
@@ -512,16 +522,26 @@ jobs:
             echo "deploy_jobs=true" >> "$GITHUB_OUTPUT"
             echo "deploy_highlight=true" >> "$GITHUB_OUTPUT"
             echo "deploy_push_queue=true" >> "$GITHUB_OUTPUT"
-            echo "deploy_backup_control_plane=true" >> "$GITHUB_OUTPUT"
+            if [ "$DR_DEPLOY_CONFIGURED" = "true" ]; then
+              echo "deploy_backup_control_plane=true" >> "$GITHUB_OUTPUT"
+              echo "Backup control plane deploy: forced (workflow_dispatch)."
+            else
+              echo "deploy_backup_control_plane=false" >> "$GITHUB_OUTPUT"
+              echo "Backup control plane deploy: skipped (DR_DEPLOY_TOKEN or DR_BACKUP_ACCOUNT_ID is unset)."
+            fi
             echo "deploy_status_worker=true" >> "$GITHUB_OUTPUT"
             echo "deploy_api_worker=true" >> "$GITHUB_OUTPUT"
             echo "deploy_api_docs_worker=true" >> "$GITHUB_OUTPUT"
-            echo "deploy_nx_cache_worker=true" >> "$GITHUB_OUTPUT"
-            echo "Backup control plane deploy: forced (workflow_dispatch)."
+            if [ "$NX_CACHE_CONFIGURED" = "true" ]; then
+              echo "deploy_nx_cache_worker=true" >> "$GITHUB_OUTPUT"
+              echo "Nx cache worker deploy: forced (workflow_dispatch)."
+            else
+              echo "deploy_nx_cache_worker=false" >> "$GITHUB_OUTPUT"
+              echo "Nx cache worker deploy: skipped (NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN is unset)."
+            fi
             echo "Status worker deploy: forced (workflow_dispatch)."
             echo "API worker deploy: forced (workflow_dispatch)."
             echo "API docs worker deploy: forced (workflow_dispatch)."
-            echo "Nx cache worker deploy: forced (workflow_dispatch)."
             exit 0
           fi
 
@@ -545,7 +565,10 @@ jobs:
 
           node tools/ci/deploy-path-filter.ts <"$PATH_FILTER_LIST" | tee -a "$GITHUB_OUTPUT"
 
-          if grep -E \
+          if [ "$DR_DEPLOY_CONFIGURED" != "true" ]; then
+            echo "deploy_backup_control_plane=false" >> "$GITHUB_OUTPUT"
+            echo "Backup control plane deploy: skipped (DR_DEPLOY_TOKEN or DR_BACKUP_ACCOUNT_ID is unset)."
+          elif grep -E \
             '^(\.github/workflows/deploy\.yml|tools/ci/backup-resources|packages/backup-control-plane/|packages/shared/src/backup-)' \
             "$PATH_FILTER_LIST" >/dev/null; then
             echo "deploy_backup_control_plane=true" >> "$GITHUB_OUTPUT"
@@ -588,7 +611,10 @@ jobs:
           # Do not treat deploy.yml itself as an nx-cache change. Runtime
           # token / secret wiring edits would otherwise upload this worker
           # and a 10000 auth miss blocks the rest of the production deploy.
-          if grep -E \
+          if [ "$NX_CACHE_CONFIGURED" != "true" ]; then
+            echo "deploy_nx_cache_worker=false" >> "$GITHUB_OUTPUT"
+            echo "Nx cache worker deploy: skipped (NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN is unset)."
+          elif grep -E \
             '^(\.github/workflows/nx-cache-deploy\.yml|tools/ci/nx-cache-resources|packages/nx-cache/)' \
             "$PATH_FILTER_LIST" >/dev/null; then
             echo "deploy_nx_cache_worker=true" >> "$GITHUB_OUTPUT"
@@ -1088,7 +1114,8 @@ jobs:
         id: resources
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          APP_BASE_URL:
+            ${{ vars.APP_BASE_URL || 'https://rhino.nyneelevenlabs.com' }}
           # Legacy app hostnames kept attached (and optionally redirected)
           # during a domain migration; see tools/ci/resource-utils.ts.
           APP_LEGACY_HOSTS: ${{ vars.APP_LEGACY_HOSTS }}
@@ -1097,6 +1124,11 @@ jobs:
           PACKAGE_APP_LEGACY_REDIRECT: ${{ vars.PACKAGE_APP_LEGACY_REDIRECT }}
           USER_EMAIL_DOMAIN: ${{ vars.USER_EMAIL_DOMAIN }}
           SYSTEM_EMAIL_DOMAIN: ${{ vars.SYSTEM_EMAIL_DOMAIN }}
+          # Empty leaves hosted package apps off. Set this only to a second
+          # registrable domain this account owns. Do not use a
+          # nyneelevenlabs.com name: runtime zone routes would detach the
+          # app custom domains. Upstream value is https://kody.run.
+          PACKAGE_APP_BASE_URL: ${{ vars.PACKAGE_APP_BASE_URL }}
           LEGACY_USER_EMAIL_DOMAINS: ${{ vars.LEGACY_USER_EMAIL_DOMAINS }}
           LEGACY_SYSTEM_EMAIL_DOMAINS: ${{ vars.LEGACY_SYSTEM_EMAIL_DOMAINS }}
           # Optional override for DMARC rua forward destination (default
@@ -1590,7 +1622,8 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ENV: production
-          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          APP_BASE_URL:
+            ${{ vars.APP_BASE_URL || 'https://rhino.nyneelevenlabs.com' }}
           DEPLOY_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
           APP_DEPLOY_INFO: ${{ steps.deploy_info.outputs.app_deploy_info }}
           WRANGLER_CONFIG: ${{ steps.resources.outputs.wrangler_config }}
@@ -2001,7 +2034,7 @@ jobs:
       needs.sha-guard.outputs.deploy_status_worker == 'true'
     environment:
       name: production
-      url: https://status.kody.codes
+      url: https://status.rhino.nyneelevenlabs.com
     steps:
       - name: 📦 Checkout
         uses: actions/checkout@v6.0.2
@@ -2088,7 +2121,7 @@ jobs:
           EXPECTED_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
         run: |
           set -euo pipefail
-          HEALTHCHECK_URL="https://status.kody.codes/health"
+          HEALTHCHECK_URL="https://status.rhino.nyneelevenlabs.com/health"
 
           attempts=20
           delay_seconds=3
@@ -2113,7 +2146,7 @@ jobs:
 
   deploy-api-worker:
     runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
-    name: 🔌 Deploy API worker (api.kody.codes)
+    name: 🔌 Deploy API worker (api.rhino.nyneelevenlabs.com)
     timeout-minutes: 8
     # The KODY_API service binding targets the origin's KodyApi entrypoint,
     # so this deploys after origin. `deploy` may be skipped when only the
@@ -2132,7 +2165,7 @@ jobs:
       (needs.deploy.result == 'success' || needs.deploy.result == 'skipped')
     environment:
       name: production
-      url: https://api.kody.codes
+      url: https://api.rhino.nyneelevenlabs.com
     steps:
       - name: 📦 Checkout
         uses: actions/checkout@v6.0.2
@@ -2189,7 +2222,7 @@ jobs:
           EXPECTED_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
         run: |
           set -euo pipefail
-          API_URL="https://api.kody.codes"
+          API_URL="https://api.rhino.nyneelevenlabs.com"
 
           # A brand-new custom domain can take a few minutes for DNS and the
           # edge certificate, so this waits longer than the other workers.
@@ -2219,7 +2252,7 @@ jobs:
 
   deploy-api-docs-worker:
     runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
-    name: 📚 Deploy API docs worker (api-docs.kody.codes)
+    name: 📚 Deploy API docs worker (api-docs.rhino.nyneelevenlabs.com)
     timeout-minutes: 8
     # Independent of origin: docs fetch the live OpenAPI JSON over HTTPS.
     # Deploys after the API worker when that job ran, so a brand-new API
@@ -2239,7 +2272,7 @@ jobs:
         needs.deploy-api-worker.result == 'skipped')
     environment:
       name: production
-      url: https://api-docs.kody.codes
+      url: https://api-docs.rhino.nyneelevenlabs.com
     steps:
       - name: 📦 Checkout
         uses: actions/checkout@v6.0.2
@@ -2293,7 +2326,7 @@ jobs:
           EXPECTED_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
         run: |
           set -euo pipefail
-          DOCS_URL="https://api-docs.kody.codes"
+          DOCS_URL="https://api-docs.rhino.nyneelevenlabs.com"
 
           # Custom domain DNS + cert can take a few minutes on first deploy.
           attempts=40
@@ -2328,6 +2361,8 @@ jobs:
     name: 🛟 Deploy DR backup control plane
     timeout-minutes: 8
     needs: sha-guard
+    # Credential presence is folded into deploy_backup_control_plane. Job-level
+    # `if` cannot read secrets; a secrets expression here fails workflow parsing.
     if: >-
       needs.sha-guard.outputs.should_deploy == 'true' &&
       needs.sha-guard.outputs.deploy_backup_control_plane == 'true'
