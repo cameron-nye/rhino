@@ -125,7 +125,11 @@ jobs:
       ${{ (inputs.runner != '' && inputs.runner != '(repo default)' &&
       inputs.runner) || vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
     name: 🧹 Static
-    timeout-minutes: 10
+    # Rhino: ubuntu-latest reached worker-startup-time:check with about a
+    # minute left of this 10-minute cap, and GitHub cancelled the profile.
+    # Fifteen minutes lets the timeout warning finish. The check itself is
+    # unchanged.
+    timeout-minutes: 15
     permissions:
       contents: read
       issues: write

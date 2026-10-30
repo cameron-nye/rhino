@@ -105,7 +105,7 @@ purpose.
 | `tools/ci/production-resources.ts`                                        | `APP_BASE_URL` and `PACKAGE_APP_BASE_URL` fallbacks, and an optional Fathom site id.                                                                                  |
 | `tools/nx-remote-cache-probe.ts`                                          | Default Nx cache server hostname.                                                                                                                                     |
 | `.github/workflows/deploy.yml`                                            | Production hostnames, app and package-app origin fallbacks, optional Fathom site id, the DR job skip, and fresh-account worker bootstrap.                             |
-| `.github/workflows/validate.yml`                                          | 🧹 Static sets `NODE_OPTIONS=--max-old-space-size=6144`. 🧪 Node on `ubuntu-latest` uses a 20-minute timeout and `--runner ubuntu-latest`.                            |
+| `.github/workflows/validate.yml`                                          | 🧹 Static sets `NODE_OPTIONS=--max-old-space-size=6144` and a 15-minute timeout. 🧪 Node on `ubuntu-latest` uses 20 minutes and `--runner ubuntu-latest`.             |
 | `.github/workflows/nx-cache-deploy.yml`                                   | Nx cache hostname and skip when the write token is absent.                                                                                                            |
 | `.github/workflows/cla.yml`                                               | CLA jobs run only on `kody-hq/kody`.                                                                                                                                  |
 | `.github/workflows/weekly-site-perf.yml`                                  | Weekly site perf runs only on `kody-hq/kody`.                                                                                                                         |
@@ -184,7 +184,9 @@ that same gate, split across jobs.
 🧹 Static sets `NODE_OPTIONS=--max-old-space-size=6144`. That raises V8's heap
 ceiling for the job (it does not reserve the memory). `ubuntu-latest` has about
 7 GB, and the default ~2 GB ceiling kills
-`tsc -p packages/worker/tsconfig-start-*.json` with exit 134.
+`tsc -p packages/worker/tsconfig-start-*.json` with exit 134. The Static job
+timeout is 15 minutes. On `ubuntu-latest` the 10-minute cap cancelled
+`worker-startup-time:check` before its timeout warning could finish.
 
 🧪 Node's wall-clock ceiling was measured on 4x WarpBuild runners (watch 700s,
 hard 840s). On `ubuntu-latest` the same suites passed and still took 794s and
