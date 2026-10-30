@@ -88,7 +88,7 @@ export function SiteHeader(props: SiteHeaderProps) {
 					<BrandContextMenu>
 						<SiteLink href="/" css={brandCss}>
 							<KodyMark size={34} />
-							<span>Kody</span>
+							<span>Rhino</span>
 						</SiteLink>
 					</BrandContextMenu>
 					<div
@@ -127,7 +127,7 @@ export function SiteHeader(props: SiteHeaderProps) {
 				<BrandContextMenu>
 					<SiteLink href="/" css={brandCss}>
 						<KodyMark size={34} />
-						<span>Kody</span>
+						<span>Rhino</span>
 					</SiteLink>
 				</BrandContextMenu>
 				<div css={navLinksCss}>

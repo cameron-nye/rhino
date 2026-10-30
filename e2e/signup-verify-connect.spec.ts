@@ -200,7 +200,7 @@ test('a new user signs up, verifies email from the message, and reaches MCP conn
 		await expect(page).toHaveURL(/\/onboarding/, { timeout: 20_000 })
 		await waitForClientHydration(page)
 		await expect(
-			page.getByRole('heading', { name: /Get started with\s*Kody/i }),
+			page.getByRole('heading', { name: /Get started with\s*Rhino/i }),
 		).toBeVisible()
 
 		const stepsNav = page.getByRole('navigation', { name: 'Onboarding steps' })

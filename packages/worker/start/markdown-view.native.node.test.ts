@@ -295,7 +295,7 @@ test('first-party diagram blocks render a registered figure with the quote as it
 	expect(firstParty).toMatch(
 		/<figcaption[^>]*><p>Your code sends <code>\{\{secret:github\}\}<\/code> and the gateway fills it\.<\/p><\/figcaption>/,
 	)
-	expect(firstParty).toContain('Kody gateway')
+	expect(firstParty).toContain('Rhino gateway')
 	expect(firstParty).toMatch(
 		/<blockquote><p>\[!DIAGRAM\] not-a-diagram\nUnknown ids stay a quote\.<\/p><\/blockquote>/,
 	)

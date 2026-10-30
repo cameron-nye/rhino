@@ -2,7 +2,7 @@ export const acquisitionPageMeta = {
 	useCases: {
 		key: 'useCases',
 		path: '/use-cases',
-		title: 'What will you build with Kody?',
+		title: 'What will you build with Rhino?',
 		description:
 			'Build reusable tools, automate inbox work, share context across your agents, and run workflows on a schedule with Kody.',
 	},

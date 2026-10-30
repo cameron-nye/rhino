@@ -1,6 +1,6 @@
 import { type BlogPost } from './parse-frontmatter.ts'
 
-const BLOG_FEED_TITLE = 'Kody Blog'
+const BLOG_FEED_TITLE = 'Rhino Blog'
 const BLOG_FEED_DESCRIPTION =
 	'Updates and positioning posts from Kent C. Dodds about Kody.'
 

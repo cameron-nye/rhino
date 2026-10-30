@@ -97,15 +97,15 @@ function publicContentLinks(
 /** Docs, public website pages, and blog posts share their source metadata. */
 export function buildLlmsTxt(baseUrl: string): string {
 	const lines = [
-		'# Kody',
+		'# Rhino',
 		'',
-		"> Kody is Your agents' cloud for individuals and teams (orgs, teams,",
+		"> Rhino is Your agents' cloud for individuals and teams (orgs, teams,",
 		'> grants): connect the AI agent you already use over MCP and it gains',
 		'> durable memory, credentials it never reads, saved packages, jobs,',
 		'> workflows, webhooks, and apps that keep running while you are offline,',
 		'> and every other agent you connect reuses the same home.',
 		'',
-		`Start with [What is Kody?](${baseUrl}/docs.md). Each documentation link below is`,
+		`Start with [What is Rhino?](${baseUrl}/docs.md). Each documentation link below is`,
 		'plain markdown; the same content is available to connected agents as',
 		'`search({ entity: "guide:{id}" })`.',
 		'',

@@ -1,8 +1,8 @@
 <div align="center">
-  <img src="./packages/worker/public/images/brand/kody-logo-outlined.svg" alt="Kody logo" width="400" />
+  <img src="./packages/worker/public/images/brand/kody-logo-outlined.svg" alt="Rhino logo" width="400" />
 
   <p>
-    <strong>Your agents' cloud: the memory, keys, code, and automations your AI agent keeps, portable across every MCP host. Built on Cloudflare Workers.</strong>
+    <strong>Rhino — Your agents' cloud: the memory, keys, code, and automations your AI agent keeps, portable across every MCP host. Built on Cloudflare Workers.</strong>
   </p>
 
   <p>
@@ -17,14 +17,14 @@
 
 ---
 
-Kody is Your agents' cloud: the memory, keys, code, and automations your AI
+Rhino is Your agents' cloud: the memory, keys, code, and automations your AI
 agent keeps, portable across every MCP host. Built on Cloudflare Workers and the
 Model Context Protocol (MCP), it ships a TanStack Start website, Worker-based
 request routing, package runtime plumbing, and OAuth-protected MCP endpoints.
 The project favors a compact MCP surface with powerful `search` and Code Mode
 `execute` flows over a large static tool catalog.
 
-Kody works for individuals and teams (orgs, teams, grants): each account holds
+Rhino works for individuals and teams (orgs, teams, grants): each account holds
 isolated packages, jobs, credentials, memories, and related state. Tests and
 fixtures may seed deterministic local accounts, but no account is privileged at
 runtime. The repo follows several
@@ -112,8 +112,8 @@ kody.run    → kody-runtime (package-app zone routes)
 | [`docs/contributing/environment-variables.md`](./docs/contributing/environment-variables.md) | Adding new env vars                  |
 | [`docs/contributing/cloudflare-offerings.md`](./docs/contributing/cloudflare-offerings.md)   | Optional Cloudflare integrations     |
 | [`docs/contributing/project-intent.md`](./docs/contributing/project-intent.md)               | Scope, goals, and non-goals          |
-| [`docs/contributing/index.md`](./docs/contributing/index.md)                                 | Developing and extending Kody        |
-| [`docs/use/index.md`](./docs/use/index.md)                                                   | Using Kody over MCP                  |
+| [`docs/contributing/index.md`](./docs/contributing/index.md)                                 | Developing and extending Rhino       |
+| [`docs/use/index.md`](./docs/use/index.md)                                                   | Using Rhino over MCP                 |
 | [`docs/contributing/setup/`](./docs/contributing/setup/index.md)                             | Local development and verification   |
 
 ## Contributing

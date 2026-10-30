@@ -183,7 +183,7 @@ export function renderIntegrationsSetupSections(
 			{platformCatalog.length > 0 ? (
 				<section css={{ display: 'grid', gap: spacing.lg }}>
 					<div css={{ display: 'grid', gap: spacing.xs }}>
-						<h2 css={sectionTitleCss}>Connect with Kody</h2>
+						<h2 css={sectionTitleCss}>Connect with Rhino</h2>
 						<p css={descriptionCss}>
 							These use Kody's built-in OAuth apps, so there is nothing to set
 							up first.

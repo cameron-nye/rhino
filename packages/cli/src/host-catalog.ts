@@ -518,8 +518,8 @@ export function buildGooseInstallUrl(mcpServerUrl: string): string {
 		url: mcpServerUrl,
 		type: 'streamable_http',
 		id: 'kody',
-		name: 'Kody',
-		description: 'Kody personal assistant',
+		name: 'Rhino',
+		description: 'Rhino personal assistant',
 	})
 	return `goose://extension?${params.toString()}`
 }

@@ -79,7 +79,7 @@ export function LandingLantern(props: LandingLanternProps) {
 			ref={node}
 		>
 			<figcaption className="visually-hidden">
-				A lantern holding five glowing orbs, one for each Kody primitive.
+				A lantern holding five glowing orbs, one for each Rhino primitive.
 			</figcaption>
 			<img
 				src={publicAsset(landingLanternImage.src)}

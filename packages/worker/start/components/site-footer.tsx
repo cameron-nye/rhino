@@ -23,7 +23,7 @@ export function SiteFooter(props: SiteFooterProps) {
 			<div css={footerInnerCss}>
 				<SiteLink href="/" css={brandCss}>
 					<KodyMark size={28} />
-					<span>Kody</span>
+					<span>Rhino</span>
 				</SiteLink>
 				<p css={taglineCss}>
 					{props.loggedIn ? (

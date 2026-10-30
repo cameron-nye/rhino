@@ -18,7 +18,7 @@ import {
 	withAgentHref,
 } from '#universal/with-agents.ts'
 
-export const DEFAULT_DOCUMENT_TITLE = 'Kody'
+export const DEFAULT_DOCUMENT_TITLE = 'Rhino'
 export const NOT_FOUND_DOCUMENT_TITLE = 'Not found'
 
 const INTERNAL_ERROR_DOCUMENT_TITLE = 'Something went wrong'
@@ -119,7 +119,7 @@ function communityListingHead({
 		return titleOnly('Package')
 	}
 	const title = shell.listingId
-		? `${shell.name} — Kody public package`
+		? `${shell.name} — Rhino public package`
 		: shell.name
 	if (!shell.listingId) {
 		return {
@@ -220,7 +220,7 @@ function docDetailHead({
 		return titleOnly('Docs')
 	}
 	const title =
-		doc.slug === docsIntroSlug ? 'Kody Docs' : `${doc.title} — Kody Docs`
+		doc.slug === docsIntroSlug ? 'Rhino Docs' : `${doc.title} — Rhino Docs`
 	return {
 		title,
 		description: doc.summary,
@@ -291,7 +291,7 @@ const routeDocumentHeads = {
 			{
 				rel: 'alternate',
 				type: 'application/rss+xml',
-				title: 'Kody Blog RSS',
+				title: 'Rhino Blog RSS',
 				hrefPath: '/blog/rss.xml',
 			},
 		],
@@ -301,7 +301,7 @@ const routeDocumentHeads = {
 		if (!post?.ok) {
 			return titleOnly('Blog')
 		}
-		const title = `${post.title} — Kody Blog`
+		const title = `${post.title} — Rhino Blog`
 		return {
 			title,
 			canonicalPath: pathname,
@@ -314,7 +314,7 @@ const routeDocumentHeads = {
 	},
 	docs: docDetailHead,
 	docsConnect: ({ pathname }) => ({
-		title: 'Connect a provider — Kody Docs',
+		title: 'Connect a provider — Rhino Docs',
 		description:
 			'Verified walkthroughs for connecting Discord, GitHub, Google, Notion, Origin, Salesforce, Slack, or Spotify to Kody.',
 		canonicalPath: pathname,
@@ -404,13 +404,13 @@ const routeDocumentHeads = {
 			return titleOnly(title)
 		}
 
-		const ogTitle = `${shell.displayName} (@${shell.username}) — Kody`
+		const ogTitle = `${shell.displayName} (@${shell.username}) — Rhino`
 		const isOrg = shell.ownerKind === 'org'
 		const ogDescription =
 			shell.bio == null || shell.bio.trim() === ''
 				? isOrg
-					? 'Organization on Kody.'
-					: 'Community profile on Kody.'
+					? 'Organization on Rhino.'
+					: 'Community profile on Rhino.'
 				: truncateText(shell.bio, 200)
 		return {
 			title,
@@ -439,36 +439,36 @@ const routeDocumentHeads = {
 	pendingVerification: titleOnly('Verify your email'),
 	features: featurePageHead(
 		'features',
-		'Kody features for your AI agents | Kody',
+		'Rhino features for your AI agents | Rhino',
 	),
 	featureMemory: featurePageHead(
 		'feature-memory',
-		'Shared memory for your AI agents | Kody',
+		'Shared memory for your AI agents | Rhino',
 		'memory',
 	),
 	featurePackages: featurePageHead(
 		'feature-packages',
-		'Reusable packages for your AI agents | Kody',
+		'Reusable packages for your AI agents | Rhino',
 		'packages',
 	),
 	featureTriggers: featurePageHead(
 		'feature-triggers',
-		'Triggers and automation for your AI agents | Kody',
+		'Triggers and automation for your AI agents | Rhino',
 		'triggers',
 	),
 	featureCredentials: featurePageHead(
 		'feature-credentials',
-		'Credentials for your AI agents | Kody',
+		'Credentials for your AI agents | Rhino',
 		['secrets', 'integrations'],
 	),
 	featureApps: featurePageHead(
 		'feature-apps',
-		'Package apps for your AI agents | Kody',
+		'Package apps for your AI agents | Rhino',
 		'apps',
 	),
 	business: publicPageHead(
 		'business',
-		'AI Agent Cloud for Business and Agencies | Kody',
+		'AI Agent Cloud for Business and Agencies | Rhino',
 	),
 	pricing: publicPageHead('pricing', 'Pricing'),
 	faq: publicPageHead('faq', 'FAQ'),
@@ -487,9 +487,9 @@ const routeDocumentHeads = {
 	believe: publicPageHead('believe', 'What we believe'),
 	withAgent: withAgentHead,
 	support: publicPageHead('support', 'Support'),
-	about: publicPageHead('about', 'About Kody'),
+	about: publicPageHead('about', 'About Rhino'),
 	brandGuide: publicPageHead('brand-guide', 'Brand guide'),
-	contact: publicPageHead('contact', 'Contact Kody'),
+	contact: publicPageHead('contact', 'Contact Rhino'),
 	privacy: publicPageHead('privacy', 'Privacy'),
 	terms: publicPageHead('terms', 'Terms'),
 	discord: publicPageHead('discord', 'Discord'),
@@ -638,7 +638,7 @@ function withAgentHead({
 }): DocumentHeadDescriptor {
 	const agent = findWithAgentByPathname(pathname)
 	if (!agent) return titleOnly('Agent not found')
-	const title = `Kody for ${agent.name} | Kody`
+	const title = `Rhino for ${agent.name} | Rhino`
 	return {
 		title,
 		description: agent.pitch,
@@ -654,7 +654,7 @@ function acquisitionHead({
 }): DocumentHeadDescriptor {
 	const page = acquisitionPageSummaries.find((entry) => entry.path === pathname)
 	if (!page) return { title: NOT_FOUND_DOCUMENT_TITLE }
-	const title = `${page.title} | Kody`
+	const title = `${page.title} | Rhino`
 	return {
 		title,
 		description: page.description,

@@ -232,7 +232,7 @@ export function CustomToolsPage() {
 						</h2>
 						<p>Connect your agent, then give it this starting prompt.</p>
 						<SiteLink className="tool-button" href="/onboarding">
-							Get started with Kody ↗
+							Get started with Rhino ↗
 						</SiteLink>
 					</div>
 					<div className="tool-prompt">

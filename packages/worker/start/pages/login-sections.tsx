@@ -50,7 +50,7 @@ function renderBrand(
 			css={extraCss}
 		>
 			<KodyMark size={34} />
-			<span>Kody</span>
+			<span>Rhino</span>
 		</SiteLink>
 	)
 }

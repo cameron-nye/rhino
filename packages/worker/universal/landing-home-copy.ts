@@ -1,7 +1,7 @@
 /**
- * Locked kody.codes homepage copy (hero plus the early-scroll sections).
- * Keep these strings exact. Do not invent positioning or swap in synonyms.
- * Homepage SSR tests pin independent literals of this copy, not this module.
+ * Homepage copy (hero plus the early-scroll sections). Wording stays the
+ * upstream homepage except the product name, which is Rhino on this fork.
+ * Do not invent positioning or swap in synonyms.
  */
 
 export const landingHeroHeadlineLead = 'The '
@@ -12,12 +12,12 @@ export const landingHeroSubhead =
 	'One place for the credentials, tools, and workflows for every agent your team members use.'
 export const landingHeroPrimaryCta = 'Connect your agent'
 export const landingHeroPlugLine =
-	'Keep your agent. Kody is what it plugs into.'
+	'Keep your agent. Rhino is what it plugs into.'
 
 export const landingPrimitivesIntroLead =
-	'Kody gives your agents a shared set of primitives.'
+	'Rhino gives your agents a shared set of primitives.'
 export const landingPrimitivesMoreLead = 'Want the full picture?'
-export const landingPrimitivesMoreLink = 'What is Kody?'
+export const landingPrimitivesMoreLink = 'What is Rhino?'
 
 export const landingHomePrimitives = [
 	{
@@ -49,7 +49,7 @@ export const landingHomePrimitives = [
 
 export type LandingHomePrimitive = (typeof landingHomePrimitives)[number]
 
-export const landingIsHeadingLead = 'What Kody '
+export const landingIsHeadingLead = 'What Rhino '
 export const landingIsHeadingIs = 'is'
 export const landingIsHeadingJoin = ' and '
 export const landingIsHeadingIsNot = 'is not'
@@ -57,11 +57,11 @@ export const landingIsHeadingIsNot = 'is not'
 export const landingIsNotItems = [
 	{
 		kicker: 'Not an agent.',
-		body: 'Kody does not reason, chat, or decide. Your agent does the thinking. Kody keeps what it needs between conversations.',
+		body: 'Rhino does not reason, chat, or decide. Your agent does the thinking. Rhino keeps what it needs between conversations.',
 	},
 	{
 		kicker: 'Not a chat app.',
-		body: 'There is no Kody chat window to learn. Your team keeps working in the agents they already use.',
+		body: 'There is no Rhino chat window to learn. Your team keeps working in the agents they already use.',
 	},
 	{
 		kicker: 'Not tied to one agent.',
@@ -70,12 +70,12 @@ export const landingIsNotItems = [
 ] as const
 
 export const landingIsItem = {
-	kicker: 'Kody is the shared layer behind them.',
+	kicker: 'Rhino is the shared layer behind them.',
 	body: 'The shared credentials, tools, and workflows behind every agent your team uses.',
 } as const
 
-export const landingCompareWithoutTitle = 'Without Kody'
-export const landingCompareWithTitle = 'With Kody'
+export const landingCompareWithoutTitle = 'Without Rhino'
+export const landingCompareWithTitle = 'With Rhino'
 export const landingCompareCaption = 'Ask once. Save it. Trigger it.'
 
 export const landingCompareWithoutItems = [
@@ -93,5 +93,5 @@ export const landingCompareWithItems = [
 export const landingClosingHeadingLead = 'Invisible '
 export const landingClosingHeadingEmphasis = 'software'
 export const landingClosingLead =
-	'People want problems solved, not another app. Kody stays out of sight, behind the agents your team already uses.'
+	'People want problems solved, not another app. Rhino stays out of sight, behind the agents your team already uses.'
 export const landingClosingBelieveLink = 'What we believe'

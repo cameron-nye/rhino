@@ -219,7 +219,7 @@ export function LandingLoopPlayer({ hosts }: { hosts?: WalkthroughHostPick }) {
 			<div className="landing-loop-head">
 				<p className="landing-loop-title">
 					<span className="landing-loop-title-full">
-						Example conversation with your agents and Kody
+						Example conversation with your agents and Rhino
 					</span>
 					<span className="landing-loop-title-short">Example conversation</span>
 				</p>

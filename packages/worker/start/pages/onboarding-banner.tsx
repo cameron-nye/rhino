@@ -31,7 +31,7 @@ export function renderOnboardingBanner(options?: OnboardingBannerOptions) {
 
 	return (
 		<section
-			aria-label="Get started with Kody"
+			aria-label="Get started with Rhino"
 			css={{
 				...noticeCardCss,
 				display: 'flex',

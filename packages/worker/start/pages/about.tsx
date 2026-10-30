@@ -18,18 +18,18 @@ export function AboutRoute() {
 	return (
 		<section css={pageCss}>
 			<header css={pageHeaderCss}>
-				<h1 css={pageTitleCss}>About Kody</h1>
+				<h1 css={pageTitleCss}>About Rhino</h1>
 				<p css={pageDescriptionCss}>
-					Kody is Your agents&apos; cloud: the memory, credentials, packages,
+					Rhino is Your agents&apos; cloud: the memory, credentials, packages,
 					jobs, and apps your AI agent keeps, portable across every MCP host.
 				</p>
 			</header>
 
 			<p css={descriptionCss}>
-				You use Kody from the agent you already pay for, Cursor, ChatGPT,
+				You use Rhino from the agent you already pay for, Cursor, ChatGPT,
 				Claude, Codex, Copilot, Grok, or any other MCP-capable host. There is no
-				separate Kody chat app. Kody does not run its own agent loop and does
-				not bill for chat tokens. Your connected agent does the thinking; Kody
+				separate Rhino chat app. Rhino does not run its own agent loop and does
+				not bill for chat tokens. Your connected agent does the thinking; Rhino
 				holds the durable result so the work can run again without another model
 				in the loop.
 			</p>
@@ -69,7 +69,7 @@ export function AboutRoute() {
 			<p css={descriptionCss}>
 				Want the capability tour before connecting? Read{' '}
 				<SiteLink href="/docs/what-is-kody" css={mutedLinkCss}>
-					What is Kody?
+					What is Rhino?
 				</SiteLink>{' '}
 				or the compact index at{' '}
 				<SiteLink href="/llms.txt" css={mutedLinkCss}>

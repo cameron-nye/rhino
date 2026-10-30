@@ -301,7 +301,7 @@ export function buildMcpServerCard(origin: string) {
 			version: kodyMcpServerCardVersion,
 		},
 		description:
-			"Your agents' cloud for individuals and teams. MCP with search and execute. OAuth required. Connect from an existing MCP host. There is no separate Kody chat app.",
+			"Your agents' cloud for individuals and teams. MCP with search and execute. OAuth required. Connect from an existing MCP host. There is no separate Rhino chat app.",
 		url: endpoint,
 		transport: {
 			type: 'streamable-http',
@@ -408,7 +408,7 @@ export function buildAuthMarkdown(origin: string): string {
 	return [
 		'# auth.md',
 		'',
-		"Kody is Your agents' cloud: an OAuth-protected MCP cloud for individuals and teams.",
+		"Rhino is Your agents' cloud: an OAuth-protected MCP cloud for individuals and teams.",
 		`Agents connect at \`${mcp}\` from an existing MCP host. People complete`,
 		'sign-in and consent in the browser; do not ask anyone to paste credentials',
 		'or tokens into chat.',
@@ -416,7 +416,7 @@ export function buildAuthMarkdown(origin: string): string {
 		'## Add the MCP server',
 		'',
 		`1. Point the host at \`${mcp}\`.`,
-		'2. Complete the OAuth flow the host opens. Sign in to Kody if needed,',
+		'2. Complete the OAuth flow the host opens. Sign in to Rhino if needed,',
 		'   then approve access.',
 		'3. The account email must be verified before authorize can finish. If',
 		'   authorize asks to verify, keep that tab open, finish verification',
@@ -448,17 +448,17 @@ export function buildAuthMarkdown(origin: string): string {
 
 export function buildHomeMarkdown(origin: string): string {
 	return [
-		'# Kody',
+		'# Rhino',
 		'',
-		"Kody is Your agents' cloud: for individuals and teams (orgs, teams,",
+		"Rhino is Your agents' cloud: for individuals and teams (orgs, teams,",
 		'and grants). You use it from Cursor, ChatGPT, Claude, Codex, Copilot,',
-		'Grok, or any MCP host, not from a separate Kody chat app.',
+		'Grok, or any MCP host, not from a separate Rhino chat app.',
 		'',
 		`MCP URL: \`${origin}${mcpResourcePath}\` (OAuth required).`,
 		'',
 		'## Start here',
 		'',
-		`- [What is Kody?](${origin}/docs/what-is-kody.md) — capability tour, no account`,
+		`- [What is Rhino?](${origin}/docs/what-is-kody.md) — capability tour, no account`,
 		`- [How to connect](${origin}${authMdPath}) — OAuth and host setup`,
 		`- [Docs](${origin}/docs.md) — introduction plus the full index (compact: ${origin}/llms.txt)`,
 		`- [Connect a provider](${origin}/docs/connect.md) — Discord, GitHub, Google, and more`,
@@ -488,13 +488,13 @@ export function buildNotFoundMarkdown(origin: string): string {
 	return [
 		'# Not found',
 		'',
-		'That URL is not on this Kody site (HTTP 404).',
+		'That URL is not on this Rhino site (HTTP 404).',
 		'',
 		'Useful next steps:',
 		'',
-		`- [Kody docs](${origin}/docs)`,
-		`- [About Kody](${origin}/about)`,
-		`- [Contact Kody](${origin}/contact)`,
+		`- [Rhino docs](${origin}/docs)`,
+		`- [About Rhino](${origin}/about)`,
+		`- [Contact Rhino](${origin}/contact)`,
 		`- [Sitemap](${origin}${sitemapPath})`,
 		`- [llms.txt](${origin}/llms.txt)`,
 		'',
@@ -512,7 +512,7 @@ export {
  * at {@link kodyCanonicalMarketingOrigin}. Recompute if that JSON changes.
  */
 export const homeSoftwareApplicationJsonLdCspHash =
-	"'sha256-M+uP/HENbGxRZOWd2/4MlETEUXL/WxQUaUi79Pg3bMw='"
+	"'sha256-3buDDVPl6JE8WWOQw+MOj6MKGdpvI1eVVfOVae5VPL0='"
 
 /**
  * Shared Open API discovery links for `/docs.md` and `/llms.txt`.

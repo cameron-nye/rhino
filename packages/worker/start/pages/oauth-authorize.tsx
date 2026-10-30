@@ -624,7 +624,7 @@ export function OAuthAuthorizeRoute({
 	return (
 		<section css={pageCss}>
 			<header css={headerCss}>
-				<span css={eyebrowCss}>Kody secure connection</span>
+				<span css={eyebrowCss}>Rhino secure connection</span>
 				<h1 css={pageTitleCss}>Authorize access</h1>
 				{accessLead ? <p css={pageDescriptionCss}>{accessLead}</p> : null}
 			</header>

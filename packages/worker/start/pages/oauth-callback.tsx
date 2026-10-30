@@ -26,7 +26,7 @@ export function OAuthCallbackRoute() {
 	return (
 		<section css={pageCss}>
 			<header css={headerCss}>
-				<span css={eyebrowCss}>Kody secure connection</span>
+				<span css={eyebrowCss}>Rhino secure connection</span>
 				<h1 css={pageTitleCss}>OAuth callback</h1>
 				<p css={pageDescriptionCss}>{title}.</p>
 			</header>

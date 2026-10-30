@@ -291,7 +291,7 @@ export function McpGatewayPage() {
 				</header>
 				<div
 					className="topology"
-					aria-label="Claude, Cursor, and Codex connect through Kody search and execute to connected accounts, saved packages, and remote MCP servers"
+					aria-label="Claude, Cursor, and Codex connect through Rhino search and execute to connected accounts, saved packages, and remote MCP servers"
 				>
 					<div className="ports">
 						{['Claude', 'Cursor', 'Codex'].map((name) => (
@@ -302,7 +302,7 @@ export function McpGatewayPage() {
 						))}
 					</div>
 					<div className="core">
-						<strong>Kody</strong>
+						<strong>Rhino</strong>
 						<code>search · execute</code>
 						<small>Your account’s tools, code, and memory</small>
 					</div>
@@ -374,7 +374,7 @@ export function McpGatewayPage() {
 							</p>
 						</div>
 						<div className="option">
-							<h3>Kody</h3>
+							<h3>Rhino</h3>
 							<p>
 								Use Kody when you want to keep the workflow you built with those
 								tools. Your agent can combine them in code and save that code

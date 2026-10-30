@@ -497,7 +497,7 @@ export function LoginPage({
 				</div>
 
 				<div css={authCornerCss}>
-					<SiteLink href="/">&larr; Back to Kody</SiteLink>
+					<SiteLink href="/">&larr; Back to Rhino</SiteLink>
 				</div>
 			</div>
 		</div>

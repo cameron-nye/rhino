@@ -335,7 +335,7 @@ export function integrationsScene(state: {
 				)}
 			</div>
 			<div className="pw-hub" style={at(52.4, 50)}>
-				Kody
+				Rhino
 			</div>
 			<div className="pw-node pw-cal" style={at(96, 50)}>
 				<span className="pw-cal-head">

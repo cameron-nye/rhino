@@ -18,7 +18,7 @@ export function ContactRoute() {
 	return (
 		<section css={pageCss}>
 			<header css={pageHeaderCss}>
-				<h1 css={pageTitleCss}>Contact Kody</h1>
+				<h1 css={pageTitleCss}>Contact Rhino</h1>
 				<p css={pageDescriptionCss}>
 					How to reach the people who run the hosted Kody service at kody.codes.
 				</p>

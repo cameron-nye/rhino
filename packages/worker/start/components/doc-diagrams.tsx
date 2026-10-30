@@ -107,7 +107,7 @@ function renderPlaceholderFillDiagram() {
 			})}
 
 			<section css={{ ...cardCss, ...gatewayCardCss }}>
-				<p css={cardTitleCss}>Kody gateway</p>
+				<p css={cardTitleCss}>Rhino gateway</p>
 				<ul css={checkListCss}>
 					<li css={animated('kody-diagram-reveal-https')}>HTTPS request</li>
 					<li css={animated('kody-diagram-reveal-host')}>

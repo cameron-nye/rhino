@@ -202,7 +202,7 @@ export function IntegrationsHeroScene(props: {
 				)}
 				{tag('out', 52, 26, 'events?')}
 				<div className="pw-hub pw-int-hero-hub" style={at(52, 50)}>
-					Kody
+					Rhino
 				</div>
 				{tag('back', 52, 74, backLabel)}
 			</div>
@@ -305,7 +305,7 @@ export function IntegrationsReuseScene(props: {
 					reuseHeight,
 				)}
 				{tag('out', 50, 7, info.request)}
-				<div className="pw-int-bus">Kody</div>
+				<div className="pw-int-bus">Rhino</div>
 				{tag('back', 50, 53, info.result)}
 			</div>
 			<div className="pw-node pw-int-saved">
@@ -399,7 +399,7 @@ export function IntegrationsSetupScene() {
 							className="pw-int-link pw-int-link-a"
 							aria-hidden="true"
 						></span>
-						<div className="pw-hub pw-int-hub">Kody</div>
+						<div className="pw-hub pw-int-hub">Rhino</div>
 						<span
 							className="pw-int-link pw-int-link-b"
 							aria-hidden="true"

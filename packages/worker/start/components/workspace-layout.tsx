@@ -158,7 +158,7 @@ export function WorkspaceLayout() {
 						<BrandContextMenu>
 							<SiteLink
 								href="/"
-								aria-label="Kody home"
+								aria-label="Rhino home"
 								css={{
 									display: 'inline-flex',
 									alignItems: 'center',
@@ -170,7 +170,7 @@ export function WorkspaceLayout() {
 								}}
 							>
 								<KodyMark size={28} />
-								Kody
+								Rhino
 							</SiteLink>
 						</BrandContextMenu>
 						<AccountMenu

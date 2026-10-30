@@ -230,7 +230,7 @@ export function SignupChooseUsernamePage(props: {
 					</footer>
 				</div>
 				<div css={authCornerCss}>
-					<SiteLink href="/">&larr; Back to Kody</SiteLink>
+					<SiteLink href="/">&larr; Back to Rhino</SiteLink>
 				</div>
 			</div>
 		</div>

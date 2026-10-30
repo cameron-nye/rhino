@@ -273,7 +273,7 @@ export function OnboardingRoute({
 		>
 			<header css={onboardHeadCss}>
 				<h1 data-rise style={{ '--rise': '0' } as CSSProperties}>
-					Get started with <em>Kody</em>
+					Get started with <em>Rhino</em>
 				</h1>
 			</header>
 

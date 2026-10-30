@@ -79,7 +79,7 @@ export function renderHealthHtml(report: HealthReport) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>Kody health</title>
+<title>Rhino health</title>
 <style>
 @font-face {
 	font-family: 'Bricolage Grotesque';
@@ -286,7 +286,7 @@ details pre {
 </head>
 <body>
 <main>
-<p class="brand">Kody</p>
+<p class="brand">Rhino</p>
 <section class="panel" aria-labelledby="health-heading">
 <div class="header">
 <h1 id="health-heading">Health</h1>

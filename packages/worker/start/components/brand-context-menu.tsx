@@ -430,7 +430,7 @@ export function BrandContextMenu({ children }: BrandContextMenuProps) {
 					ref={menuRef}
 					id={menuId}
 					role="menu"
-					aria-label="Kody brand"
+					aria-label="Rhino brand"
 					popover="manual"
 					css={menuCss}
 					style={{ left: coords.x, top: coords.y }}

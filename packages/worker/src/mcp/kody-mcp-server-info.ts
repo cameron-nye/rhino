@@ -11,7 +11,7 @@ export const kodyMcpServerName = 'kody-mcp' as const
 /** Advertised on both protocol lanes and the public MCP server card. */
 export const kodyMcpServerVersion = '1.0.0' as const
 
-export const kodyMcpServerTitle = 'Kody' as const
+export const kodyMcpServerTitle = 'Rhino' as const
 
 export const kodyMcpServerWebsiteUrl = 'https://kody.codes' as const
 
