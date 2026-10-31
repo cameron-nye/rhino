@@ -403,10 +403,10 @@ function DocumentShell({ children }: { children: ReactNode }) {
 					/>
 				) : null}
 				<meta name="viewport" content={documentViewport} />
-				{/* Transparent edge-to-edge mark (no plate): outlined black for light
-				    OS chrome, solid white for dark. Order matters: Chromium ignores
-				    `media` on icon links and picks the last best match, so the ICO
-				    is sized (not `any`) and the scheme-aware SVG comes last.
+				{/* Rhino app icon. The PNG masters are the official tiled mark; the
+				    SVG is the same jet on the dark rounded tile. Order matters:
+				    Chromium ignores `media` on icon links and picks the last best
+				    match, so the ICO is sized (not `any`) and the SVG comes last.
 				    Follows the OS preference, not the in-app theme. */}
 				<link rel="icon" href={publicAsset('/favicon.ico')} sizes="32x32" />
 				<link
@@ -473,6 +473,13 @@ function DocumentShell({ children }: { children: ReactNode }) {
 					as="font"
 					type="font/woff2"
 					href={publicAsset('/fonts/wix-madefor-text-latin.woff2')}
+					crossOrigin="anonymous"
+				/>
+				<link
+					rel="preload"
+					as="font"
+					type="font/ttf"
+					href={publicAsset('/fonts/SairaStencilOne-Regular.ttf')}
 					crossOrigin="anonymous"
 				/>
 				{loaded?.canonicalOrigin ? (

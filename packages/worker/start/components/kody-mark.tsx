@@ -1,15 +1,14 @@
 /** @jsxImportSource @emotion/react */
 import { type CSSObject } from '@emotion/react'
 import {
-	kodyMarkAspectRatio,
-	kodyMarkOutlinedLeftEyePathD,
-	kodyMarkOutlinedNosePathD,
-	kodyMarkOutlinedRightEyePathD,
-	kodyMarkOutlinedRingPathD,
-	kodyMarkPathD,
-	kodyMarkPathTransform,
-	kodyMarkViewBox,
-} from '../brand/kody-mark-path.ts'
+	rhinoBodyOnDark,
+	rhinoBodyOnLight,
+	rhinoBodyPathDs,
+	rhinoHorn,
+	rhinoHornPathD,
+	rhinoMarkAspectRatio,
+	rhinoMarkViewBox,
+} from '../brand/rhino-mark.ts'
 
 type KodyMarkVariant = 'auto' | 'solid' | 'outlined'
 
@@ -17,8 +16,9 @@ export type KodyMarkProps = {
 	/** Rendered height in CSS pixels; width follows the natural aspect ratio. */
 	size?: number
 	/**
-	 * `auto` (default): outlined line-art in light color scheme, solid fill in
-	 * dark. `outlined` / `solid` force one treatment (for side-by-side previews).
+	 * `auto` (default): dark gray body in the light scheme, light gray body in
+	 * the dark scheme. `outlined` forces the light-surface body. `solid` forces
+	 * the dark-surface body. The horn stays orange in every treatment.
 	 */
 	variant?: KodyMarkVariant
 	/** Accessible name. Empty string keeps the mark decorative when a nearby label exists. */
@@ -28,12 +28,9 @@ export type KodyMarkProps = {
 }
 
 /**
- * Inline Kody mark. Light mode uses the outlined filled-path treatment; dark
- * mode uses the solid fill. Both share the same viewBox and silhouette
- * footprint so theme swaps do not shift layout. Ink follows `currentColor`.
- *
- * Theme switching uses an SVG `<style>` media query (same approach as
- * `favicon.svg`) so `prefers-color-scheme` applies reliably inside SVG.
+ * Inline Rhino mark. The component name stays `KodyMark` so upstream
+ * callsites do not move. Theme switching uses an SVG `<style>` media query
+ * so `prefers-color-scheme` applies inside the SVG.
  */
 export function KodyMark({
 	size = 34,
@@ -42,23 +39,24 @@ export function KodyMark({
 	className,
 	css: cssProp,
 }: KodyMarkProps) {
-	const width = Math.round(size * kodyMarkAspectRatio)
+	const width = Math.round(size * rhinoMarkAspectRatio)
 	const labelled = title.trim().length > 0
-	// Every `auto` mark emits the same rules, so shared class names are safe and
-	// keep SSR/client markup identical when a route boundary re-renders.
-	const outlinedClass = 'kody-mark-outlined'
-	const solidClass = 'kody-mark-solid'
-	const showOutlined = variant === 'outlined' || variant === 'auto'
-	const showSolid = variant === 'solid' || variant === 'auto'
+	const bodyClass = 'rhino-mark-body'
+	const bodyFill =
+		variant === 'solid'
+			? rhinoBodyOnDark
+			: variant === 'outlined'
+				? rhinoBodyOnLight
+				: undefined
 
 	return (
 		<svg
 			xmlns="http://www.w3.org/2000/svg"
-			viewBox={kodyMarkViewBox}
+			viewBox={rhinoMarkViewBox}
 			width={width}
 			height={size}
 			className={className}
-			css={[{ display: 'block', flexShrink: 0, color: 'inherit' }, cssProp]}
+			css={[{ display: 'block', flexShrink: 0 }, cssProp]}
 			role={labelled ? 'img' : undefined}
 			aria-hidden={labelled ? undefined : true}
 			aria-label={labelled ? title : undefined}
@@ -66,42 +64,17 @@ export function KodyMark({
 		>
 			{labelled ? <title>{title}</title> : null}
 			{variant === 'auto' ? (
-				<style>{`.${outlinedClass}{display:inline}.${solidClass}{display:none}@media (prefers-color-scheme: dark){.${outlinedClass}{display:none}.${solidClass}{display:inline}}`}</style>
+				<style>{`.${bodyClass}{fill:${rhinoBodyOnLight}}@media (prefers-color-scheme: dark){.${bodyClass}{fill:${rhinoBodyOnDark}}}`}</style>
 			) : null}
-			{showOutlined ? (
-				<g className={variant === 'auto' ? outlinedClass : undefined}>
-					<path
-						fill="currentColor"
-						fillRule="evenodd"
-						transform={kodyMarkPathTransform}
-						d={kodyMarkOutlinedRingPathD}
-					/>
-					<path
-						fill="currentColor"
-						transform={kodyMarkPathTransform}
-						d={kodyMarkOutlinedLeftEyePathD}
-					/>
-					<path
-						fill="currentColor"
-						transform={kodyMarkPathTransform}
-						d={kodyMarkOutlinedRightEyePathD}
-					/>
-					<path
-						fill="currentColor"
-						transform={kodyMarkPathTransform}
-						d={kodyMarkOutlinedNosePathD}
-					/>
-				</g>
-			) : null}
-			{showSolid ? (
+			{rhinoBodyPathDs.map((d, index) => (
 				<path
-					className={variant === 'auto' ? solidClass : undefined}
-					fill="currentColor"
-					fillRule="evenodd"
-					transform={kodyMarkPathTransform}
-					d={kodyMarkPathD}
+					key={index}
+					className={variant === 'auto' ? bodyClass : undefined}
+					fill={bodyFill}
+					d={d}
 				/>
-			) : null}
+			))}
+			<path fill={rhinoHorn} d={rhinoHornPathD} />
 		</svg>
 	)
 }

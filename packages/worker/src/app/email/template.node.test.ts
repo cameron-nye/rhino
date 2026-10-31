@@ -340,7 +340,7 @@ test('email-changed security notice masks the new address and keeps the this-was
 	expect(email.html).not.toContain('.svg')
 })
 
-test('every email shows the full logo on top and the Kody mark at the bottom as hosted 2x PNG plates', () => {
+test('every email shows the full logo on top and the mark at the bottom as hosted 2x PNG plates', () => {
 	const email = buildVerificationEmail({
 		appBaseUrl: 'https://kody.codes',
 		verificationUrl: 'https://kody.codes/verify-email?token=abc123',
@@ -348,7 +348,7 @@ test('every email shows the full logo on top and the Kody mark at the bottom as 
 
 	for (const image of [emailHeaderLogo, emailFooterMark]) {
 		expect(email.html).toContain(
-			`<img src="https://kody.codes${image.src}" alt="Kody" width="${image.width}" height="${image.height}"`,
+			`<img src="https://kody.codes${image.src}" alt="Rhino" width="${image.width}" height="${image.height}"`,
 		)
 		const png = readFileSync(
 			fileURLToPath(new URL(`../../../public${image.src}`, import.meta.url)),

@@ -134,7 +134,7 @@ export function AppIconCard(props: AppIconCardProps) {
 			<div css={appIconBodyCss}>
 				<img
 					src={publicAsset(props.src)}
-					alt="Kody app icon"
+					alt="Rhino app icon"
 					width={256}
 					height={256}
 					css={appIconImgCss}

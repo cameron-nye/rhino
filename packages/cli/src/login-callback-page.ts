@@ -4,8 +4,10 @@
  * Inline CSS + inline SVG only — no external network requests from localhost.
  */
 import {
-	kodyMarkPngDataUri,
 	kodyPatternWebpDataUri,
+	rhinoMarkInnerMarkup,
+	rhinoMarkViewBox,
+	rhinoWordmarkFontDataUri,
 } from './login-callback-assets.js'
 
 export type LoginCallbackAccount = {
@@ -82,11 +84,9 @@ function accountLabel(account: LoginCallbackAccount): string | undefined {
 }
 
 function brandMarkSvg(): string {
-	// Official koala mark (PNG) embedded inside SVG so the page stays
-	// CSS + SVG with no external image requests.
-	return `<svg class="mark" xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40" role="img" aria-label="Rhino">
-  <image href="${kodyMarkPngDataUri}" width="40" height="40" preserveAspectRatio="xMidYMid meet"/>
-</svg>`
+	// Inline jet so the localhost page needs no image request. Body color
+	// follows the OS scheme; the horn stays orange.
+	return `<svg class="mark" xmlns="http://www.w3.org/2000/svg" width="29" height="34" viewBox="${rhinoMarkViewBox}" role="img" aria-label="Rhino">${rhinoMarkInnerMarkup}</svg>`
 }
 
 function statusIconSvg(kind: 'success' | 'error'): string {
@@ -105,7 +105,14 @@ function statusIconSvg(kind: 'success' | 'error'): string {
 function pageCss(): string {
 	// Color / type / pattern tokens copied from kody.codes public/styles.css
 	// (kody-hq/kody). Pattern is the official shirt tile, inlined as a mask.
-	return `:root {
+	return `@font-face {
+  font-family: 'Saira Stencil One';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('${rhinoWordmarkFontDataUri}') format('truetype');
+}
+:root {
   color-scheme: light dark;
   --color-primary: oklch(0.54 0.18 145);
   --color-primary-hover: oklch(0.48 0.17 145);
@@ -150,6 +157,7 @@ function pageCss(): string {
     --color-danger: var(--color-danger-dark);
     --color-on-danger: var(--color-on-danger-dark);
   }
+  .rhino-body { fill: #A7B0B7; }
 }
 *, *::before, *::after { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -200,16 +208,17 @@ body {
   padding: 1.75rem 1.6rem 1.55rem;
   box-shadow: 0 10px 28px oklch(from var(--color-text) l c h / 0.06);
 }
+.rhino-body { fill: #3A4148; }
 .brand {
   display: inline-flex;
   align-items: center;
   gap: 0.6rem;
-  font: 700 1.2rem/1 var(--font-display);
-  letter-spacing: -0.01em;
+  font: 400 1.2rem/1 'Saira Stencil One', sans-serif;
+  letter-spacing: 0.02em;
   color: var(--color-text);
   text-decoration: none;
 }
-.mark { display: block; border-radius: 10px; background: #111; }
+.mark { display: block; }
 .status {
   display: flex;
   align-items: flex-start;
@@ -333,7 +342,7 @@ function renderSuccess(page: LoginCallbackSuccess): string {
 <body>
 <main class="page">
   <section class="panel" data-state="success">
-    <div class="brand">${brandMarkSvg()}<span>Rhino</span></div>
+    <div class="brand">${brandMarkSvg()}<span>RHINO</span></div>
     <div class="status">
       ${statusIconSvg('success')}
       <div>
@@ -364,7 +373,7 @@ function renderError(page: LoginCallbackError): string {
 <body>
 <main class="page">
   <section class="panel" data-state="error" data-error="${escapeHtml(page.error)}">
-    <div class="brand">${brandMarkSvg()}<span>Rhino</span></div>
+    <div class="brand">${brandMarkSvg()}<span>RHINO</span></div>
     <div class="status">
       ${statusIconSvg('error')}
       <div>

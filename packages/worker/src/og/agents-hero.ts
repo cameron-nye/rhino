@@ -1,6 +1,6 @@
 /**
  * Satori composition of the homepage agents-around-lantern hero for OG cards.
- * Uses the same Kody base art as the live landing stage (`kody-base`), then
+ * Uses the upstream koala still (`og/kody-base.png`), then
  * draws chips, tethers, and mid-flight lantern lights from shared orbit
  * geometry so the share card matches the homepage still.
  */

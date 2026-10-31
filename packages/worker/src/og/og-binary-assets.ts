@@ -18,8 +18,8 @@ const OG_ASSET_URLS = {
 		'https://assets.local/og/wix-madefor-text-latin-400.ttf',
 	kodyPatternDark: 'https://assets.local/og/kody-pattern-dark.png',
 	kodyPatternLight: 'https://assets.local/og/kody-pattern-light.png',
-	// PNG of the homepage hero (`images/hero/kody-base-*.webp`) — Satori/resvg
-	// need PNG; pixels match the live landing base (chips/tethers drawn on top).
+	// Upstream koala still. The login stage webp is the Rhino pilot; this PNG
+	// stays so the agents share card can draw orbit chips on a centered figure.
 	kodyBase: 'https://assets.local/og/kody-base.png',
 	// PNG of the homepage lantern at the orbs' rest pose.
 	kodyPrimitivesLantern: 'https://assets.local/og/kody-primitives-lantern.png',
@@ -75,8 +75,9 @@ function bytesToUtf8(bytes: Uint8Array): string {
 }
 
 /**
- * Homepage chips and the header mark paint via `currentColor`. Satori has no
- * such inheritance, so retint the shared SVG fills to the theme text colour.
+ * Homepage chips paint via `currentColor`. Satori has no such inheritance,
+ * so retint those icon fills to the theme text colour. The Rhino mark is not
+ * passed through here; its horn stays orange.
  */
 function tintSvgFills(svg: string, color: string): string {
 	return svg.replace(/fill="[^"]*"/gi, `fill="${color}"`)
@@ -229,12 +230,11 @@ export function getKodyMarkDataUri(theme: OgTheme): string {
 }
 
 /**
- * Same rule as the site header `KodyMark`: solid fill on dark grounds,
- * outlined line-art on light ones, inked in the theme text colour so the mark
- * always matches the wordmark beside it.
+ * Published mark SVGs already use the Rhino body and horn colors. Leave them
+ * alone: retinting would paint the orange horn in the theme text color.
  */
 function kodyMarkDataUri(loaded: OgBinaryAssetCache, theme: OgTheme): string {
 	const svg =
 		theme === 'light' ? loaded.kodyMarkOutlinedSvg : loaded.kodyMarkSolidSvg
-	return svgToDataUri(tintSvgFills(svg, getOgPalette(theme).text))
+	return svgToDataUri(svg)
 }

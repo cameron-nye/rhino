@@ -40,14 +40,14 @@ const brandSections: Array<BrandSection> = [
 	{
 		id: 'logo',
 		title: 'Logo',
-		note: 'The mark with the “Kody” wordmark. PNGs are 2048px wide and transparent.',
+		note: 'The jet with the RHINO wordmark. PNGs are 2048px wide and transparent.',
 		shape: 'logo',
 		previews: [
 			{
 				tone: 'light',
 				caption: 'Light',
 				preview: kodyBrandAssets.logoSvgOutlined,
-				alt: 'Kody logo: outlined mark and black wordmark',
+				alt: 'Rhino logo: dark gray jet and RHINO wordmark, orange horn',
 				files: [
 					{
 						format: 'SVG',
@@ -67,7 +67,7 @@ const brandSections: Array<BrandSection> = [
 				tone: 'dark',
 				caption: 'Dark',
 				preview: kodyBrandAssets.logoSvgWhite,
-				alt: 'Kody logo: solid white mark and wordmark',
+				alt: 'Rhino logo: light gray jet and RHINO wordmark, orange horn',
 				files: [
 					{
 						format: 'SVG',
@@ -88,14 +88,14 @@ const brandSections: Array<BrandSection> = [
 	{
 		id: 'mark',
 		title: 'Mark',
-		note: 'The koala on its own, for tight spaces. PNGs are 2048px wide and transparent.',
+		note: 'The jet on its own, for tight spaces. PNGs are 2048px wide and transparent.',
 		shape: 'mark',
 		previews: [
 			{
 				tone: 'light',
 				caption: 'Light',
 				preview: kodyBrandAssets.svgOutlined,
-				alt: 'Outlined black Kody mark',
+				alt: 'Rhino mark: dark gray jet, orange horn',
 				files: [
 					{
 						format: 'SVG',
@@ -115,7 +115,7 @@ const brandSections: Array<BrandSection> = [
 				tone: 'dark',
 				caption: 'Dark',
 				preview: kodyBrandAssets.svgWhite,
-				alt: 'Solid white Kody mark',
+				alt: 'Rhino mark: light gray jet, orange horn',
 				files: [
 					{
 						format: 'SVG',
@@ -143,7 +143,7 @@ const brandSections: Array<BrandSection> = [
 				tone: 'light',
 				caption: 'Light',
 				preview: kodyBrandAssets.pngOutlinedSolidLight,
-				alt: 'Outlined black Kody mark on a white square',
+				alt: 'Dark gray Rhino jet on a white square',
 				files: [
 					{
 						format: 'PNG',
@@ -157,7 +157,7 @@ const brandSections: Array<BrandSection> = [
 				tone: 'dark',
 				caption: 'Dark',
 				preview: kodyBrandAssets.pngSolidDark,
-				alt: 'Solid white Kody mark on a black square',
+				alt: 'Light gray Rhino jet on a dark square',
 				files: [
 					{
 						format: 'PNG',
@@ -174,7 +174,7 @@ const brandSections: Array<BrandSection> = [
 const usageRules = [
 	{
 		title: 'Two treatments.',
-		body: 'Outlined black on light, solid white on dark. No other colors or gradients.',
+		body: 'Dark gray on light, light gray on dark. The horn stays orange.',
 	},
 	{
 		title: 'Give it room.',
@@ -186,7 +186,7 @@ const usageRules = [
 	},
 	{
 		title: 'Use the files.',
-		body: 'Use the logo files rather than setting “Kody” next to the mark yourself.',
+		body: 'Use the logo files rather than setting “RHINO” next to the mark yourself.',
 	},
 ]
 
@@ -200,13 +200,13 @@ export function BrandGuideRoute() {
 			<header css={headCss}>
 				<div css={eyebrowCss}>Brand guide</div>
 				<h1>
-					One koala.
+					The jet.
 					<br />
 					<em>Two</em> treatments.
 				</h1>
 				<p>
-					Outlined black on light surfaces. Solid white on dark. Hover a preview
-					to download it.
+					Dark gray on light surfaces. Light gray on dark. The horn stays
+					orange. Hover a preview to download it.
 				</p>
 			</header>
 

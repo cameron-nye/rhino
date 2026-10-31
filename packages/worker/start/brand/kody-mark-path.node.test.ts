@@ -4,15 +4,15 @@ import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
 import {
 	kodyFaviconSvgMarkup,
-	kodyMarkOutlinedLeftEyePathD,
-	kodyMarkOutlinedNosePathD,
-	kodyMarkOutlinedOuterPathD,
-	kodyMarkOutlinedRightEyePathD,
-	kodyMarkOutlinedRingPathD,
 	kodyMarkOutlinedSvgMarkup,
-	kodyMarkPathTransform,
 	kodyMarkSvgMarkup,
 } from './kody-mark-path.ts'
+import {
+	rhinoBodyOnDark,
+	rhinoBodyOnLight,
+	rhinoHorn,
+	rhinoTile,
+} from './rhino-mark.ts'
 
 const brandDir = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
@@ -24,40 +24,31 @@ test('published mark SVGs match the markup helper', () => {
 		path.join(brandDir, 'kody-mark-outlined.svg'),
 		'utf8',
 	)
-	expect(published).toBe(kodyMarkOutlinedSvgMarkup('#000000'))
+	expect(published).toBe(kodyMarkOutlinedSvgMarkup())
 	const publishedSolid = readFileSync(
 		path.join(brandDir, 'kody-mark-white.svg'),
 		'utf8',
 	)
-	expect(publishedSolid).toBe(kodyMarkSvgMarkup('#ffffff'))
+	expect(publishedSolid).toBe(kodyMarkSvgMarkup())
 })
 
-test('outlined mark is filled paths, not stroke-and-clip', () => {
-	const outlined = kodyMarkOutlinedSvgMarkup('#000000')
-	expect(outlined).toContain(kodyMarkOutlinedRingPathD)
-	expect(outlined).toContain(kodyMarkOutlinedLeftEyePathD)
-	expect(outlined).toContain(kodyMarkOutlinedRightEyePathD)
-	expect(outlined).toContain(kodyMarkOutlinedNosePathD)
-	expect(outlined).toContain('fill-rule="evenodd"')
+test('the mark is separate filled parts with an orange horn', () => {
+	const outlined = kodyMarkOutlinedSvgMarkup()
+	expect(outlined).toContain(`fill="${rhinoBodyOnLight}"`)
+	expect(outlined).toContain(`fill="${rhinoHorn}"`)
 	expect(outlined).not.toContain('clipPath')
 	expect(outlined).not.toContain('stroke=')
-	expect(outlined).not.toContain('stroke-width')
+	const solid = kodyMarkSvgMarkup()
+	expect(solid).toContain(`fill="${rhinoBodyOnDark}"`)
+	expect(solid).toContain(`fill="${rhinoHorn}"`)
+	expect(solid).not.toBe(outlined)
 })
 
-test('tab favicon markup is transparent edge-to-edge with scheme swap', () => {
+test('tab favicon markup is the jet on the dark rounded tile', () => {
 	const favicon = kodyFaviconSvgMarkup()
-	expect(favicon).toContain(kodyMarkOutlinedOuterPathD)
-	expect(favicon).toContain(kodyMarkOutlinedRingPathD)
-	expect(favicon).toContain('fill="#ffffff"')
-	expect(favicon).toMatch(/@media \(prefers-color-scheme: dark\)/)
-	expect(favicon).not.toContain('<rect')
-	// Light group: white face under black outline (outer fill before ring).
-	const lightGroup = favicon.match(/<g class="light">([\s\S]*?)<\/g>/)?.[1]
-	expect(lightGroup).toBeTruthy()
-	const whiteOuter = lightGroup!.indexOf(
-		`fill="#ffffff" transform="${kodyMarkPathTransform}" d="${kodyMarkOutlinedOuterPathD}"`,
-	)
-	const blackRing = lightGroup!.indexOf(kodyMarkOutlinedRingPathD)
-	expect(whiteOuter).toBeGreaterThanOrEqual(0)
-	expect(blackRing).toBeGreaterThan(whiteOuter)
+	expect(favicon).toContain(`fill="${rhinoTile}"`)
+	expect(favicon).toContain(`fill="${rhinoBodyOnDark}"`)
+	expect(favicon).toContain(`fill="${rhinoHorn}"`)
+	expect(favicon).toContain('<rect')
+	expect(favicon).not.toContain('prefers-color-scheme')
 })

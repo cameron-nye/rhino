@@ -3,6 +3,7 @@ import { minPasswordLength } from '@kody-internal/shared/password-policy.ts'
 import { PasswordRevealInput } from '../components/password-reveal-input.tsx'
 import { type CSSObject } from '@emotion/react'
 import { type CSSProperties, type FormEvent } from 'react'
+import { rhinoWordmarkFontFamily } from '../brand/rhino-mark.ts'
 import { KodyMark } from '../components/kody-mark.tsx'
 import { SiteLink } from '../components/site-link.tsx'
 import {
@@ -21,7 +22,6 @@ import {
 	authFieldLabelRowCss,
 	getAuthInputCss,
 	getGhostButtonCss,
-	getLanternGlowCss,
 	getPillButtonCss,
 	getSwapLabelCss,
 	hoverMq,
@@ -50,7 +50,7 @@ function renderBrand(
 			css={extraCss}
 		>
 			<KodyMark size={34} />
-			<span>Rhino</span>
+			<span>RHINO</span>
 		</SiteLink>
 	)
 }
@@ -367,10 +367,10 @@ const brandBaseCss: CSSObject = {
 	display: 'inline-flex',
 	alignItems: 'center',
 	gap: '0.6rem',
-	font: `700 1.25rem/1 ${typography.fontFamilyDisplay}`,
+	font: `400 1.25rem/1 ${rhinoWordmarkFontFamily}`,
 	color: colors.text,
 	textDecoration: 'none',
-	letterSpacing: '-0.01em',
+	letterSpacing: '0.02em',
 	'&:hover': { color: colors.text },
 }
 
@@ -397,7 +397,7 @@ const authSceneCss: CSSObject = {
 	width: '100%',
 }
 
-/* The lantern casts its light here too. */
+/* No lantern glow. The Rhino stage has no lantern, and the warm spot sat under the jet. */
 const authStageWrapCss: CSSObject = {
 	position: 'relative' as const,
 	width: 'min(100%, 440px)',
@@ -406,7 +406,6 @@ const authStageWrapCss: CSSObject = {
 	'@media (min-width: 901px) and (max-height: 820px)': {
 		width: 'min(100%, 340px)',
 	},
-	...getLanternGlowCss({ maxWidth: '160px' }),
 }
 
 const authGreetingCss: CSSObject = {

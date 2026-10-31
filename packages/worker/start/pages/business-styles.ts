@@ -69,7 +69,8 @@ export const businessCss: CSSObject = {
 		display: 'flex',
 		alignItems: 'center',
 		gap: '9px',
-		font: '700 29px var(--font-display)',
+		font: "400 29px 'Saira Stencil One', sans-serif",
+		letterSpacing: '0.02em',
 	},
 	'& .brand img': {
 		width: '36px',

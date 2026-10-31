@@ -396,40 +396,6 @@ export function getAccentCalloutCss(options?: { accentColor?: string }) {
 	}
 }
 
-/**
- * The lantern Kody holds actually casts light. Screen blend adds warmth over
- * his paws without a background halo. Spread into the css object of the
- * positioned wrapper around the mascot illustration; `maxWidth` caps the glow
- * for the wrapper's rendered size.
- */
-export function getLanternGlowCss(options: { maxWidth: string }) {
-	return {
-		'&::after': {
-			content: '""',
-			position: 'absolute' as const,
-			left: '50%',
-			top: '63%',
-			width: `min(36%, ${options.maxWidth})`,
-			aspectRatio: '4 / 3',
-			transform: 'translate(-50%, -50%)',
-			borderRadius: '50%',
-			background:
-				'radial-gradient(closest-side, var(--lantern-glow), transparent 72%)',
-			mixBlendMode: 'screen' as const,
-			pointerEvents: 'none' as const,
-		},
-		'@media (prefers-reduced-motion: no-preference)': {
-			'&::after': {
-				animation: 'lantern-breathe 4.5s ease-in-out infinite alternate',
-			},
-		},
-		'@keyframes lantern-breathe': {
-			from: { opacity: 0.55 },
-			to: { opacity: 1 },
-		},
-	}
-}
-
 const markdownTableCss = {
 	'& [data-markdown-table]': {
 		margin: '1.15rem 0 0',

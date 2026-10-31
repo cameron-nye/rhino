@@ -49,6 +49,7 @@ function bytesToPngDataUri(bytes: Uint8Array): string {
 	return `data:image/png;base64,${bytesToBase64(bytes)}`
 }
 
+/** Agent icons only. The Rhino mark keeps its own body and horn colors. */
 function tintSvgFills(svg: string, color: string): string {
 	return svg.replace(/fill="[^"]*"/gi, `fill="${color}"`)
 }
@@ -85,7 +86,8 @@ function ensureCache(): OgBinaryAssetCache {
 		kodyPatternLightDataUri: bytesToPngDataUri(
 			readOgAssetFile('kody-pattern-light.png'),
 		),
-		// Same pixels as `images/hero/kody-base-640.webp` (PNG for Satori).
+		// Upstream koala still for the agents share card. The login stage webp
+		// is the Rhino pilot and is not this file.
 		kodyBaseDataUri: bytesToPngDataUri(readOgAssetFile('kody-base.png')),
 		// Rest pose of the layered homepage lantern (PNG for Satori).
 		kodyPrimitivesLanternDataUri: bytesToPngDataUri(
@@ -151,10 +153,13 @@ export function getKodyDiscordDataUri(): string {
 	return ensureCache().kodyDiscordDataUri
 }
 
-/** Node twin of `getKodyMarkDataUri` in `og-binary-assets.ts`. */
+/**
+ * Node twin of `getKodyMarkDataUri` in `og-binary-assets.ts`.
+ * The published SVGs already carry the Rhino body and horn colors.
+ */
 export function getKodyMarkDataUri(theme: OgTheme): string {
 	const loaded = ensureCache()
 	const svg =
 		theme === 'light' ? loaded.kodyMarkOutlinedSvg : loaded.kodyMarkSolidSvg
-	return svgToDataUri(tintSvgFills(svg, getOgPalette(theme).text))
+	return svgToDataUri(svg)
 }

@@ -17,7 +17,7 @@ export function BusinessRoute() {
 				<nav className="nav" aria-label="Main navigation">
 					<SiteLink className="brand" href="/">
 						<KodyMark size={36} />
-						kody<span>for business</span>
+						RHINO<span>for business</span>
 					</SiteLink>
 					<div className="navlinks">
 						<SiteLink href="#in-action">See it in action</SiteLink>
