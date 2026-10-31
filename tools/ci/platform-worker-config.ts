@@ -5,6 +5,7 @@ import {
 	setArtifactsNamespaceOnWranglerEnv,
 } from './resource-utils.ts'
 import { isExecutedDirectly } from '../node-runtime.ts'
+import { createTransferredDurableObjectClassesInPlace } from './origin-production-deploy-state.ts'
 
 /**
  * Generate deployable Wrangler configs for the platform Durable Object
@@ -350,6 +351,10 @@ export async function generate(options: CliOptions) {
 		envName: options.envName,
 	})
 	rewriteWorkerNameReferences(platformConfig, names)
+	if (options.envName === 'production') {
+		// kody-production does not implement these classes. Create them here.
+		createTransferredDurableObjectClassesInPlace(platformConfig)
+	}
 	alignCrossScriptWorkflowName(platformEnv, options.runtimeWorkerName)
 	platformEnv.workers_dev = true
 	await writeFile(

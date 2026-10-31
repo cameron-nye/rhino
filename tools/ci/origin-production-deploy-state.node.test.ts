@@ -30,6 +30,7 @@ import {
 	stripOriginCrossScriptClassBindings,
 	stripOriginDurableObjectMigrations,
 	writeOriginBootstrapWranglerConfig,
+	createTransferredDurableObjectClassesInPlace,
 	type DurableObjectNamespaceOwnership,
 } from './origin-production-deploy-state.ts'
 import { planProductionJobsWorkerConfig } from './jobs-worker-resources.ts'
@@ -77,9 +78,9 @@ test('classifies production fleet ownership into fresh, steady, or ambiguous dep
 	const origin = productionOriginScriptName
 	const platform = productionPlatformScriptName
 	const runtime = productionRuntimeScriptName
-	const fresh = {
+	const inPlace = {
 		originEntry: 'slim',
-		runOriginBootstrap: true,
+		runOriginBootstrap: false,
 		forcePlatformAndRuntime: true,
 	}
 	const cases: Array<
@@ -90,7 +91,7 @@ test('classifies production fleet ownership into fresh, steady, or ambiguous dep
 		]
 	> = [
 		// Missing fleet with no namespaces.
-		[false, [], { mode: 'fresh', plan: fresh }],
+		[false, [], { mode: 'fresh', plan: inPlace }],
 		// Completed transfer.
 		[
 			true,
@@ -121,7 +122,10 @@ test('classifies production fleet ownership into fresh, steady, or ambiguous dep
 				},
 			},
 		],
-		// Origin still owns everything and destinations own none: retry fresh.
+		// Origin exists but nobody implements a transferred class: create in place.
+		[true, [], { mode: 'fresh', plan: inPlace }],
+		// Origin already owns the classes. Stay on the full entry so a slim
+		// upload is not rejected; destinations still create their own classes.
 		[
 			true,
 			[...platformOn(origin), ...runtimeOn(origin)],
@@ -131,7 +135,11 @@ test('classifies production fleet ownership into fresh, steady, or ambiguous dep
 					...platformOwnedClassNames,
 					...runtimeOwnedClassNames,
 				],
-				plan: fresh,
+				plan: {
+					originEntry: 'full',
+					runOriginBootstrap: false,
+					forcePlatformAndRuntime: true,
+				},
 			},
 		],
 		// Refuses to slim while origin still owns a transferred class.
@@ -627,34 +635,15 @@ test('fresh-account deploys only bind Durable Object classes their migrations co
 			await readFile(file, 'utf8'),
 		)
 		if (relative === 'packages/worker/wrangler.jsonc') {
-			await assertOriginBootstrapDurableObjects(config)
+			assertFreshOriginSlimDeploy(config)
 			continue
 		}
 		if (relative === 'packages/platform-worker/wrangler.jsonc') {
-			const production = productionEnvOrRoot(config)
-			removeRuntimeReferencesFromPlatformEnv(
-				production,
-				productionRuntimeScriptName,
-			)
-			expect(localDurableObjectClassNames(production).sort()).toEqual(
-				[...platformOwnedClassNames, 'ExecutionContextSessionV1'].sort(),
-			)
-			expect(durableObjectScriptNames(production)).not.toContain(
-				productionRuntimeScriptName,
-			)
-			assertLocalClassesConfigured(config, production, relative)
+			assertFreshPlatformDeploy(config)
 			continue
 		}
 		if (relative === 'packages/runtime-worker/wrangler.jsonc') {
-			omitUnexportedRuntimeTransfer(config, 'PackageServiceInstance')
-			const production = productionEnvOrRoot(config)
-			expect(localDurableObjectClassNames(production).sort()).toEqual(
-				[...runtimeOwnedClassNames].sort(),
-			)
-			assertLocalClassesConfigured(config, production, relative)
-			const transferredFrom = transferredClassNames(config)
-			expect(transferredFrom).not.toContain('PackageServiceInstance')
-			expect(transferredFrom.sort()).toEqual([...runtimeOwnedClassNames].sort())
+			assertFreshRuntimeDeploy(config)
 			continue
 		}
 		if (relative === 'packages/jobs-worker/wrangler.jsonc') {
@@ -797,47 +786,120 @@ function classScriptName(
 	return undefined
 }
 
-async function assertOriginBootstrapDurableObjects(
-	config: Record<string, unknown>,
-) {
-	const tempDir = await mkdtemp(path.join(os.tmpdir(), 'kody-origin-do-audit-'))
-	try {
-		const outPath = path.join(tempDir, 'bootstrap.generated.json')
-		await writeOriginBootstrapWranglerConfig({
-			generatedConfig: config,
-			outConfigPath: outPath,
-		})
-		const bootstrap = JSON.parse(await readFile(outPath, 'utf8')) as Record<
-			string,
-			unknown
-		>
-		const production = productionEnvOrRoot(bootstrap)
-		const local = localDurableObjectClassNames(production).sort()
-		expect(local).toEqual(
-			[...platformOwnedClassNames, ...runtimeOwnedClassNames].sort(),
+test('fresh origin bootstrap runs only when production-resources asks for it', async () => {
+	const source = await readFile(
+		path.join(repoRoot, '.github/workflows/deploy.yml'),
+		'utf8',
+	)
+	const marker = '- name: ☁️ Bootstrap fresh origin Worker (full entry)'
+	const start = source.indexOf(marker)
+	expect(start).toBeGreaterThan(-1)
+	const nextStep = source.indexOf('\n      - name:', start + marker.length)
+	const step = source.slice(start, nextStep === -1 ? undefined : nextStep)
+	expect(step).toContain("origin_deploy_mode == 'fresh'")
+	expect(step).toContain("origin_bootstrap == 'true'")
+})
+
+/**
+ * Fresh-account order: platform creates its classes in place (bootstrap
+ * drops runtime references), runtime creates its classes in place, then
+ * the slim origin upload binds those classes by script_name and carries
+ * no Durable Object migrations. Origin is not seeded: a transfer from
+ * kody-production fails with Cloudflare 10074, and a later slim upload
+ * would fail with 10064 if origin still owned the class.
+ */
+function assertFreshOriginSlimDeploy(config: Record<string, unknown>) {
+	const state = classifyOriginProductionScriptState({
+		originScriptExists: true,
+		namespaces: [],
+	})
+	expect(state.mode).toBe('fresh')
+	expect(planOriginProductionDeploy(state)).toMatchObject({
+		mode: 'fresh',
+		originEntry: 'slim',
+		runOriginBootstrap: false,
+		forcePlatformAndRuntime: true,
+	})
+	const slim = structuredClone(config)
+	stripOriginDurableObjectMigrations(slim, 'production')
+	const production = productionEnvOrRoot(slim)
+	expect(localDurableObjectClassNames(production)).toEqual([])
+	expect(Array.isArray(slim.migrations)).toBe(false)
+	expect(serviceBindingNames(production)).toEqual(
+		expect.arrayContaining(['RUNTIME_WORKER', 'JOBS', 'HIGHLIGHT']),
+	)
+	for (const className of platformOwnedClassNames) {
+		expect(classScriptName(production, className)).toBe(
+			productionPlatformScriptName,
 		)
-		expect(local).not.toContain('ExecutionContextSessionV1')
-		expect(platformOwnedClassNames).not.toContain('ExecutionContextSessionV1')
-		expect(serviceBindingNames(production)).not.toContain('RUNTIME_WORKER')
-		expect(serviceBindingNames(production)).toEqual(
-			expect.arrayContaining(['JOBS', 'HIGHLIGHT', 'REPO_PUSH_QUEUE']),
-		)
-		assertLocalClassesConfigured(
-			bootstrap,
-			production,
-			'packages/worker/wrangler.jsonc',
-		)
-		assertLocalClassesConfigured(
-			bootstrap,
-			bootstrap,
-			'packages/worker/wrangler.jsonc top-level',
-		)
-		expect(
-			classScriptName(productionEnvOrRoot(config), 'ExecutionContextSessionV1'),
-		).toBe(productionPlatformScriptName)
-	} finally {
-		await rm(tempDir, { recursive: true, force: true })
 	}
+	expect(classScriptName(production, 'ExecutionContextSessionV1')).toBe(
+		productionPlatformScriptName,
+	)
+	for (const className of runtimeOwnedClassNames) {
+		expect(classScriptName(production, className)).toBe(
+			productionRuntimeScriptName,
+		)
+	}
+}
+
+function assertFreshPlatformDeploy(config: Record<string, unknown>) {
+	const created = structuredClone(config)
+	createTransferredDurableObjectClassesInPlace(created)
+	createTransferredDurableObjectClassesInPlace(created)
+	expect(transferredClassNames(created)).toEqual([])
+	const withRuntime = structuredClone(created)
+	const production = productionEnvOrRoot(created)
+	removeRuntimeReferencesFromPlatformEnv(
+		production,
+		productionRuntimeScriptName,
+	)
+	expect(localDurableObjectClassNames(production).sort()).toEqual(
+		[...platformOwnedClassNames, 'ExecutionContextSessionV1'].sort(),
+	)
+	expect(durableObjectScriptNames(production)).not.toContain(
+		productionRuntimeScriptName,
+	)
+	assertLocalClassesConfigured(
+		created,
+		production,
+		'packages/platform-worker/wrangler.jsonc',
+	)
+	const migrations = created.migrations as Array<Record<string, unknown>>
+	expect(migrations[0]?.new_sqlite_classes).toEqual([
+		...platformOwnedClassNames,
+	])
+	expect(migrations[1]?.new_sqlite_classes).toEqual([
+		'ExecutionContextSessionV1',
+	])
+	expect(durableObjectScriptNames(productionEnvOrRoot(withRuntime))).toContain(
+		productionRuntimeScriptName,
+	)
+}
+
+function assertFreshRuntimeDeploy(config: Record<string, unknown>) {
+	const created = structuredClone(config)
+	omitUnexportedRuntimeTransfer(created, 'PackageServiceInstance')
+	createTransferredDurableObjectClassesInPlace(created)
+	expect(transferredClassNames(created)).toEqual([])
+	const production = productionEnvOrRoot(created)
+	expect(localDurableObjectClassNames(production).sort()).toEqual(
+		[...runtimeOwnedClassNames].sort(),
+	)
+	assertLocalClassesConfigured(
+		created,
+		production,
+		'packages/runtime-worker/wrangler.jsonc',
+	)
+	const migrations = created.migrations as Array<Record<string, unknown>>
+	expect(migrations[0]?.new_sqlite_classes).toEqual([
+		'PackageServiceInstance',
+		...runtimeOwnedClassNames,
+	])
+	expect(migrations[1]?.deleted_classes).toEqual(['PackageServiceInstance'])
+	expect(localDurableObjectClassNames(production)).not.toContain(
+		'PackageServiceInstance',
+	)
 }
 
 async function listWranglerConfigs(dir: string): Promise<Array<string>> {

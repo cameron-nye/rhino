@@ -98,10 +98,16 @@ export function planOriginProductionDeploy(
 	state: OriginProductionScriptState,
 ): OriginProductionDeployPlan {
 	if (state.mode === 'fresh') {
+		// This account never hosted the transferred classes on origin, so
+		// platform and runtime create them with new_sqlite_classes. Seeding
+		// those classes on origin would make the later slim upload fail
+		// (Cloudflare 10064) once the destinations no longer transfer them.
+		// A full entry remains only when origin already owns a class.
+		const originOwnsClass = state.originOwnedTransferredClassNames.length > 0
 		return {
 			mode: 'fresh',
-			originEntry: 'slim',
-			runOriginBootstrap: true,
+			originEntry: originOwnsClass ? 'full' : 'slim',
+			runOriginBootstrap: false,
 			forcePlatformAndRuntime: true,
 			reason: state.reason,
 		}
@@ -246,22 +252,24 @@ export function classifyOriginProductionScriptState(input: {
 			anyTransferredClassOnScript(input.namespaces, scriptNames.runtime)
 
 		if (
-			!input.originScriptExists &&
 			!destinationsOwnTransferred &&
 			!originOwnsTransferred &&
 			!destinationsOwnAnyTransferred
 		) {
 			return scriptState(
 				'fresh',
-				'Origin script is missing and no transferred Durable Object namespace exists on origin, platform, or runtime.',
+				input.originScriptExists
+					? 'No transferred Durable Object class is implemented on origin, platform, or runtime. Create platform and runtime classes in place.'
+					: 'Origin script is missing and no transferred Durable Object namespace exists on origin, platform, or runtime.',
 			)
 		}
 
-		// Origin bootstrap already created the classes, but platform/runtime
-		// never took ownership. Retry the same first-deploy path: full entry
-		// with local bindings, then the existing transferred_classes tags.
-		// Mixed ownership (destinations already own some names) stays
-		// ambiguous — a second transfer of those names is unsafe.
+		// Origin already owns the classes and the destinations own none.
+		// Keep the full entry so a slim upload is not rejected with
+		// Cloudflare 10064. Platform and runtime still create their own
+		// classes in place; they do not transfer storage off this origin.
+		// Mixed ownership stays ambiguous — a second create of a name a
+		// destination already owns is unsafe.
 		if (
 			input.originScriptExists &&
 			originOwnsTransferred &&
@@ -269,7 +277,7 @@ export function classifyOriginProductionScriptState(input: {
 		) {
 			return scriptState(
 				'fresh',
-				'Origin still owns transferred classes and platform/runtime own none of them; retry full-entry bootstrap then transfer.',
+				'Origin still owns transferred classes and platform/runtime own none of them. Keep the full entry so a slim upload is not rejected. Platform and runtime create their classes in place.',
 				originOwnedTransferredClassNames,
 			)
 		}
@@ -659,6 +667,43 @@ export function omitLocalDurableObjectBindingsWithoutMigration(
 		})
 		if (kept.length === 0) delete target.durable_objects
 		else durableObjects.bindings = kept
+	}
+	return config
+}
+
+/**
+ * Production on this fork never had Kent's origin-owned Durable Object
+ * history. A `transferred_classes` tag cannot move `MCP` (or the runtime
+ * classes) off `kody-production`, which does not implement them (Cloudflare
+ * error 10074). Rewrite every transfer to `new_sqlite_classes` on the same
+ * tag so the first apply and every later upload describe the same migration.
+ * Classes already listed in `new_sqlite_classes` stay there.
+ */
+export function createTransferredDurableObjectClassesInPlace(
+	config: Record<string, unknown>,
+) {
+	const rewriteMigrations = (migrations: Array<unknown>) =>
+		migrations.map((entry) => {
+			const record = asRecord(entry)
+			if (!record || !Array.isArray(record.transferred_classes)) return entry
+			const created = new Set(stringClassNames(record.new_sqlite_classes))
+			for (const item of record.transferred_classes) {
+				const transfer = asRecord(item)
+				if (transfer && typeof transfer.to === 'string')
+					created.add(transfer.to)
+			}
+			const { transferred_classes: _transferred, ...rest } = record
+			return { ...rest, new_sqlite_classes: [...created] }
+		})
+	if (Array.isArray(config.migrations)) {
+		config.migrations = rewriteMigrations(config.migrations)
+	}
+	const env = asRecord(config.env)
+	if (!env) return config
+	for (const value of Object.values(env)) {
+		const section = asRecord(value)
+		if (!section || !Array.isArray(section.migrations)) continue
+		section.migrations = rewriteMigrations(section.migrations)
 	}
 	return config
 }

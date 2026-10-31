@@ -320,8 +320,9 @@ test('generate publishes the package-app custom domain for production', async ()
 	expect(runtime.env?.production?.routes).toEqual(packageAppRoutes)
 	expect(runtime.env?.production?.name).toBe('kody-runtime')
 	expect(runtime.env?.production?.workers_dev).toBe(true)
-	// Live classes still transfer off the origin bootstrap script. PackageServiceInstance
-	// was deleted upstream and is not exported, so a fresh account cannot transfer it.
+	// Origin never implemented these classes. Create them here. PackageServiceInstance
+	// was deleted upstream and is not exported, so it is created only to satisfy
+	// wrangler's sqlite map and then deleted.
 	const v1 = runtime.migrations?.[0] as {
 		tag?: string
 		transferred_classes?: Array<{ from?: string }>
@@ -329,12 +330,13 @@ test('generate publishes the package-app custom domain for production', async ()
 	}
 	const v2 = runtime.migrations?.[1] as { deleted_classes?: Array<string> }
 	expect(v1?.tag).toBe('v1')
-	expect(v1?.transferred_classes?.map((entry) => entry.from)).toEqual([
+	expect(v1?.transferred_classes).toBeUndefined()
+	expect(v1?.new_sqlite_classes).toEqual([
+		'PackageServiceInstance',
 		'StorageRunner',
 		'RunLog',
 		'PackageRealtimeSession',
 	])
-	expect(v1?.new_sqlite_classes).toEqual(['PackageServiceInstance'])
 	expect(v2?.deleted_classes).toEqual(['PackageServiceInstance'])
 })
 

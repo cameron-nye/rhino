@@ -10,6 +10,7 @@ import {
 	setArtifactsNamespaceOnWranglerEnv,
 } from './resource-utils.ts'
 import { isExecutedDirectly } from '../node-runtime.ts'
+import { createTransferredDurableObjectClassesInPlace } from './origin-production-deploy-state.ts'
 
 /**
  * Generate deployable Wrangler configs for the package runtime Worker
@@ -460,10 +461,12 @@ export async function generate(options: CliOptions) {
 		// PackageServiceInstance was deleted after upstream's transfer. A fresh
 		// account has no namespace to move, and the class is not exported, so
 		// transferring it fails the first runtime deploy. Keep the create+delete
-		// pair (wrangler's local sqlite map still needs the create) and transfer
-		// only the classes the origin bootstrap actually leaves behind. Later
-		// production deploys upload this same tag.
+		// pair (wrangler's local sqlite map still needs the create). The classes
+		// origin never implemented (StorageRunner, RunLog, PackageRealtimeSession)
+		// are created here instead of transferred. Later production deploys
+		// upload this same tag.
 		omitUnexportedRuntimeTransfer(runtimeConfig, 'PackageServiceInstance')
+		createTransferredDurableObjectClassesInPlace(runtimeConfig)
 	}
 	await writeFile(
 		options.outConfigPath,
