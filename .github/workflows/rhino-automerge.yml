@@ -15,7 +15,12 @@ name: Rhino auto-merge
 # A merge made with GITHUB_TOKEN does not start push workflows. ✅ Validate
 # therefore does not run on the squash commit, and 🚀 Deploy (production)
 # does not start from its workflow_run (that path accepts only a successful
-# Validate push to main). After merging, dispatch deploy.yml on main.
+# Validate push to main). The same token does not start pull_request: closed,
+# so preview.yml does not clean up the PR preview stack. After merging,
+# dispatch deploy.yml on main and preview.yml cleanup for that pull request.
+# workflow_dispatch is allowed from GITHUB_TOKEN. The job's actions: write
+# permission covers both dispatches. A failed preview dispatch warns and does
+# not fail the merge.
 
 on:
   workflow_run:
@@ -41,11 +46,13 @@ jobs:
       github.event.workflow_run.head_repository.full_name == github.repository
       && startsWith(github.event.workflow_run.head_branch, 'cursor/')
     permissions:
+      # workflow_dispatch of deploy.yml and preview.yml requires actions: write.
       actions: write
       contents: write
       pull-requests: write
     steps:
-      - name: Squash-merge and dispatch production deploy
+      - name:
+          Squash-merge, dispatch production deploy, and dispatch preview cleanup
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -64,6 +71,11 @@ jobs:
             if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
               printf '%s\n' "$*" >> "$GITHUB_STEP_SUMMARY"
             fi
+          }
+
+          warn() {
+            printf '::warning::%s\n' "$*"
+            note "$*"
           }
 
           if [[ ! "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
@@ -94,6 +106,30 @@ jobs:
             fi
             jq -n '{ref:"main", inputs:{mode:"production"}}' | gh api --method POST "repos/${REPOSITORY}/actions/workflows/deploy.yml/dispatches" --input -
             note "Dispatched 🚀 Deploy (production) on main (mode=production) for ${merge_sha}."
+          }
+
+          # Close-time preview cleanup. GITHUB_TOKEN merges do not emit
+          # pull_request: closed, so preview.yml would not run. Failure warns
+          # and returns success so the squash merge still stands.
+          dispatch_preview_cleanup() {
+            local pr_number dispatch_code
+            pr_number="$1"
+            if [[ ! "$pr_number" =~ ^[0-9]+$ ]]; then
+              warn "Refusing to dispatch preview cleanup: pull request id is unexpected."
+              return 0
+            fi
+            set +e
+            jq -n \
+              --arg pr_number "$pr_number" \
+              '{ref:"main", inputs:{action:"cleanup", target:"pr", pr_number:$pr_number}}' \
+              | gh api --method POST "repos/${REPOSITORY}/actions/workflows/preview.yml/dispatches" --input -
+            dispatch_code=$?
+            set -e
+            if [[ "$dispatch_code" -ne 0 ]]; then
+              warn "Failed to dispatch preview cleanup for #${pr_number} (exit ${dispatch_code}). The squash merge stands."
+              return 0
+            fi
+            note "Dispatched 🔎 Preview cleanup on main (action=cleanup, target=pr) for #${pr_number}."
           }
 
           prs_json="$(gh api "repos/${REPOSITORY}/commits/${HEAD_SHA}/pulls?per_page=100")"
@@ -167,6 +203,7 @@ jobs:
                 fallback_merged_epoch="$merged_epoch"
               fi
               note "Pull request #${number} was already squash-merged by Actions as ${merge_commit}."
+              dispatch_preview_cleanup "$number"
               continue
             fi
 
@@ -230,6 +267,7 @@ jobs:
             fi
             merged_now=1
             note "Squash-merged #${number} as ${last_merge_sha}."
+            dispatch_preview_cleanup "$number"
           done <<<"$numbers"
 
           if [[ "$merged_now" -eq 1 ]]; then

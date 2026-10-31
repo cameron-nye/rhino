@@ -25,7 +25,8 @@ purpose.
 | File                                                                      | Why                                                                                                                                                                                                                                                                                                     |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `docs/contributing/rhino.md`                                              | Additive fork rules (this page).                                                                                                                                                                                                                                                                        |
-| `.github/workflows/rhino-automerge.yml`                                   | Squash-merge green same-repo `cursor/` pull requests and dispatch production deploy.                                                                                                                                                                                                                    |
+| `.github/workflows/rhino-automerge.yml`                                   | Squash-merge green same-repo `cursor/` pull requests, dispatch production deploy, and dispatch preview cleanup.                                                                                                                                                                                         |
+| `tools/ci/rhino-automerge-workflow.node.test.ts`                          | Pins that automerge dispatches preview cleanup and that a failed dispatch does not fail the merge.                                                                                                                                                                                                      |
 | `AGENTS.md`                                                               | Opening pointer to this page. Stays inside the 23-line `agents-md` budget.                                                                                                                                                                                                                              |
 | `docs/contributing/index.md`                                              | Link to this page from the contributing map.                                                                                                                                                                                                                                                            |
 | `README.md`                                                               | Headline, logo alt text, and the opening product paragraphs. License text stays upstream.                                                                                                                                                                                                               |
@@ -224,11 +225,15 @@ request. It squash-merges only when all of these are true:
 - The pull request does not have the `no-automerge` label.
 - GitHub reports the pull request mergeable. Merge conflicts leave it open.
 
-A squash merge made with `GITHUB_TOKEN` does not start `push` workflows.
+A squash merge made with `GITHUB_TOKEN` does not start `push` workflows, and it
+does not start the `pull_request: closed` run of `🔎 Preview`.
 `🚀 Deploy (production)` (`.github/workflows/deploy.yml`) follows Validate only
 for a successful `push` to `main`, so that path does not see an agent merge.
 After the squash merge, this workflow dispatches Deploy on `main` with `mode`
-set to `production`.
+set to `production`. It also dispatches `🔎 Preview` on `main` with `action`
+`cleanup`, `target` `pr`, and the pull request number. That same Preview
+dispatch runs when Actions already squash-merged the pull request. A failed
+Preview dispatch warns and leaves the merge in place.
 
 The workflow file has to be on `main` before it runs. The pull request that adds
 it does not merge itself.
@@ -424,7 +429,12 @@ instead of failing the run:
 - Status incident delete skips its steps without `STATUS_INCIDENT_EVENT_SECRET`.
 
 Per-PR preview deploys stay enabled. Preview sweep and audit bump stay
-upstream-only, so closed-PR preview cleanup does not run on this fork.
+upstream-only. Close-time cleanup is triggered by the automerge workflow via
+`workflow_dispatch`. After a squash merge, and when Actions already merged the
+pull request, `.github/workflows/rhino-automerge.yml` dispatches `🔎 Preview` on
+`main` with `action` `cleanup`, `target` `pr`, and that pull request's number. A
+failed dispatch warns and leaves the merge in place. `GITHUB_TOKEN` does not
+start the `pull_request: closed` cleanup, which is why the dispatch exists.
 
 ### Before a deploy that publishes package apps
 
