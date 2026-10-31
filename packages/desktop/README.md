@@ -29,10 +29,11 @@ offers **Use this machine’s existing registration** (after the same ownership
 check) instead of registering a second context. When `kody daemon install` set
 up a background service, or another `kody daemon` holds the runner lock, the app
 adopts it: **This machine** shows that runner and its version, and Pause,
-Resume, and Restart control the service rather than starting a second daemon.
-Otherwise the app runs the daemon itself, under the same lock. Every runner
-auto-updates; **Turn off automatic updates** sets the shared CLI policy
-(`kody daemon auto-update off`).
+Resume, and Restart control the service rather than starting a second daemon. On
+macOS an adopted runner does not get the app's Automation entitlement; see
+[macOS app automation](#macos-app-automation). Otherwise the app runs the daemon
+itself, under the same lock. Every runner auto-updates; **Turn off automatic
+updates** sets the shared CLI policy (`kody daemon auto-update off`).
 
 On macOS, closing all windows keeps the runner available. Quit stops the CLI and
 its workerd processes. On Windows and Linux, closing all windows quits the app.
@@ -280,3 +281,29 @@ The existing 0.1.0 demo predates the updater. Install the first production
 release manually once, subsequent releases update automatically. A real
 signed-version-to-signed-version update remains part of first-release
 acceptance.
+
+### macOS app automation
+
+The signed app includes the Apple Events entitlement and a purpose string so
+macOS can ask before the app's runner controls other apps such as Messages.
+macOS asks once per target app; after you allow it, runs on this machine with
+host commands on can control that app (for example, send messages) without
+asking again. Full Disk Access is separate and is required for reading the local
+Messages database. Release verification checks these values on the signed app,
+alongside its signature and notarization ticket.
+
+These app permissions apply only to the runner launched by Kody Desktop. That
+daemon is Kody.app's own binary (`fork` of `cli-host.cjs` with
+`ELECTRON_RUN_AS_NODE`), so macOS attributes host commands such as `osascript`
+to Kody.app. When the app adopts an existing runner instead (a
+`kody daemon install` LaunchAgent or a terminal `kody daemon`), that process
+keeps its own macOS permissions: launchd starts the service as
+`<node> <cli entry>`, and a terminal daemon belongs to the terminal app. Kody
+Desktop's permissions do not transfer to it. Grant Full Disk Access to that
+responsible launcher and approve its separate Automation prompt; if macOS denies
+automation without prompting, check that launcher's signing entitlements. To
+have Kody.app send Apple Events instead, remove a CLI service with
+`kody daemon uninstall --no-unregister` (keeps the registration). If a terminal
+`kody daemon` owns the runner, stop it with `kody daemon stop`. Then leave
+**This machine** resumed; the app runs the runner itself. See
+[macOS app control](../../docs/use/execution-contexts.md#macos-app-control).
