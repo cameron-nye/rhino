@@ -1280,6 +1280,10 @@ jobs:
           CLOUDFLARE_CUSTOM_HOSTNAMES_API_TOKEN:
             ${{ secrets.CLOUDFLARE_CUSTOM_HOSTNAMES_API_TOKEN }}
           PACKAGE_APP_TICKET_KEYS: ${{ secrets.PACKAGE_APP_TICKET_KEYS }}
+          # Production boot throws without these. Upstream sets them on the
+          # Worker by hand; this fork copies the GitHub Actions secrets.
+          TURNSTILE_SITE_KEY: ${{ secrets.TURNSTILE_SITE_KEY }}
+          TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
         run: >
           node tools/ci/sync-worker-secrets.ts --env production --config
           "$WRANGLER_CONFIG" --set-from-env COOKIE_SECRET
@@ -1301,7 +1305,8 @@ jobs:
           --set-from-env-optional YOUTUBE_DATA_API_KEY --set-from-env
           OIDC_SIGNING_PRIVATE_KEY_PEM --set-from-env OIDC_SIGNING_KEY_ID
           --set-from-env-optional CLOUDFLARE_CUSTOM_HOSTNAMES_API_TOKEN
-          --set-from-env-optional PACKAGE_APP_TICKET_KEYS
+          --set-from-env-optional PACKAGE_APP_TICKET_KEYS --set-from-env
+          TURNSTILE_SITE_KEY --set-from-env TURNSTILE_SECRET_KEY
 
       # Runtime-lane secret allowlist (ADR 0016): only the secrets the
       # package runtime lane actually reads. COOKIE_SECRET/SECRET_STORE_KEY
@@ -2172,8 +2177,9 @@ jobs:
             toJSON(secrets.STATUS_INCIDENT_EVENT_SECRET) }},
             "STRIPE_SECRET_KEY": ${{ toJSON(secrets.STRIPE_SECRET_KEY) }},
             "STRIPE_WEBHOOK_SECRET": ${{ toJSON(secrets.STRIPE_WEBHOOK_SECRET)
-            }}, "YOUTUBE_DATA_API_KEY": ${{ toJSON(secrets.YOUTUBE_DATA_API_KEY)
-            }}}
+            }}, "TURNSTILE_SECRET_KEY": ${{ toJSON(secrets.TURNSTILE_SECRET_KEY)
+            }}, "TURNSTILE_SITE_KEY": ${{ toJSON(secrets.TURNSTILE_SITE_KEY) }},
+            "YOUTUBE_DATA_API_KEY": ${{ toJSON(secrets.YOUTUBE_DATA_API_KEY) }}}
         run: |
           if [ ! -f tools/ci/collect-wrangler-logs.ts ]; then exit 0; fi
           node tools/ci/collect-wrangler-logs.ts --from "$HOME/.config/.wrangler/logs" --out "$RUNNER_TEMP/wrangler-logs"

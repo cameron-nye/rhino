@@ -66,3 +66,22 @@ test('each wrangler log scan lists every secret its job uses', () => {
 		}).toEqual({ job: job.name, missing: [] })
 	}
 })
+
+test('production origin secret sync requires Turnstile keys', () => {
+	const text = readFileSync(workflowPath, 'utf8')
+	const deploy = splitJobs(text).find((job) => job.name === 'deploy')
+	expect(deploy).toBeTruthy()
+	const sync = deploy?.body.slice(
+		deploy.body.indexOf('🔐 Sync Cloudflare Secrets (bulk)'),
+		deploy.body.indexOf('🔐 Sync Cloudflare Secrets to runtime worker'),
+	)
+	expect(sync).toContain('--set-from-env\n          TURNSTILE_SITE_KEY')
+	expect(sync).toContain('--set-from-env TURNSTILE_SECRET_KEY')
+	expect(sync).not.toContain('--set-from-env-optional TURNSTILE_')
+	expect(sync).toContain(
+		'TURNSTILE_SITE_KEY: ${{ secrets.TURNSTILE_SITE_KEY }}',
+	)
+	expect(sync).toContain(
+		'TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}',
+	)
+})
