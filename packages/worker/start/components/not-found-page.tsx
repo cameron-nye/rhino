@@ -31,7 +31,7 @@ export function NotFoundPage() {
 		<section data-testid="not-found-page" css={illustratedErrorPageCss}>
 			<img
 				src={publicAsset(notFoundPageImageSrc)}
-				alt="Kody looking disappointed, holding an Ethernet plug and a USB-C cable that do not match"
+				alt="Rhino, a pilot in a bomber jacket with flight goggles pushed up"
 				width={1254}
 				height={1254}
 				css={illustratedErrorImageCss}

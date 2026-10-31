@@ -5,6 +5,7 @@ import { dismissOpenPopoverPanel } from '#client/popover-open.ts'
 import { type CSSObject } from '@emotion/react'
 import { BrandContextMenu } from './brand-context-menu.tsx'
 import { FeaturesMenu } from './features-menu.tsx'
+import { rhinoWordmarkFontFamily } from '../brand/rhino-mark.ts'
 import { KodyMark } from './kody-mark.tsx'
 import { SiteLink } from './site-link.tsx'
 import { useEffect, useState } from 'react'
@@ -18,7 +19,6 @@ import {
 	shadows,
 	spacing,
 	transitions,
-	typography,
 } from '#universal/styles/tokens.ts'
 import {
 	hoverMq,
@@ -88,7 +88,7 @@ export function SiteHeader(props: SiteHeaderProps) {
 					<BrandContextMenu>
 						<SiteLink href="/" css={brandCss}>
 							<KodyMark size={34} />
-							<span>Rhino</span>
+							<span>RHINO</span>
 						</SiteLink>
 					</BrandContextMenu>
 					<div
@@ -127,7 +127,7 @@ export function SiteHeader(props: SiteHeaderProps) {
 				<BrandContextMenu>
 					<SiteLink href="/" css={brandCss}>
 						<KodyMark size={34} />
-						<span>Rhino</span>
+						<span>RHINO</span>
 					</SiteLink>
 				</BrandContextMenu>
 				<div css={navLinksCss}>
@@ -256,10 +256,10 @@ const brandCss: CSSObject = {
 	alignItems: 'center',
 	gap: '0.7rem',
 	minHeight: siteHeaderBrandMinHeight,
-	font: `700 1.75rem/1 ${typography.fontFamilyDisplay}`,
+	font: `400 1.75rem/1 ${rhinoWordmarkFontFamily}`,
 	color: colors.text,
 	textDecoration: 'none',
-	letterSpacing: '-0.01em',
+	letterSpacing: '0.02em',
 	'&:hover': { color: colors.text },
 }
 

@@ -9,11 +9,8 @@ import {
 	kodyLogoViewBox,
 	kodyWordmarkPathD,
 } from './kody-logo.ts'
-import {
-	kodyBrandAssets,
-	kodyMarkOutlinedRingPathD,
-	kodyMarkPathD,
-} from './kody-mark-path.ts'
+import { kodyBrandAssets } from './kody-mark-path.ts'
+import { rhinoBodyOnDark, rhinoBodyOnLight, rhinoHorn } from './rhino-mark.ts'
 
 const publicDir = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
@@ -25,27 +22,27 @@ function readPublic(assetPath: string) {
 }
 
 test('logo markup pairs the mark with the outlined wordmark', () => {
-	const solid = kodyLogoSvgMarkup('#ffffff')
+	const solid = kodyLogoSvgMarkup()
 	expect(solid).toContain(`viewBox="${kodyLogoViewBox}"`)
-	expect(solid).toContain(kodyMarkPathD)
 	expect(solid).toContain(kodyWordmarkPathD)
 	expect(solid).not.toContain('<text')
-	expect(solid.match(/fill="#ffffff"/g)).toHaveLength(2)
+	expect(solid).toContain(`fill="${rhinoBodyOnDark}"`)
+	expect(solid).toContain(`fill="${rhinoHorn}"`)
 
-	const outlined = kodyLogoOutlinedSvgMarkup('#000000')
+	const outlined = kodyLogoOutlinedSvgMarkup()
 	expect(outlined).not.toContain('clipPath')
-	expect(outlined).toContain(kodyMarkOutlinedRingPathD)
 	expect(outlined).toContain(kodyWordmarkPathD)
-	expect(outlined).toContain('fill-rule="evenodd"')
+	expect(outlined).toContain(`fill="${rhinoBodyOnLight}"`)
 	expect(outlined).not.toContain('stroke=')
+	expect(outlined).not.toBe(solid)
 })
 
 test('published logo SVGs match the markup helpers', () => {
 	expect(readPublic(kodyBrandAssets.logoSvgWhite).toString('utf8')).toBe(
-		kodyLogoSvgMarkup('#ffffff'),
+		kodyLogoSvgMarkup(),
 	)
 	expect(readPublic(kodyBrandAssets.logoSvgOutlined).toString('utf8')).toBe(
-		kodyLogoOutlinedSvgMarkup('#000000'),
+		kodyLogoOutlinedSvgMarkup(),
 	)
 })
 

@@ -54,7 +54,7 @@ export function PackageNoAccessPage(props: PackageNoAccessPageProps) {
 		<section data-testid="package-no-access-page" css={illustratedErrorPageCss}>
 			<img
 				src={publicAsset('/images/kody-404-disappointed.png')}
-				alt="Kody looking disappointed, holding an Ethernet plug and a USB-C cable that do not match"
+				alt="Rhino, a pilot in a bomber jacket with flight goggles pushed up"
 				width={1254}
 				height={1254}
 				css={illustratedErrorImageCss}

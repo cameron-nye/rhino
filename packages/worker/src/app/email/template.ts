@@ -107,7 +107,7 @@ function afterActionBlocks(
 }
 
 /**
- * Hosted PNG on its own white plate (baked into the image), so the black
+ * Hosted PNG on its own white plate (baked into the image), so the
  * light-mode artwork stays readable when a client darkens the email.
  */
 function brandImage(
@@ -116,7 +116,7 @@ function brandImage(
 	centered = false,
 ) {
 	const src = new URL(image.src, appBaseUrl).toString()
-	return `<img src="${escapeHtml(src)}" alt="Kody" width="${image.width}" height="${image.height}" style="display: block;${centered ? ' margin: 0 auto;' : ''} width: ${image.width}px; height: ${image.height}px; border: 0; outline: none; text-decoration: none;" />`
+	return `<img src="${escapeHtml(src)}" alt="Rhino" width="${image.width}" height="${image.height}" style="display: block;${centered ? ' margin: 0 auto;' : ''} width: ${image.width}px; height: ${image.height}px; border: 0; outline: none; text-decoration: none;" />`
 }
 
 function afterActionText(values: Array<EmailAfterActionBlock>) {

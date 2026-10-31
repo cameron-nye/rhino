@@ -10,11 +10,12 @@ import {
 import { accountManagementNarrowMq } from '../pages/account-management-link-nav.tsx'
 import { BrandContextMenu } from './brand-context-menu.tsx'
 import { DemoIndicator } from './demo-indicator.tsx'
+import { rhinoWordmarkFontFamily } from '../brand/rhino-mark.ts'
 import { KodyMark } from './kody-mark.tsx'
 import { AccountMenu } from './org-switcher.tsx'
 import { SiteLink } from './site-link.tsx'
 import { renderIcon } from './icon.tsx'
-import { colors, typography } from '#universal/styles/tokens.ts'
+import { colors } from '#universal/styles/tokens.ts'
 
 export function WorkspaceLayout() {
 	const { session } = useShellData()
@@ -165,12 +166,12 @@ export function WorkspaceLayout() {
 									gap: '0.6rem',
 									color: colors.text,
 									textDecoration: 'none',
-									font: `700 1.5rem/1 ${typography.fontFamilyDisplay}`,
-									letterSpacing: '-0.01em',
+									font: `400 1.5rem/1 ${rhinoWordmarkFontFamily}`,
+									letterSpacing: '0.02em',
 								}}
 							>
 								<KodyMark size={28} />
-								Rhino
+								RHINO
 							</SiteLink>
 						</BrandContextMenu>
 						<AccountMenu

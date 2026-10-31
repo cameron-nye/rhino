@@ -3,6 +3,7 @@ import { minPasswordLength } from '@kody-internal/shared/password-policy.ts'
 import { PasswordRevealInput } from '../components/password-reveal-input.tsx'
 import { type CSSObject } from '@emotion/react'
 import { type CSSProperties, type FormEvent } from 'react'
+import { rhinoWordmarkFontFamily } from '../brand/rhino-mark.ts'
 import { KodyMark } from '../components/kody-mark.tsx'
 import { SiteLink } from '../components/site-link.tsx'
 import {
@@ -50,7 +51,7 @@ function renderBrand(
 			css={extraCss}
 		>
 			<KodyMark size={34} />
-			<span>Rhino</span>
+			<span>RHINO</span>
 		</SiteLink>
 	)
 }
@@ -367,10 +368,10 @@ const brandBaseCss: CSSObject = {
 	display: 'inline-flex',
 	alignItems: 'center',
 	gap: '0.6rem',
-	font: `700 1.25rem/1 ${typography.fontFamilyDisplay}`,
+	font: `400 1.25rem/1 ${rhinoWordmarkFontFamily}`,
 	color: colors.text,
 	textDecoration: 'none',
-	letterSpacing: '-0.01em',
+	letterSpacing: '0.02em',
 	'&:hover': { color: colors.text },
 }
 
