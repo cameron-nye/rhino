@@ -1046,7 +1046,7 @@ test('execute --local --invoke rejects non-package export keys outside a package
 		)
 	} finally {
 		process.chdir(previous)
-		await rm(root, { recursive: true, force: true })
+		await rm(root, { recursive: true, force: true, maxRetries: 10 })
 	}
 })
 

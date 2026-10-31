@@ -15,6 +15,7 @@ import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join, normalize, sep } from 'node:path'
 import { gunzipSync } from 'node:zlib'
+import { killProcessTree } from '../process-tree.js'
 import { cliConfigDir } from '../store.js'
 
 /**
@@ -929,7 +930,10 @@ export async function superviseNewerVersion(input: {
 		)
 		const forward = (signal: NodeJS.Signals) => () => {
 			try {
-				child.kill(signal)
+				// Windows: Ctrl+C already reaches the child through the console,
+				// and child.kill() would orphan its workerd: end the whole tree.
+				if (process.platform !== 'win32') child.kill(signal)
+				else if (signal !== 'SIGINT' && child.pid) killProcessTree(child.pid)
 			} catch {}
 		}
 		const handlers = signals.map((signal) => [signal, forward(signal)] as const)

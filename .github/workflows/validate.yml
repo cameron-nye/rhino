@@ -730,12 +730,15 @@ jobs:
           retention-days: 14
 
   host_commands:
-    # ADR 0093: real daemon, workerd, and host processes on Linux and macOS.
+    # ADR 0093: real daemon, workerd, and host processes on every OS.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
+        os: [ubuntu-24.04, macos-15, windows-latest, windows-11-arm]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     name: 🖥️ Host commands (${{ matrix.os }})
     timeout-minutes: 20
     if: >-
@@ -815,6 +818,51 @@ jobs:
             echo "- duration_seconds: **${dur}**"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  cli_windows:
+    # Windows execution contexts (kody daemon, host folders, Task Scheduler):
+    # x64 natively and Windows on Arm running the x64 workerd under emulation.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    name: 🪟 CLI (${{ matrix.runner }})
+    timeout-minutes: 30
+    if: >-
+      github.event_name != 'pull_request' || github.event.pull_request.draft ==
+      false
+    defaults:
+      run:
+        shell: bash
+    env:
+      KODY_SKIP_SKILL_REFRESH: '1'
+      KODY_SKIP_GIT_HELPER_REFRESH: '1'
+      # Package scripts use POSIX env prefixes and globs; run them in Git Bash.
+      NPM_CONFIG_SCRIPT_SHELL: C:\Program Files\Git\bin\bash.exe
+      # TAP prints each failure (and the test still running at a timeout)
+      # inline; spec only prints details after every file finishes.
+      NODE_OPTIONS: --test-reporter=tap
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: ⎔ Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: 📥 Install deps
+        run: npm ci
+
+      - name: 🧪 CLI validate
+        run: npm run cli:validate
+
+      - name: Desktop validate
+        run: npm run desktop:validate
+
   validate:
     # Final merge gate stays on GitHub-hosted ubuntu-latest so a green
     # ✅ Validate check does not wait on a Warp machine (~10s) for a 3–4s job.
@@ -829,6 +877,7 @@ jobs:
       - e2e
       - e2e_report
       - cli
+      - cli_windows
       - host_commands
     permissions:
       contents: read
@@ -1095,8 +1144,8 @@ jobs:
           needs.static.result == 'success' && needs.node.result == 'success' &&
           needs.workers.result == 'success' && needs.mcp.result == 'success' &&
           needs.e2e.result == 'success' && needs.e2e_report.result == 'success'
-          && needs.cli.result == 'success' && needs.host_commands.result ==
-          'success'
+          && needs.cli.result == 'success' && needs.cli_windows.result ==
+          'success' && needs.host_commands.result == 'success'
         run: echo "All validate jobs passed"
 
       - name: ❌ Report failures
@@ -1104,8 +1153,8 @@ jobs:
           needs.static.result != 'success' || needs.node.result != 'success' ||
           needs.workers.result != 'success' || needs.mcp.result != 'success' ||
           needs.e2e.result != 'success' || needs.e2e_report.result != 'success'
-          || needs.cli.result != 'success' || needs.host_commands.result !=
-          'success'
+          || needs.cli.result != 'success' || needs.cli_windows.result !=
+          'success' || needs.host_commands.result != 'success'
         run: |
           echo "static=${{ needs.static.result }}"
           echo "node=${{ needs.node.result }}"
@@ -1114,5 +1163,6 @@ jobs:
           echo "e2e=${{ needs.e2e.result }}"
           echo "e2e_report=${{ needs.e2e_report.result }}"
           echo "cli=${{ needs.cli.result }}"
+          echo "cli_windows=${{ needs.cli_windows.result }}"
           echo "host_commands=${{ needs.host_commands.result }}"
           exit 1

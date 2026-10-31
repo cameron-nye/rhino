@@ -1200,6 +1200,24 @@ jobs:
           set -euo pipefail
           node tools/ci/preview-resources.ts cleanup --worker-name "$APP_WORKER_NAME"
 
+  execution_context_e2e:
+    # Real `kody daemon` on Ubuntu, macOS, and Windows against this preview
+    # (docs/contributing/execution-context-e2e.md). Opt in per PR with the
+    # preview-flag:execution-contexts label.
+    needs: deploy
+    if: >-
+      github.event_name == 'pull_request' && needs.deploy.result == 'success' &&
+      contains(github.event.pull_request.labels.*.name,
+      'preview-flag:execution-contexts')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/execution-context-e2e.yml
+    secrets: inherit
+    with:
+      preview_name: kody-pr-${{ github.event.pull_request.number }}
+      # The merge commit the deploy job checked out, not the PR head.
+      sha: ${{ github.sha }}
+
   cleanup:
     runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
     name: 🧹 Cleanup Preview Resources

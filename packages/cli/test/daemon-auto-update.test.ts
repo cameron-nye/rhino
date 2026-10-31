@@ -281,7 +281,7 @@ test('the off switch is stored in the local policy and wins everywhere', async (
 	const policyPath = join(configHome, 'policy-test.json')
 	writeFileSync(
 		policyPath,
-		JSON.stringify({ version: 1, fs: [{ path: '/tmp', mode: 'ro' }] }),
+		JSON.stringify({ version: 1, fs: [{ path: configHome, mode: 'ro' }] }),
 	)
 	assert.deepEqual(
 		update.autoUpdateSetting(await fsAccess.readLocalPolicy(policyPath), {}),
@@ -304,7 +304,7 @@ test('the off switch is stored in the local policy and wins everywhere', async (
 	})
 	assert.deepEqual(result, { kind: 'disabled' })
 	assert.deepEqual(counts, { meta: 0, tarball: 0 })
-	await fsAccess.allowLocalPath({ path: '/var', mode: 'ro', policyPath })
+	await fsAccess.allowLocalPath({ path: tmpdir(), mode: 'ro', policyPath })
 	assert.equal(
 		(await fsAccess.readLocalPolicy(policyPath)).autoUpdate?.enabled,
 		false,
@@ -638,7 +638,8 @@ test('a lock whose pid now belongs to another process, or predates boot, is take
 		/taking the lock right now/,
 	)
 	// A lock this user cannot read (another user's daemon) is never reclaimed.
-	if (process.getuid?.() !== 0) {
+	// Windows has no owner-only read bits for chmod to clear.
+	if (process.platform !== 'win32' && process.getuid?.() !== 0) {
 		writeFileSync(path, '{}')
 		utimesSync(path, new Date(0), new Date(0))
 		chmodSync(path, 0o000)

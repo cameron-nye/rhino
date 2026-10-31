@@ -67,11 +67,13 @@ Node-API dependencies keep their normal Node build, not an Electron rebuild.
 
 ## Platform support
 
-The shell targets macOS, Windows, and Linux. Local execution currently supports
-**macOS and Linux on x64 or arm64**, matching the CLI's pinned workerd
-downloads. Windows machine setup is disabled until the CLI supports a Windows
-execution runtime. Native Apple app access is not part of this wrapper, it needs
-specific permissioned capabilities.
+The shell and local execution support macOS, Windows, and Linux on x64 or arm64,
+matching the CLI's pinned workerd downloads (Windows on Arm runs the x64 workerd
+under emulation). On Windows, pausing and quitting end the CLI in-process so it
+drains runs, then `taskkill /T` removes any `workerd.exe` left behind.
+`kody daemon install` (a per-user logon task) is the CLI-only alternative.
+Native Apple app access is not part of this wrapper, it needs specific
+permissioned capabilities.
 
 ## Host commands
 
@@ -80,7 +82,7 @@ that granted runs can execute any shell command as your user, without approval
 per command. It uses the CLI's `context commands on|off --context <ecid>`.
 Turning it off stops background commands too. The website and CLI can also turn
 it off, and the controls refresh while the machine panel is open. Commands are
-disabled on Windows and before setup. See
+disabled before setup. See
 [Host commands](../../docs/use/execution-contexts.md#host-commands).
 
 ## Packaging and checks
@@ -188,8 +190,7 @@ the update feed.
 
 CI builds are unsigned, and macOS builds are not notarized. Production signing
 credentials belong in the release environment described below. Windows
-installers work on x64 and arm64, but the local execution runner remains
-disabled on Windows.
+installers work on x64 and arm64, including the local execution runner.
 
 To build the same native installers locally:
 

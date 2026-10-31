@@ -73,6 +73,11 @@ credential.
    kody context policy allow ~/projects --mode rw
    ```
 
+   On Windows use native paths, for example
+   `kody context policy allow C:\Users\you\projects --mode rw`. Runs see the
+   same paths (`C:\...` or `C:/...`, and UNC shares like `\\server\share`);
+   matching ignores case.
+
 5. Add it to your chain so runs go there first:
 
    ```sh
@@ -93,8 +98,10 @@ the context, so the daemon starts at login or boot and restarts after a crash:
   `sudo loginctl enable-linger "$(id -un)"`. Kody prints that command instead of
   running it.
 - **macOS:** a per-user LaunchAgent, so it runs while you are logged in.
-- **Windows:** no background service. Keep `kody daemon` running in a terminal.
-  Host commands stay off.
+- **Windows:** a per-user Task Scheduler task (`\Kody\kody-daemon-<ecid>`) that
+  starts at your logon. No administrator rights, no Windows Service. It runs
+  hidden and restarts the daemon after a crash. Windows on Arm runs the x64
+  runtime under emulation.
 
 | Command                                        | What it does                                         |
 | ---------------------------------------------- | ---------------------------------------------------- |
@@ -114,7 +121,10 @@ The service never runs as root and holds no API token or passphrase: it signs in
 with the machine key. A background service cannot answer a passphrase prompt, so
 when the key needs one, or Linux has no unlocked keyring, install offers a file
 key instead: a random key stored next to the encrypted machine key, readable
-only by you (`--key-storage file`).
+only by you (`--key-storage file`). On Windows the OS keyring is Windows
+Credential Manager, which a logon task can use, so the keyring stays the
+default; the file key fallback is protected by your user profile's folder
+permissions (Windows ignores POSIX modes).
 
 Daemons auto-update by default: on start and about every 4 hours each daemon
 (service, terminal, or desktop app) checks npm, installs the verified newer
@@ -228,7 +238,11 @@ on Kody cloud cannot be cancelled this way.
 
 With host commands on, code in a run on the machine calls `kody.command.*` from
 `kody:runtime`. Commands run as the user running the daemon, in a real shell
-(`$SHELL -c`, else `/bin/sh -c`), with that user's `PATH` and tools.
+(`$SHELL -c`, else `/bin/sh -c`), with that user's `PATH` and tools. On Windows
+the shell is PowerShell (`pwsh`, else `powershell.exe`, UTF-8 output); pass
+`shell: 'cmd'` for `cmd.exe`. `file` resolves through `PATH`/`PATHEXT`, so
+`{ file: 'npm', args: ['test'] }` runs `npm.cmd`, and every kill ends the whole
+process tree.
 
 ```ts
 import { kody } from 'kody:runtime'

@@ -1,4 +1,10 @@
-import { readFileSync, rmSync, unwatchFile, watchFile } from 'node:fs'
+import {
+	appendFileSync,
+	readFileSync,
+	rmSync,
+	unwatchFile,
+	watchFile,
+} from 'node:fs'
 import { cpus, platform, totalmem } from 'node:os'
 import {
 	ed25519JwkThumbprint,
@@ -66,6 +72,7 @@ import {
 } from './service-commands.js'
 import {
 	disableOwnService,
+	isServiceManager,
 	rotateLog,
 	serviceEnvVar,
 	serviceManagerFor,
@@ -544,13 +551,14 @@ Run \`kody daemon\` in a terminal, or fix that and run: kody daemon install --co
 			)
 		}
 		const asService = process.env[serviceEnvVar]
-		const manager =
-			asService === 'systemd' || asService === 'launchd' ? asService : null
+		const manager = isServiceManager(asService) ? asService : null
 		const paths = manager
 			? servicePaths({ apiUrl: input.apiUrl, ecid, manager })
 			: null
 		const supervised = process.env[supervisedEnvVar] === '1'
 		if (paths && !supervised) rotateLog(paths.logPath)
+		// Task Scheduler has no stdout redirect: the daemon appends its own log.
+		if (paths && manager === 'taskscheduler') appendOutputTo(paths.logPath)
 		const readAutoUpdate = async () =>
 			autoUpdateSetting(await readLocalPolicy().catch(() => null))
 		const relaunchArgs = [
@@ -937,11 +945,6 @@ async function runCommandsOptInCommand(
 	if (extra.length > 0 || !['status', 'on', 'off'].includes(action)) {
 		throw new Error(commandsUsage)
 	}
-	if (process.platform === 'win32' && action === 'on') {
-		throw new Error(
-			'Host commands are not supported on Windows yet: the Kody runner supports macOS and Linux. (execution_context_commands_unsupported)',
-		)
-	}
 	const ecids = input.values.context
 		? [
 				localContextId(input.apiUrl, input.values.context) ??
@@ -1076,4 +1079,16 @@ async function runPolicyCommand(
 		return 0
 	}
 	throw new Error(policyUsage)
+}
+
+function appendOutputTo(path: string) {
+	for (const stream of [process.stdout, process.stderr]) {
+		const write = stream.write.bind(stream)
+		stream.write = ((chunk: string | Uint8Array, ...rest: Array<unknown>) => {
+			try {
+				appendFileSync(path, chunk, { mode: 0o600 })
+			} catch {}
+			return (write as (...args: Array<unknown>) => boolean)(chunk, ...rest)
+		}) as typeof stream.write
+	}
 }

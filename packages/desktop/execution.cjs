@@ -37,7 +37,7 @@ class DesktopExecution {
 	// runner lock holder, stored registrations, and auto-update. The app and
 	// the CLI share one runner per machine, so the app adopts what is there.
 	async readMachine(force = false) {
-		if (this.platform === 'win32') return null
+		if (!this.supported) return null
 		if (!force && this.machineReadAt > Date.now() - 10_000) return this.machine
 		const { ecid } = this.read()
 		try {
@@ -115,6 +115,10 @@ class DesktopExecution {
 			)
 		return identity
 	}
+	// Matches the CLI's pinned workerd downloads.
+	get supported() {
+		return ['darwin', 'linux', 'win32'].includes(this.platform)
+	}
 	async snapshot(viewer) {
 		const state = this.read()
 		const owns = viewer && this.owns(state, viewer)
@@ -129,7 +133,7 @@ class DesktopExecution {
 				// A CLI service or another daemon already runs this machine.
 				!shouldAdopt(machine) &&
 				!this.error &&
-				this.platform !== 'win32'
+				this.supported
 			)
 				this.runner.start(state.ecid)
 		}
@@ -138,7 +142,7 @@ class DesktopExecution {
 		return {
 			name: owns && state.name ? state.name : this.name,
 			platform: this.platform,
-			supported: this.platform !== 'win32',
+			supported: this.supported,
 			signedIn: !!viewer,
 			busy: this.busy,
 			contextId: owns ? state.ecid : null,
@@ -225,10 +229,8 @@ class DesktopExecution {
 			].includes(command)
 		)
 			throw new Error('Unknown machine action.')
-		if (this.platform === 'win32')
-			throw new Error(
-				'Local execution is not available on Windows in this version.',
-			)
+		if (!this.supported)
+			throw new Error('Local execution is not available on this platform.')
 		this.busy = true
 		try {
 			if (command.startsWith('auto-update-')) {

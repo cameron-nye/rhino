@@ -12,6 +12,7 @@ import {
 import { uptime } from 'node:os'
 import { dirname } from 'node:path'
 import psList from 'ps-list'
+import { windowsCommandLine } from '../process-tree.js'
 
 /**
  * One runner per execution context on a machine. Every launcher (a service, a
@@ -23,7 +24,12 @@ import psList from 'ps-list'
 /** Who started a daemon: the desktop app sets this for the runner it owns. */
 export const launcherEnvVar = 'KODY_DAEMON_LAUNCHER'
 
-export type RunnerLauncher = 'systemd' | 'launchd' | 'terminal' | 'desktop'
+export type RunnerLauncher =
+	| 'systemd'
+	| 'launchd'
+	| 'taskscheduler'
+	| 'terminal'
+	| 'desktop'
 
 export type RunnerLockHolder = {
 	pid: number
@@ -50,7 +56,7 @@ export function isAlive(pid: number) {
 }
 
 function commandOf(pid: number): string | null {
-	if (process.platform === 'win32') return null
+	if (process.platform === 'win32') return windowsCommandLine(pid)
 	try {
 		return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
 			encoding: 'utf8',
@@ -224,6 +230,7 @@ export function acquireRunnerLock(
 export function describeLauncher(launcher: RunnerLauncher | undefined) {
 	if (launcher === 'systemd') return 'the systemd service'
 	if (launcher === 'launchd') return 'the launchd service'
+	if (launcher === 'taskscheduler') return 'the Task Scheduler task'
 	if (launcher === 'desktop') return 'the Kody desktop app'
 	return 'a terminal'
 }

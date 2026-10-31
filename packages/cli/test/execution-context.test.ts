@@ -834,7 +834,9 @@ test('runs get the grant egress from welcome, re-applied on grant.update', async
 
 test('grant.update re-applies host folders: capabilities follow the effective mounts and a run writes inside them only', async () => {
 	SilentSocket.instances = []
-	const root = realpathSync(mkdtempSync(join(tmpdir(), 'kody-daemon-fs-')))
+	const root = realpathSync.native(
+		mkdtempSync(join(tmpdir(), 'kody-daemon-fs-')),
+	)
 	const granted = join(root, 'granted')
 	const outside = join(root, 'outside')
 	mkdirSync(granted)
@@ -1165,11 +1167,24 @@ test('kody context cancel-run posts to the run cancel route', async () => {
 
 test('a context run with commands on runs a real command and a background job, authorized and reported to Kody', async () => {
 	SilentSocket.instances = []
-	const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'kody-daemon-cmd-')))
+	const cwd = realpathSync.native(
+		mkdtempSync(join(tmpdir(), 'kody-daemon-cmd-')),
+	)
+	// Windows runs PowerShell by default.
+	const [fgCommand, bgCommand] =
+		process.platform === 'win32'
+			? [
+					"'hello-from-host'; (Get-Location).Path; [Console]::Error.WriteLine('warn'); exit 2",
+					"'bg-start'; Start-Sleep -Seconds 30",
+				]
+			: [
+					'echo hello-from-host; pwd; echo warn >&2; exit 2',
+					'echo bg-start; sleep 30',
+				]
 	const code = `import { kody } from 'kody:runtime'
 export default async function main(p) {
-	const fg = await kody.command.run({ command: 'echo hello-from-host; pwd; echo warn >&2; exit 2', cwd: p.cwd, env: { KODY_E2E_SECRET: 'do-not-log' } })
-	const bg = await kody.command.start({ command: 'echo bg-start; sleep 30' })
+	const fg = await kody.command.run({ command: ${JSON.stringify(fgCommand)}, cwd: p.cwd, env: { KODY_E2E_SECRET: 'do-not-log' } })
+	const bg = await kody.command.start({ command: ${JSON.stringify(bgCommand)} })
 	let out
 	for (let i = 0; i < 200; i++) {
 		out = await kody.command.output({ commandId: bg.commandId })
@@ -1262,8 +1277,11 @@ export default async function main(p) {
 	assert.equal(result?.body.isError, false, JSON.stringify(result?.body))
 	const value = (result?.body.structuredContent as { result: any }).result
 	assert.equal(value.fg.exitCode, 2)
-	assert.equal(value.fg.stdout, `hello-from-host\n${cwd}\n`)
-	assert.equal(value.fg.stderr, 'warn\n')
+	assert.equal(
+		value.fg.stdout.replaceAll('\r\n', '\n'),
+		`hello-from-host\n${cwd}\n`,
+	)
+	assert.equal(value.fg.stderr.replaceAll('\r\n', '\n'), 'warn\n')
 	assert.match(value.bgOut, /^bg-start/)
 	assert.equal(value.bgState, 'running')
 	assert.ok(

@@ -70,6 +70,7 @@ import {
 import { redact } from './redact.js'
 import { type ToolCallResult } from './tool-result.js'
 import { ensureWorkerdBinary } from './workerd-binary.js'
+import { raiseSignal } from './process-tree.js'
 import { type PackageGraphCacheSlot } from './execution-context/package-graph-cache.js'
 import { type LocalWorkerTracker } from './execution-context/worker-tracker.js'
 
@@ -479,6 +480,7 @@ export async function runLocalExecute(
 			cwd: workDir,
 			env,
 			stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+			windowsHide: true,
 		})
 		const workerdPid = child.pid
 		if (workerdPid !== undefined && input.workerTracker) {
@@ -532,7 +534,16 @@ export async function runLocalExecute(
 		releaseSignals()
 		stopWorkerd()
 		await bridge?.close()
-		await rm(workDir, { recursive: true, force: true })
+		// Windows keeps a dead process's files locked until it has exited.
+		if (child && child.exitCode === null && child.signalCode === null) {
+			await new Promise((resolve) => child?.once('exit', resolve))
+		}
+		await rm(workDir, {
+			recursive: true,
+			force: true,
+			maxRetries: 10,
+			retryDelay: 100,
+		})
 	}
 }
 
@@ -606,7 +617,7 @@ function cleanupOnSignal(cleanup: () => void): () => void {
 	const handler = (signal: NodeJS.Signals) => {
 		release()
 		cleanup()
-		process.kill(process.pid, signal)
+		raiseSignal(signal)
 	}
 	for (const signal of signals) process.once(signal, handler)
 	return release

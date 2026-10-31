@@ -480,7 +480,7 @@ export function DesktopMachinePanel() {
 			{!state ? (
 				<p>Checking this machine…</p>
 			) : !state.supported ? (
-				<p>Local execution is not available on Windows in this version.</p>
+				<p>Local execution is not available on this platform.</p>
 			) : state.blocked ? (
 				<p>
 					This app manages a registration for another workspace. Switch to that

@@ -263,10 +263,24 @@ async function waitFor<T>(
 	throw new Error(`Timed out waiting for ${label}`)
 }
 
+/** os.tmpdir() reads TMPDIR on POSIX and TEMP/TMP on Windows. */
+function tmpEnv(dir: string) {
+	return { TMPDIR: dir, TEMP: dir, TMP: dir }
+}
+
 function workerdPidUnder(dir: string): number | null {
-	const listing = execFileSync('ps', ['-A', '-o', 'pid=,args='], {
-		encoding: 'utf8',
-	})
+	const listing =
+		process.platform === 'win32'
+			? execFileSync(
+					'powershell.exe',
+					[
+						'-NoProfile',
+						'-Command',
+						`Get-CimInstance Win32_Process -Filter "Name='workerd.exe'" | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }`,
+					],
+					{ encoding: 'utf8' },
+				)
+			: execFileSync('ps', ['-A', '-o', 'pid=,args='], { encoding: 'utf8' })
 	for (const line of listing.split('\n')) {
 		if (line.includes('workerd') && line.includes(dir))
 			return Number(line.trim().split(/\s+/)[0])
@@ -1142,13 +1156,16 @@ test(
 	async () => {
 		reset()
 		const scratch = mkdtempSync(join(tmpdir(), 'kody-crash-'))
-		const previousTmpdir = process.env.TMPDIR
-		process.env.TMPDIR = scratch
+		const tmpKeys = Object.keys(tmpEnv(scratch)) as Array<'TMPDIR'>
+		const previousTmp = tmpKeys.map((key) => process.env[key])
+		Object.assign(process.env, tmpEnv(scratch))
+		const abort = new AbortController()
 		try {
 			const run = runLocalExecute({
 				code: hangAfterPing,
 				token: goodToken,
 				apiUrl,
+				signal: abort.signal,
 			})
 			await waitFor('the module to start', () =>
 				proxyRequests.some(
@@ -1163,11 +1180,18 @@ test(
 			)
 			await assert.rejects(
 				run,
-				/workerd exited during the run \(workerd exit SIGKILL\)/,
+				// Windows TerminateProcess reports exit code 1, not a signal.
+				process.platform === 'win32'
+					? /workerd exited during the run \(workerd exit 1\)/
+					: /workerd exited during the run \(workerd exit SIGKILL\)/,
 			)
 		} finally {
-			if (previousTmpdir === undefined) delete process.env.TMPDIR
-			else process.env.TMPDIR = previousTmpdir
+			abort.abort()
+			tmpKeys.forEach((key, index) => {
+				const previous = previousTmp[index]
+				if (previous === undefined) delete process.env[key]
+				else process.env[key] = previous
+			})
 		}
 		assert.deepEqual(readdirSync(scratch), [])
 	},
@@ -1175,7 +1199,15 @@ test(
 
 test(
 	'SIGTERM during kody execute --local stops workerd and removes the module',
-	{ timeout: 180_000 },
+	{
+		timeout: 180_000,
+		// Windows has no SIGTERM delivery: kill() is TerminateProcess, so the
+		// SIGKILL reap test below covers it (the desktop stops in-process).
+		skip:
+			process.platform === 'win32'
+				? 'Windows cannot deliver SIGTERM to another process'
+				: false,
+	},
 	async () => {
 		reset()
 		const scratch = mkdtempSync(join(tmpdir(), 'kody-signal-'))
@@ -1195,7 +1227,11 @@ test(
 				hangAfterPing,
 			],
 			{
-				env: { ...process.env, TMPDIR: scratch, KODY_API_TOKEN: goodToken },
+				env: {
+					...process.env,
+					...tmpEnv(scratch),
+					KODY_API_TOKEN: goodToken,
+				},
 				stdio: 'ignore',
 			},
 		)
@@ -1230,7 +1266,8 @@ test(
 		const scratch = mkdtempSync(join(tmpdir(), 'kody-daemon-kill-'))
 		const workersDir = join(scratch, 'workers')
 		const src = (path: string) =>
-			JSON.stringify(fileURLToPath(new URL(`../src/${path}`, import.meta.url)))
+			// ESM import specifiers must be file URLs (a bare C:\\ path fails).
+			JSON.stringify(new URL(`../src/${path}`, import.meta.url).href)
 		const script = `
 import { runLocalExecute } from ${src('local-execute.ts')}
 import { createLocalWorkerTracker } from ${src('execution-context/worker-tracker.ts')}
@@ -1244,7 +1281,7 @@ await runLocalExecute({
 		const daemon = spawn(
 			process.execPath,
 			['--import', 'tsx', '--input-type=module', '-e', script],
-			{ env: { ...process.env, TMPDIR: scratch }, stdio: 'ignore' },
+			{ env: { ...process.env, ...tmpEnv(scratch) }, stdio: 'ignore' },
 		)
 		const exited = new Promise((resolve) => daemon.once('exit', resolve))
 		await waitFor('the module to start', () =>
@@ -1258,13 +1295,21 @@ await runLocalExecute({
 		daemon.kill('SIGKILL')
 		await exited
 		await delay(500)
-		assert.ok(isRunning(workerdPid), 'SIGKILL skips every exit handler')
 		assert.deepEqual(readdirSync(workersDir), [`${workerdPid}.json`])
-
-		assert.deepEqual(reapLeftoverWorkers(workersDir), [workerdPid])
-		await waitFor('workerd to stop', () =>
-			isRunning(workerdPid) ? null : true,
-		)
+		if (process.platform === 'win32') {
+			// libuv puts children in a kill-on-close Job Object, so Windows takes
+			// workerd down with the daemon; the next daemon only clears the record.
+			await waitFor('workerd to stop', () =>
+				isRunning(workerdPid) ? null : true,
+			)
+			assert.deepEqual(reapLeftoverWorkers(workersDir), [])
+		} else {
+			assert.ok(isRunning(workerdPid), 'SIGKILL skips every exit handler')
+			assert.deepEqual(reapLeftoverWorkers(workersDir), [workerdPid])
+			await waitFor('workerd to stop', () =>
+				isRunning(workerdPid) ? null : true,
+			)
+		}
 		assert.deepEqual(readdirSync(workersDir), [])
 		assert.deepEqual(
 			readdirSync(scratch).filter((entry) => entry.startsWith('kody-local-')),
@@ -1373,7 +1418,9 @@ test(
 		reset()
 		const { effectiveFs } =
 			await import('../src/execution-context/fs-access.js')
-		const root = realpathSync(mkdtempSync(join(tmpdir(), 'kody-host-fs-')))
+		const root = realpathSync.native(
+			mkdtempSync(join(tmpdir(), 'kody-host-fs-')),
+		)
 		const rw = join(root, 'granted')
 		const ro = join(root, 'readonly')
 		const denied = join(root, 'granted-evil')
@@ -1403,14 +1450,23 @@ export default async function main(p) {
 		roWrite: await attempt(() => fsp.writeFile(p.ro + '/x.txt', 'nope')),
 		prefixTrick: await attempt(() => fsp.writeFile(p.denied + '/x.txt', 'nope')),
 		dotDot: await attempt(() => fsp.readFile(p.rw + '/../readonly/../granted-evil/x.txt')),
-		outside: await attempt(() => fsp.readFile('/etc/hostname', 'utf8')),
+		outside: await attempt(() => fsp.readFile(p.outside, 'utf8')),
 		sync: await attempt(() => readFileSync(p.rw + '/a.txt')),
 		virtualTmp: await attempt(async () => { await fsp.writeFile('/tmp/v.txt', 'v'); return fsp.readFile('/tmp/v.txt', 'utf8') }),
 	}
 }`
 		const result = await runLocalExecute({
 			code,
-			params: { rw, ro, denied },
+			params: {
+				rw,
+				ro,
+				denied,
+				// workerd reports process.platform 'linux' even on Windows.
+				outside:
+					process.platform === 'win32'
+						? 'C:\\Windows\\win.ini'
+						: '/etc/hostname',
+			},
 			token: goodToken,
 			apiUrl,
 			hostFs: () => hostFs,
@@ -1450,7 +1506,9 @@ test(
 		reset()
 		const { effectiveFs } =
 			await import('../src/execution-context/fs-access.js')
-		const root = realpathSync(mkdtempSync(join(tmpdir(), 'kody-host-fs-')))
+		const root = realpathSync.native(
+			mkdtempSync(join(tmpdir(), 'kody-host-fs-')),
+		)
 		const granted = await effectiveFs(
 			[{ path: root, mode: 'rw' }],
 			[{ path: root, mode: 'rw' }],

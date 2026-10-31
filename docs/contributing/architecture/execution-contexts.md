@@ -61,7 +61,23 @@ uninstall, `kody update`), `auto-update.ts`, and `runner-lock.ts`.
 - macOS: a LaunchAgent `codes.kody.daemon.<ecid>` loaded with
   `launchctl bootstrap gui/<uid>`, `RunAtLoad`, `KeepAlive` on unsuccessful
   exit, `ThrottleInterval`.
-- Windows is not supported; install says so.
+- Windows: a Task Scheduler task `\Kody\kody-daemon-<ecid>` registered with
+  `schtasks /Create /XML` (UTF-16): logon trigger for the current user,
+  `InteractiveToken`, `LeastPrivilege`, no time limit, no admin. Its action runs
+  `daemon-task.ps1` (the "unit", in the context dir) hidden; the script is the
+  supervisor, relaunching the daemon after a crash and stopping on the
+  stay-stopped exit code. The daemon tees its own `daemon.log`. Stop/uninstall
+  `schtasks /End`s the task and `taskkill /T /F`s the daemon tree (no process
+  groups on Windows). No Windows Service.
+- Windows runtime: workerd `windows-64` (also used on Windows arm64 under
+  emulation), cached as `workerd.exe` under `%LOCALAPPDATA%\kody\cache`.
+  Host-folder paths are native (`fs-access.ts`: drive letters, UNC, `\\?\`
+  stripped, case-insensitive containment, junctions resolved by `realpath`);
+  `host-fs-shim.ts` forwards Windows-shaped paths and keeps `/bundle`, `/tmp`,
+  `/dev` virtual. Orphan reaping reads command lines with
+  `Get-CimInstance Win32_Process` (`process-tree.ts`). Signals: `raiseSignal`
+  dispatches in-process on Windows, since signalling yourself is a hard
+  TerminateProcess that skips cleanup.
 - Units hold only paths, the context id, `PATH`, and `KODY_DAEMON_SERVICE`. No
   API token or passphrase. Install refuses root and refuses an npx, pnpm dlx,
   bunx or temp-dir CLI (the path would vanish); it points at
@@ -173,14 +189,17 @@ sequenceDiagram
 - Kody cloud and `--local` runs get a `kody.command` whose methods throw
   `execution_context_command_requires_context` (`runtime-source-modules.ts`);
   the authorize hop refuses any other principal with the same code.
-- Windows: `kody context commands on` and `HostCommands` refuse before spawning.
+- Windows: PowerShell (`pwsh`, else `powershell.exe`) or `cmd.exe` with
+  `shell: 'cmd'`, UTF-8 output, hidden windows; `.cmd`/`.bat` files resolve
+  through `PATH`/`PATHEXT` and run through `cmd.exe` with escaped args
+  (`windows-command.ts`); every kill is `taskkill /T /F`.
 
 Tests: `packages/cli/test/host-commands.test.ts` (process manager, real
 commands), `packages/cli/test/execution-context.test.ts` (real daemon and
 workerd against a fake ECP server), and
 `packages/worker/src/execution-contexts/commands.node.test.ts` (authorization,
-denials, sharing, audit). CI runs the CLI ones on Linux and macOS
-(`host-commands` job in `validate.yml`).
+denials, sharing, audit). CI runs the CLI ones on Linux, macOS, Windows x64, and
+Windows ARM (`host-commands` job in `validate.yml`).
 
 ### End-to-end check
 
@@ -205,7 +224,10 @@ production (or any deployment with signing keys).
 
 - The private key is generated on the machine and never leaves it. The CLI
   stores it AES-256-GCM encrypted, wrapped by the OS keyring or
-  `KODY_CONTEXT_KEY_PASSPHRASE`.
+  `KODY_CONTEXT_KEY_PASSPHRASE`. The keyring is `@napi-rs/keyring`: macOS
+  Keychain, Linux Secret Service, Windows Credential Manager (usable by the
+  logon task, so Windows keeps the keyring by default). The service file-key
+  fallback is mode 600 on POSIX; on Windows it relies on the user profile ACL.
 - Server frames are signed with `ECP_FRAME_SIGNING_KEYS`; daemons trust only
   keys published at `/v1/execution-contexts/server-keys` and signed by a root
   key pinned in `server-keys.ts`. That route serves the committed test key set
@@ -213,6 +235,12 @@ production (or any deployment with signing keys).
   otherwise. Without `ECP_FRAME_SIGNING_KEYS` the session refuses to connect, so
   set it (through the Deploy workflow's secrets, never by hand) before turning
   the flag on anywhere.
+- TEST ONLY: previews and local dev serve the committed key set signed by
+  `root-test-1`, whose private key is public. The CLI trusts it only when
+  `KODY_ECP_TRUST_TEST_ROOT=1` is set and the API host is an https
+  `*.workers.dev` preview or `localhost` (`serverKeyRootsFor` in
+  `packages/cli/src/execution-context/client.ts`); kody.codes and every other
+  host ignore the variable. Never set it on a real machine.
 - Every API hop a run makes re-checks the requester's current access (account
   state, org membership, share, opt-in, attachment). Lost access ends the lease
   with `access_lost`. Leaving a team or org, opting out, detaching and narrowing

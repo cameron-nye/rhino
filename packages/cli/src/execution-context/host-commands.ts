@@ -3,6 +3,12 @@ import { randomBytes } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { isAbsolute } from 'node:path'
+import {
+	killWindowsTree,
+	windowsFileLaunch,
+	windowsShellLaunch,
+	type WindowsShell,
+} from './windows-command.ts'
 
 /**
  * Host commands (`kody.command.*`, ADR 0093): real OS processes on the
@@ -14,7 +20,6 @@ import { isAbsolute } from 'node:path'
 
 export type HostCommandsDenialCode =
 	| 'execution_context_commands_off'
-	| 'execution_context_commands_unsupported'
 	| 'invalid_request'
 	| 'not_found'
 
@@ -29,8 +34,14 @@ export class HostCommandError extends Error {
 }
 
 export type HostCommandSpec = {
-	/** Shell command line, run with the user's shell (`$SHELL -c`, else /bin/sh). */
+	/**
+	 * Shell command line, run with the user's shell (`$SHELL -c`, else
+	 * /bin/sh). Windows: PowerShell (`pwsh`, else powershell.exe), or cmd.exe
+	 * with `shell: 'cmd'`.
+	 */
 	command?: string
+	/** Windows only: `powershell` (default) or `cmd`. */
+	shell?: WindowsShell
 	/** Executable to run without a shell (with `args`). */
 	file?: string
 	args?: Array<string>
@@ -194,6 +205,7 @@ type PreparedCommand = {
 	maxOutputBytes: number
 	file: string
 	argv: Array<string>
+	verbatim: boolean
 }
 
 function newCommandId() {
@@ -224,6 +236,13 @@ function killTree(child: ChildProcess, signal: NodeJS.Signals) {
 	// No exitCode guard: the shell leader can exit while the rest of its
 	// group (e.g. `server &`) still runs and holds the pipes.
 	if (child.pid === undefined) return
+	if (process.platform === 'win32') {
+		// No process groups or SIGTERM on Windows: end the whole tree.
+		void killWindowsTree(child.pid, {
+			leaderExited: child.exitCode !== null || child.signalCode !== null,
+		})
+		return
+	}
 	try {
 		// Detached children lead their own process group: signal the group so
 		// `npm run build` does not leave its grandchildren running.
@@ -235,6 +254,15 @@ function killTree(child: ChildProcess, signal: NodeJS.Signals) {
 			// Already gone.
 		}
 	}
+}
+
+// taskkill /F ends a Windows process with exit code 1 and no signal; report
+// the same `exitCode: null, signal: 'SIGKILL'` that POSIX kills produce.
+function stoppedOutcome<
+	T extends { code: number | null; signal: string | null },
+>(outcome: T, stoppedByKody: boolean): T {
+	if (!stoppedByKody || process.platform !== 'win32') return outcome
+	return { ...outcome, code: null, signal: outcome.signal ?? 'SIGKILL' }
 }
 
 export type HostCommandsOptions = {
@@ -265,11 +293,9 @@ export class HostCommands {
 		this.#platform = options.platform ?? process.platform
 	}
 
-	/** Both layers allow commands and the OS is supported. */
+	/** Both layers allow commands. */
 	get enabled() {
-		return (
-			this.#platform !== 'win32' && this.#localEnabled && this.#grantEnabled
-		)
+		return this.#localEnabled && this.#grantEnabled
 	}
 
 	setLocalEnabled(enabled: boolean) {
@@ -300,12 +326,6 @@ export class HostCommands {
 
 	/** Throws the denial a run sees when it may not run commands here. */
 	assertAvailable() {
-		if (this.#platform === 'win32') {
-			throw new HostCommandError(
-				'execution_context_commands_unsupported',
-				'Host commands are not supported on Windows yet: the Kody runner supports macOS and Linux.',
-			)
-		}
 		if (!this.#localEnabled) {
 			throw new HostCommandError(
 				'execution_context_commands_off',
@@ -449,7 +469,30 @@ export class HostCommands {
 			hostCommandLimits.maxOutputBytes,
 			1024,
 		)
+		if (
+			spec.shell !== undefined &&
+			(!hasCommand || (spec.shell !== 'powershell' && spec.shell !== 'cmd'))
+		) {
+			throw new HostCommandError(
+				'invalid_request',
+				"`shell` goes with `command` and is 'powershell' or 'cmd' (Windows only).",
+			)
+		}
 		const env = { ...process.env, ...extraEnv }
+		const launch =
+			this.#platform !== 'win32'
+				? {
+						file: hasCommand ? shellFor(env) : (spec.file as string),
+						argv: hasCommand ? ['-c', spec.command as string] : args,
+						verbatim: false,
+					}
+				: hasCommand
+					? windowsShellLaunch(
+							spec.command as string,
+							spec.shell ?? 'powershell',
+							env,
+						)
+					: windowsFileLaunch(spec.file as string, args, env)
 		return {
 			display,
 			cwd,
@@ -458,8 +501,9 @@ export class HostCommands {
 			stdin: spec.stdin,
 			timeoutMs,
 			maxOutputBytes,
-			file: hasCommand ? shellFor(env) : (spec.file as string),
-			argv: hasCommand ? ['-c', spec.command as string] : args,
+			file: launch.file,
+			argv: launch.argv,
+			verbatim: launch.verbatim,
 		}
 	}
 
@@ -467,7 +511,11 @@ export class HostCommands {
 		const child = spawn(prepared.file, prepared.argv, {
 			cwd: prepared.cwd,
 			env: prepared.env,
-			detached: true,
+			// POSIX: own a process group so killTree reaches grandchildren.
+			// Windows: taskkill /T walks the tree; detached would open a console.
+			detached: this.#platform !== 'win32',
+			windowsHide: true,
+			windowsVerbatimArguments: prepared.verbatim,
 			stdio: [prepared.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
 		})
 		if (prepared.stdin !== undefined && child.stdin) {
@@ -519,7 +567,7 @@ export class HostCommands {
 		}
 		run.signal.addEventListener('abort', onAbort, { once: true })
 		if (run.signal.aborted) onAbort()
-		const outcome = await new Promise<{
+		const exited = await new Promise<{
 			code: number | null
 			signal: string | null
 			error?: string
@@ -529,6 +577,7 @@ export class HostCommands {
 			)
 			child.once('close', (code, signal) => resolve({ code, signal }))
 		})
+		const outcome = stoppedOutcome(exited, ended.reason !== 'exited')
 		clearTimeout(timer)
 		this.#foreground.delete(child)
 		run.signal.removeEventListener('abort', onAbort)
@@ -632,6 +681,10 @@ export class HostCommands {
 			) => {
 				if (job.endedAt !== null) return resolve()
 				if (job.timer) clearTimeout(job.timer)
+				;({ code, signal } = stoppedOutcome(
+					{ code, signal },
+					job.state === 'killed' || job.state === 'timed_out',
+				))
 				job.endedAt = Date.now()
 				job.exitCode = code
 				job.signal = signal

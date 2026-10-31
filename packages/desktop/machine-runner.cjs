@@ -5,6 +5,7 @@
 const launcherNames = {
 	systemd: 'CLI service (systemd)',
 	launchd: 'CLI service (launchd)',
+	taskscheduler: 'CLI service (Task Scheduler)',
 	terminal: 'kody daemon in a terminal',
 	desktop: 'another Kody desktop app',
 }

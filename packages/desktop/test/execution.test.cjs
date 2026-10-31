@@ -227,15 +227,23 @@ test('account changes during browser login never authorize registration', async 
 	)
 })
 
-test('Windows setup does not launch the unsupported runtime', async () => {
+test('Windows sets up and runs the local runtime; unknown platforms refuse', async () => {
 	const f = fixture()
 	f.execution.platform = 'win32'
-	assert.equal((await f.execution.request('state')).supported, false)
+	assert.equal((await f.execution.request('state')).supported, true)
+	await f.execution.request('sign-in')
+	await f.execution.request('connect', 'build-box')
+	assert.ok(f.runner.daemon)
+	await f.execution.request('stop')
+	assert.equal(f.runner.daemon, null)
+	const other = fixture()
+	other.execution.platform = 'freebsd'
+	assert.equal((await other.execution.request('state')).supported, false)
 	await assert.rejects(
-		f.execution.request('sign-in'),
-		/not available on Windows/,
+		other.execution.request('sign-in'),
+		/not available on this platform/,
 	)
-	assert.deepEqual(f.calls, [])
+	assert.deepEqual(other.calls, [])
 })
 
 test('host commands require native confirmation and verified ownership, and status combines local and server grants', async () => {

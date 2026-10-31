@@ -9,17 +9,19 @@ import {
 	writeFileSync,
 } from 'node:fs'
 import { homedir, tmpdir, userInfo } from 'node:os'
-import { delimiter, dirname, join, sep } from 'node:path'
+import { dirname, join, sep } from 'node:path'
+import { killProcessTree, windowsCommandLine } from '../process-tree.js'
 import { contextDir } from './keystore.js'
 
 /**
  * `kody daemon install`: run one execution context's daemon as a per-user
- * background service (systemd --user on Linux, a LaunchAgent on macOS) so it
- * survives reboots and crashes. The unit holds paths and flags only, never a
+ * background service (systemd --user on Linux, a LaunchAgent on macOS, a
+ * per-user Task Scheduler task at logon on Windows) so it survives reboots
+ * and crashes. The unit holds paths and flags only, never a
  * secret: the daemon unwraps its own machine key at start.
  */
 
-export type ServiceManager = 'systemd' | 'launchd'
+export type ServiceManager = 'systemd' | 'launchd' | 'taskscheduler'
 
 /** Set in the unit so the daemon knows it runs as a service. */
 export const serviceEnvVar = 'KODY_DAEMON_SERVICE'
@@ -28,7 +30,8 @@ export const serviceEnvVar = 'KODY_DAEMON_SERVICE'
  * The daemon exits 0 only when it should stay stopped: a stop it was asked
  * for, or a context Kody revoked or deleted. systemd skips the restart for
  * it (RestartPreventExitStatus) and launchd only keeps a failed job alive
- * (KeepAlive SuccessfulExit=false), so a revoked context is never relaunched.
+ * (KeepAlive SuccessfulExit=false), and the Windows task's launcher loop
+ * stops on it, so a revoked context is never relaunched.
  */
 export const stayStoppedExitCode = 0
 
@@ -37,11 +40,16 @@ export function serviceManagerFor(
 ) {
 	if (platform === 'linux') return 'systemd' as const
 	if (platform === 'darwin') return 'launchd' as const
+	if (platform === 'win32') return 'taskscheduler' as const
 	return null
 }
 
+export function isServiceManager(value: unknown): value is ServiceManager {
+	return value === 'systemd' || value === 'launchd' || value === 'taskscheduler'
+}
+
 export const unsupportedPlatformMessage =
-	'Running kody daemon as a background service is supported on Linux (systemd) and macOS (launchd). Windows is not supported yet: keep `kody daemon` running in a terminal instead.'
+	'Running kody daemon as a background service is supported on Linux (systemd), macOS (launchd), and Windows (Task Scheduler). Keep `kody daemon` running in a terminal on this machine instead.'
 
 export function serviceName(ecid: string) {
 	return `kody-daemon-${ecid}`
@@ -49,6 +57,11 @@ export function serviceName(ecid: string) {
 
 export function launchdLabel(ecid: string) {
 	return `codes.kody.daemon.${ecid}`
+}
+
+/** The task's full Task Scheduler name, in a `\\Kody\\` folder of its own. */
+export function scheduledTaskName(ecid: string) {
+	return `\\Kody\\${serviceName(ecid)}`
 }
 
 export type ServicePaths = {
@@ -73,19 +86,21 @@ export function servicePaths(input: {
 	return {
 		manager: input.manager,
 		unitPath:
-			input.manager === 'systemd'
-				? join(
-						env.XDG_CONFIG_HOME || join(home, '.config'),
-						'systemd',
-						'user',
-						`${serviceName(input.ecid)}.service`,
-					)
-				: join(
-						home,
-						'Library',
-						'LaunchAgents',
-						`${launchdLabel(input.ecid)}.plist`,
-					),
+			input.manager === 'taskscheduler'
+				? join(dir, 'daemon-task.ps1')
+				: input.manager === 'systemd'
+					? join(
+							env.XDG_CONFIG_HOME || join(home, '.config'),
+							'systemd',
+							'user',
+							`${serviceName(input.ecid)}.service`,
+						)
+					: join(
+							home,
+							'Library',
+							'LaunchAgents',
+							`${launchdLabel(input.ecid)}.plist`,
+						),
 		logPath: join(dir, 'daemon.log'),
 		statePath: join(dir, 'daemon.json'),
 		stoppedPath: join(dir, 'stopped.json'),
@@ -167,12 +182,19 @@ export function servicePath(input: {
 		'/usr/sbin',
 		'/sbin',
 	]
-	return [...new Set(dirs)].join(platform === 'win32' ? ';' : delimiter)
+	return [...new Set(dirs)].join(platform === 'win32' ? ';' : ':')
 }
 
 /** Variables the service passes through (paths only, never secrets). */
 function serviceEnvironment(input: UnitInput) {
 	const env = input.env ?? process.env
+	// A logon task already runs in the user's own environment, PATH included.
+	if (input.paths.manager === 'taskscheduler') {
+		return {
+			[serviceEnvVar]: input.paths.manager,
+			...(env.XDG_CONFIG_HOME ? { XDG_CONFIG_HOME: env.XDG_CONFIG_HOME } : {}),
+		}
+	}
 	return {
 		PATH: servicePath({
 			node: input.program.node,
@@ -278,7 +300,104 @@ ${Object.entries(env)
 `
 }
 
+function powershellQuote(value: string) {
+	return `'${value.replace(/[\n\r]/g, '').replace(/'/g, "''")}'`
+}
+
+/**
+ * The Windows "unit": the script the logon task runs. Task Scheduler only
+ * restarts a task that fails to launch, not one that exits non-zero, so the
+ * script is the supervisor: it relaunches the daemon after a crash and stops
+ * on the stay-stopped exit code. The daemon writes its own log.
+ */
+export function taskSchedulerScript(input: UnitInput) {
+	const env = serviceEnvironment(input)
+	// The BOM makes Windows PowerShell 5.1 read UTF-8 instead of the ANSI code
+	// page, so non-ASCII profile paths (a user named José) survive.
+	return [
+		'\ufeff# Written by `kody daemon install`. Re-run it to repair; remove with `kody daemon uninstall`.',
+		`# Kody execution context ${input.contextName.replace(/[\n\r]/g, ' ')} (${input.ecid})`,
+		...Object.entries(env).map(
+			([key, value]) => `$env:${key} = ${powershellQuote(value)}`,
+		),
+		`Set-Location -LiteralPath ${powershellQuote(input.paths.workingDir)}`,
+		'while ($true) {',
+		`\t& ${[input.program.node, ...daemonArgs(input)].map(powershellQuote).join(' ')}`,
+		`\tif ($LASTEXITCODE -eq ${stayStoppedExitCode}) { break }`,
+		'\tStart-Sleep -Seconds 10',
+		'}',
+		'',
+	].join('\r\n')
+}
+
+function windowsUser(env: NodeJS.ProcessEnv = process.env) {
+	const name = env.USERNAME || userInfo().username
+	return env.USERDOMAIN ? `${env.USERDOMAIN}\\${name}` : name
+}
+
+/** The task definition: at this user's logon, no admin rights, no time limit. */
+export function scheduledTaskXml(input: {
+	ecid: string
+	scriptPath: string
+	workingDir: string
+	user?: string
+}) {
+	const user = xml(input.user ?? windowsUser())
+	return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+	<RegistrationInfo>
+		<Description>Kody execution context ${xml(input.ecid)}. Written by kody daemon install; remove with kody daemon uninstall.</Description>
+		<URI>${xml(scheduledTaskName(input.ecid))}</URI>
+	</RegistrationInfo>
+	<Triggers>
+		<LogonTrigger>
+			<Enabled>true</Enabled>
+			<UserId>${user}</UserId>
+		</LogonTrigger>
+	</Triggers>
+	<Principals>
+		<Principal id="Author">
+			<UserId>${user}</UserId>
+			<LogonType>InteractiveToken</LogonType>
+			<RunLevel>LeastPrivilege</RunLevel>
+		</Principal>
+	</Principals>
+	<Settings>
+		<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+		<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+		<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+		<AllowHardTerminate>true</AllowHardTerminate>
+		<StartWhenAvailable>true</StartWhenAvailable>
+		<RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+		<IdleSettings>
+			<StopOnIdleEnd>false</StopOnIdleEnd>
+			<RestartOnIdle>false</RestartOnIdle>
+		</IdleSettings>
+		<AllowStartOnDemand>true</AllowStartOnDemand>
+		<Enabled>true</Enabled>
+		<Hidden>false</Hidden>
+		<RunOnlyIfIdle>false</RunOnlyIfIdle>
+		<WakeToRun>false</WakeToRun>
+		<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+		<Priority>7</Priority>
+		<RestartOnFailure>
+			<Interval>PT1M</Interval>
+			<Count>3</Count>
+		</RestartOnFailure>
+	</Settings>
+	<Actions Context="Author">
+		<Exec>
+			<Command>powershell.exe</Command>
+			<Arguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;${xml(input.scriptPath)}&quot;</Arguments>
+			<WorkingDirectory>${xml(input.workingDir)}</WorkingDirectory>
+		</Exec>
+	</Actions>
+</Task>
+`
+}
+
 export function unitFor(input: UnitInput) {
+	if (input.paths.manager === 'taskscheduler') return taskSchedulerScript(input)
 	return input.paths.manager === 'systemd'
 		? systemdUnit(input)
 		: launchdPlist(input)
@@ -286,6 +405,13 @@ export function unitFor(input: UnitInput) {
 
 /** Program paths a unit file starts, so status can tell they still exist. */
 export function programInUnit(text: string, manager: ServiceManager) {
+	if (manager === 'taskscheduler') {
+		const line = text.split(/\r?\n/).find((l) => /^\s*& '/.test(l))
+		const quoted = [...(line ?? '').matchAll(/'((?:[^']|'')*)'/g)].map(
+			(match) => match[1]!.replace(/''/g, "'"),
+		)
+		return { node: quoted[0] ?? null, entry: quoted[1] ?? null }
+	}
 	if (manager === 'systemd') {
 		const line = text.split('\n').find((l) => l.startsWith('ExecStart='))
 		const quoted = [...(line ?? '').matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(
@@ -319,6 +445,7 @@ export const runCommand: CommandRunner = (command, args) => {
 			encoding: 'utf8',
 			stdio: ['ignore', 'pipe', 'pipe'],
 			timeout: 30_000,
+			windowsHide: true,
 		})
 		return { ok: true, stdout, stderr: '' }
 	} catch (error) {
@@ -406,11 +533,55 @@ export function lingerCommand(user = userInfo().username) {
 	return `sudo loginctl enable-linger ${user}`
 }
 
+function powershell(run: CommandRunner, script: string) {
+	return run('powershell.exe', [
+		'-NoProfile',
+		'-NonInteractive',
+		'-Command',
+		script,
+	])
+}
+
+/** Ready, Running, Disabled, Queued, or Unknown; null when the task is gone. */
+function scheduledTaskState(ecid: string, run: CommandRunner) {
+	const name = serviceName(ecid)
+	const shown = powershell(
+		run,
+		`$task = Get-ScheduledTask -TaskPath '\\Kody\\' -TaskName '${name}' -ErrorAction SilentlyContinue; if ($task) { $task.State.ToString() } else { 'Missing' }`,
+	)
+	const state = shown.stdout.trim()
+	return { reachable: shown.ok, state: state === 'Missing' ? null : state }
+}
+
+/**
+ * Ends the task's launcher, then the daemon and its workerd children (Windows
+ * has no process groups to signal, so walk the tree).
+ */
+function endScheduledTask(ecid: string, statePath: string, run: CommandRunner) {
+	run('schtasks.exe', ['/End', '/TN', scheduledTaskName(ecid)])
+	const runtime = readJson<ServiceRuntimeState>(statePath)
+	if (!runtime?.pid || runtime.service !== 'taskscheduler') return
+	// daemon.json outlives a hard crash and Windows reuses PIDs quickly: only
+	// kill a process that is still this context's daemon.
+	const commandLine = windowsCommandLine(runtime.pid)
+	if (commandLine?.includes('daemon') && commandLine.includes(ecid))
+		killProcessTree(runtime.pid, 'win32')
+}
+
 function managerState(input: {
 	manager: ServiceManager
 	ecid: string
 	run: CommandRunner
 }) {
+	if (input.manager === 'taskscheduler') {
+		const { reachable, state } = scheduledTaskState(input.ecid, input.run)
+		return {
+			reachable,
+			enabled: state !== null && state !== 'Disabled',
+			running: state === 'Running',
+			pid: null,
+		}
+	}
 	if (input.manager === 'systemd') {
 		const unit = `${serviceName(input.ecid)}.service`
 		const shown = input.run('systemctl', [
@@ -582,6 +753,14 @@ export function serviceStatus(input: {
 		})
 	}
 	const state = managerState({ manager, ecid: input.ecid, run })
+	if (manager === 'taskscheduler' && !state.reachable) {
+		base.problems.push({
+			code: 'user-manager-unavailable',
+			message:
+				'Could not read the scheduled task (Get-ScheduledTask failed in Windows PowerShell).',
+			fix: `schtasks /Query /TN ${scheduledTaskName(input.ecid)}`,
+		})
+	}
 	if (manager === 'systemd') {
 		if (!state.reachable) {
 			base.problems.push({
@@ -738,6 +917,34 @@ export function installService(input: {
 			warnings,
 		}
 	}
+	if (input.paths.manager === 'taskscheduler') {
+		const name = scheduledTaskName(input.ecid)
+		const definition = scheduledTaskXml({
+			ecid: input.ecid,
+			scriptPath: input.paths.unitPath,
+			workingDir: input.paths.workingDir,
+		})
+		const xmlPath = input.paths.unitPath.replace(/\.ps1$/, '.xml')
+		// schtasks reads the definition as UTF-16 (with a byte order mark).
+		writeFileSync(xmlPath, Buffer.from(`\ufeff${definition}`, 'utf16le'))
+		must(
+			'schtasks.exe',
+			['/Create', '/TN', name, '/XML', xmlPath, '/F'],
+			'register the scheduled task',
+		)
+		rmSync(xmlPath, { force: true })
+		const running = scheduledTaskState(input.ecid, run).state === 'Running'
+		if (running && (changed || input.restart)) {
+			endScheduledTask(input.ecid, input.paths.statePath, run)
+		}
+		if (!running || changed || input.restart)
+			must('schtasks.exe', ['/Run', '/TN', name], 'start the scheduled task')
+		return {
+			changed,
+			restarted: running && (changed || input.restart),
+			warnings,
+		}
+	}
 	const target = launchdTarget(input.ecid)
 	const loaded = run('launchctl', ['print', target]).ok
 	run('launchctl', ['enable', target])
@@ -763,9 +970,21 @@ export function installService(input: {
 export function restartService(input: {
 	manager: ServiceManager
 	ecid: string
+	statePath?: string
 	run?: CommandRunner
 }) {
 	const run = input.run ?? runCommand
+	if (input.manager === 'taskscheduler') {
+		if (input.statePath) endScheduledTask(input.ecid, input.statePath, run)
+		const started = run('schtasks.exe', [
+			'/Run',
+			'/TN',
+			scheduledTaskName(input.ecid),
+		])
+		if (!started.ok)
+			throw new Error(`Could not restart the service: ${started.stderr.trim()}`)
+		return
+	}
 	const result =
 		input.manager === 'systemd'
 			? (run('systemctl', [
@@ -790,6 +1009,14 @@ export function startService(input: {
 }) {
 	const run = input.run ?? runCommand
 	const unit = `${serviceName(input.ecid)}.service`
+	if (input.manager === 'taskscheduler') {
+		const name = scheduledTaskName(input.ecid)
+		run('schtasks.exe', ['/Change', '/TN', name, '/ENABLE'])
+		const started = run('schtasks.exe', ['/Run', '/TN', name])
+		if (!started.ok)
+			throw new Error(`Could not start the service: ${started.stderr.trim()}`)
+		return
+	}
 	const result =
 		input.manager === 'systemd'
 			? (run('systemctl', ['--user', 'reset-failed', unit]),
@@ -804,9 +1031,17 @@ export function startService(input: {
 export function stopService(input: {
 	manager: ServiceManager
 	ecid: string
+	/** The daemon state, so Task Scheduler can end the daemon's process tree. */
+	statePath?: string
 	run?: CommandRunner
 }) {
 	const run = input.run ?? runCommand
+	if (input.manager === 'taskscheduler') {
+		// Windows cannot deliver SIGTERM to another process: end the tree.
+		if (input.statePath) endScheduledTask(input.ecid, input.statePath, run)
+		else run('schtasks.exe', ['/End', '/TN', scheduledTaskName(input.ecid)])
+		return
+	}
 	const result =
 		input.manager === 'systemd'
 			? run('systemctl', [
@@ -831,6 +1066,10 @@ export function uninstallService(input: {
 		rmSync(input.paths.unitPath, { force: true })
 		run('systemctl', ['--user', 'daemon-reload'])
 		run('systemctl', ['--user', 'reset-failed', unit])
+	} else if (input.paths.manager === 'taskscheduler') {
+		endScheduledTask(input.ecid, input.paths.statePath, run)
+		run('schtasks.exe', ['/Delete', '/TN', scheduledTaskName(input.ecid), '/F'])
+		rmSync(input.paths.unitPath, { force: true })
 	} else {
 		run('launchctl', ['bootout', launchdTarget(input.ecid)])
 		rmSync(input.paths.unitPath, { force: true })
@@ -852,6 +1091,13 @@ export function disableOwnService(input: {
 			'--user',
 			'disable',
 			`${serviceName(input.ecid)}.service`,
+		])
+	} else if (input.manager === 'taskscheduler') {
+		run('schtasks.exe', [
+			'/Change',
+			'/TN',
+			scheduledTaskName(input.ecid),
+			'/DISABLE',
 		])
 	} else {
 		run('launchctl', ['disable', launchdTarget(input.ecid)])

@@ -102,7 +102,7 @@ export type ExecutionContextListItem = {
 		maxConcurrent?: number
 		features?: Array<string>
 		/** Background service manager, or null when run in a terminal. */
-		service?: 'systemd' | 'launchd' | null
+		service?: 'systemd' | 'launchd' | 'taskscheduler' | null
 		/** Daemon auto-update, or null when the daemon predates it. */
 		autoUpdate?: 'on' | 'off' | null
 	} | null
@@ -215,11 +215,12 @@ export function isOlderCliVersion(version: string, latest: string) {
 }
 
 export function daemonRunsAsLabel(
-	service: 'systemd' | 'launchd' | null | undefined,
+	service: 'systemd' | 'launchd' | 'taskscheduler' | null | undefined,
 	status: ExecutionContextStatus,
 ) {
 	if (service === 'systemd') return 'Background service (systemd)'
 	if (service === 'launchd') return 'Background service (launchd)'
+	if (service === 'taskscheduler') return 'Background service (Task Scheduler)'
 	if (status !== 'online') return 'Not running'
 	return 'Terminal (not a background service)'
 }

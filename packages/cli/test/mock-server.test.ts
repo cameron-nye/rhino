@@ -41,7 +41,12 @@ test('mock session + search + metaGetCurrentUser work', async () => {
 			},
 		)
 	} finally {
-		await rm(cache, { recursive: true, force: true })
+		await rm(cache, {
+			recursive: true,
+			force: true,
+			maxRetries: 10,
+			retryDelay: 100,
+		})
 	}
 })
 
@@ -76,7 +81,12 @@ test('mock CapabilityProxy call for metaGetCurrentUser', async () => {
 			await server.close()
 		}
 	} finally {
-		await rm(cache, { recursive: true, force: true })
+		await rm(cache, {
+			recursive: true,
+			force: true,
+			maxRetries: 10,
+			retryDelay: 100,
+		})
 	}
 })
 
@@ -108,7 +118,12 @@ test('mock refuses unimplemented capability paths with not_implemented_in_mock',
 			},
 		)
 	} finally {
-		await rm(cache, { recursive: true, force: true })
+		await rm(cache, {
+			recursive: true,
+			force: true,
+			maxRetries: 10,
+			retryDelay: 100,
+		})
 	}
 })
 
@@ -140,7 +155,12 @@ test('mock package-graph returns empty modules', async () => {
 			},
 		)
 	} finally {
-		await rm(cache, { recursive: true, force: true })
+		await rm(cache, {
+			recursive: true,
+			force: true,
+			maxRetries: 10,
+			retryDelay: 100,
+		})
 	}
 })
 
@@ -165,7 +185,12 @@ test('ensureMockTarget mints a bearer and can reset storage', async () => {
 	} finally {
 		if (previous === undefined) delete process.env.KODY_CACHE_DIR
 		else process.env.KODY_CACHE_DIR = previous
-		await rm(cache, { recursive: true, force: true })
+		await rm(cache, {
+			recursive: true,
+			force: true,
+			maxRetries: 10,
+			retryDelay: 100,
+		})
 	}
 })
 
@@ -201,7 +226,12 @@ test('mock credentialClientOpen returns hosts so credential() can iterate', asyn
 			},
 		)
 	} finally {
-		await rm(cache, { recursive: true, force: true })
+		await rm(cache, {
+			recursive: true,
+			force: true,
+			maxRetries: 10,
+			retryDelay: 100,
+		})
 	}
 })
 
@@ -220,6 +250,7 @@ test('mock credentials OpenAll + authenticatedFetch + adminUserList fixtures', a
 						`${server.url}/v1/capability-proxy/call`,
 						{
 							method: 'POST',
+							signal: AbortSignal.timeout(30_000),
 							headers: {
 								authorization: `Bearer ${token}`,
 								'content-type': 'application/json',
@@ -248,6 +279,7 @@ test('mock credentials OpenAll + authenticatedFetch + adminUserList fixtures', a
 					`${server.url}/v1/capability-proxy/call`,
 					{
 						method: 'POST',
+						signal: AbortSignal.timeout(30_000),
 						headers: {
 							authorization: `Bearer ${token}`,
 							'content-type': 'application/json',
@@ -331,6 +363,11 @@ test('mock credentials OpenAll + authenticatedFetch + adminUserList fixtures', a
 			},
 		)
 	} finally {
-		await rm(cache, { recursive: true, force: true })
+		await rm(cache, {
+			recursive: true,
+			force: true,
+			maxRetries: 10,
+			retryDelay: 100,
+		})
 	}
 })

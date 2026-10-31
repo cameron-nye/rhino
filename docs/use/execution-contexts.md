@@ -109,7 +109,9 @@ The desktop app and the CLI share this machine's registration and its runner:
 
 `kody daemon status` shows the runner holding the lock, and `kody daemon stop`
 stops whichever one runs (the service, or a terminal or desktop daemon after its
-runs finish).
+runs finish). On Windows, which cannot signal another process,
+`kody daemon stop` ends that daemon and its `workerd.exe` children right away;
+the desktop app's own runner still drains first.
 
 ## Host commands
 
@@ -152,9 +154,9 @@ Turning them off stops background commands that runs started.
 `kody context commands status` shows both switches: this machine's local opt-in
 and what Kody has for each context. A command runs only when both are on.
 
-**Platforms.** macOS and Linux. Windows refuses (`kody context commands on`
-fails, and the desktop menu item is disabled), because the runner does not
-support Windows yet.
+**Platforms.** macOS, Linux, and Windows. Commands use your shell (`$SHELL`,
+else `/bin/sh`) on macOS and Linux, and PowerShell on Windows (`pwsh` if
+installed, else Windows PowerShell; pass `shell: 'cmd'` for `cmd.exe`).
 
 **Fields.**
 

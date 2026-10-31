@@ -6,6 +6,7 @@ import {
 	readUpdateState,
 } from './auto-update.js'
 import { readLocalPolicy, setLocalAutoUpdateEnabled } from './fs-access.js'
+import { killProcessTree } from '../process-tree.js'
 import { describeHolder, lockPathFor, runnerLockHolder } from './runner-lock.js'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
@@ -120,7 +121,7 @@ function isRoot(env: ServiceCommandEnv) {
 
 export function maxConcurrentInUnit(text: string | null) {
 	const match = text?.match(
-		/--max-concurrent(?:"?\s+"?|<\/string>\s*<string>)(\d+)/,
+		/--max-concurrent(?:"?\s+"?|'\s+'|<\/string>\s*<string>)(\d+)/,
 	)
 	return match ? Number(match[1]) : undefined
 }
@@ -415,6 +416,11 @@ async function startOrStopRunner(
 		stopService({
 			manager: input.manager,
 			ecid: input.ecid,
+			statePath: servicePaths({
+				apiUrl: env.apiUrl,
+				ecid: input.ecid,
+				manager: input.manager,
+			}).statePath,
 			...(env.run ? { run: env.run } : {}),
 		})
 		// The service may be stopped while a terminal or desktop daemon holds
@@ -423,7 +429,7 @@ async function startOrStopRunner(
 			runner && runner.pid > 0 && runner.launcher !== input.manager
 				? runner
 				: null
-		if (other) process.kill(other.pid, 'SIGTERM')
+		if (other) stopDaemonProcess(other.pid)
 		say(
 			`Stopped the kody daemon service after runs in flight finish.${other ? ` Also stopping the kody daemon that held this context (${describeHolder(other)}).` : ''} It starts again at the next login or boot, or with \`kody daemon start\`.`,
 			{ service: input.manager, ...(other ? { runner: other } : {}) },
@@ -434,12 +440,21 @@ async function startOrStopRunner(
 		say('No kody daemon is running this context.')
 		return 0
 	}
-	process.kill(runner.pid, 'SIGTERM')
+	stopDaemonProcess(runner.pid)
 	say(
 		`Stopping the kody daemon (${describeHolder(runner)}) after runs in flight finish.`,
 		{ runner },
 	)
 	return 0
+}
+
+/**
+ * SIGTERM drains a daemon's runs. Windows cannot signal another process, so
+ * end the daemon and its workerd children instead.
+ */
+function stopDaemonProcess(pid: number) {
+	if (process.platform === 'win32') killProcessTree(pid, 'win32')
+	else process.kill(pid, 'SIGTERM')
 }
 
 /** `kody daemon auto-update on|off|status`. */
@@ -596,7 +611,12 @@ export async function runDaemonServiceCommand(
 	}
 	if (input.sub === 'restart') {
 		const before = runtimeState(paths.statePath)
-		restartService({ manager, ecid, ...(env.run ? { run: env.run } : {}) })
+		restartService({
+			manager,
+			ecid,
+			statePath: paths.statePath,
+			...(env.run ? { run: env.run } : {}),
+		})
 		env.write(
 			'Restarting the kody daemon service. Runs in flight finish first.\n',
 		)
