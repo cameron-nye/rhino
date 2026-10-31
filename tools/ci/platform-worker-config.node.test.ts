@@ -29,6 +29,7 @@ type WorkerConfig = {
 	migrations?: Array<{
 		tag?: string
 		transferred_classes?: Array<Record<string, unknown>>
+		new_sqlite_classes?: Array<string>
 	}>
 }
 
@@ -298,7 +299,7 @@ test('generate rewrites worker names, copies resource ids, and writes a bootstra
 	expect(bootstrapEnv?.services).toEqual(previewEnv?.services)
 })
 
-test('generate rewrites the production transfer from_script to the main worker name', async () => {
+test('generate creates production Durable Object classes in place', async () => {
 	const { platform } = await generatePlatform({
 		envName: 'production',
 		workerPrefix: 'kody',
@@ -306,9 +307,18 @@ test('generate rewrites the production transfer from_script to the main worker n
 	})
 	expect(platform.env?.production?.name).toBe('kody-platform')
 	expect(platform.migrations?.[0]?.tag).toBe('v1')
-	expect(
-		platform.migrations?.[0]?.transferred_classes?.every(
-			(entry) => entry.from_script === 'kody-production',
-		),
-	).toBe(true)
+	expect(platform.migrations?.[0]?.transferred_classes).toBeUndefined()
+	expect(platform.migrations?.[0]?.new_sqlite_classes).toEqual([
+		'MCP',
+		'McpClientHub',
+		'OAuthPurgeCoordinator',
+		'UserMeter',
+		'Mailbox',
+		'RepoSession',
+		'RepoSessionIndex',
+		'StripePlanRefresh',
+	])
+	expect(platform.migrations?.[1]?.new_sqlite_classes).toEqual([
+		'ExecutionContextSessionV1',
+	])
 })
