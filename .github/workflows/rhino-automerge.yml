@@ -1,18 +1,26 @@
 name: Rhino auto-merge
 
-# Squash-merge a same-repo cursor/ pull request after ✅ Validate succeeds.
-# GitHub Free private repositories cannot require status checks, so native
-# auto-merge never starts. This file is additive and lives only on the fork.
+# Squash-merge a same-repo cursor/ pull request after ✅ Validate succeeds and
+# Cursor Bugbot is clear. GitHub Free private repositories cannot require
+# status checks, so native auto-merge never starts. This file is additive and
+# lives only on the fork.
 #
-# workflow_run executes the copy of this file on the default branch. The job
-# does not check out the pull request and does not run pull request code.
-# Fork pull requests fail the job if below, before any merge call.
-# Merge, production deploy, and preview cleanup run only when the pull
-# request author login (user.login) is cameron-nye. Other authors are skipped.
+# Triggers are workflow_run (Validate completed) and check_run (the check named
+# "Cursor Bugbot" completed). Bugbot can finish before or after Validate. Each
+# run re-checks every gate. Both events execute the copy of this file on the
+# default branch. The job does not check out the pull request and does not run
+# pull request code. Fork pull requests fail the same-repo gate below, before
+# any merge call.
+#
+# The check name "Cursor Bugbot" and conclusions success / neutral / failure
+# are from https://cursor.com/docs/bugbot (CI check statuses). The live GitHub
+# App slug on that check is "cursor". Findings default to neutral, so an
+# unresolved Cursor bot review thread also blocks the merge.
+# RHINO_REQUIRE_BUGBOT defaults to on. false, 0, no, or off skips that gate.
 #
 # workflow_run.pull_requests is often empty even for same-repo pull requests,
-# so the job looks the validated head SHA up through the commits API and
-# refuses to merge unless that SHA is still the pull request head.
+# so the job looks the head SHA up through the commits API and refuses to
+# merge unless that SHA is still the pull request head.
 #
 # A merge made with GITHUB_TOKEN does not start push workflows. ✅ Validate
 # therefore does not run on the squash commit, and 🚀 Deploy (production)
@@ -30,11 +38,18 @@ on:
       - '✅ Validate'
     types:
       - completed
+  check_run:
+    types:
+      - completed
 
 permissions: {}
 
 concurrency:
-  group: rhino-automerge-${{ github.event.workflow_run.head_branch }}
+  group:
+    rhino-automerge-${{ github.event_name == 'workflow_run' &&
+    github.event.workflow_run.head_branch ||
+    github.event.check_run.check_suite.head_branch ||
+    github.event.check_run.head_sha }}
   cancel-in-progress: false
 
 jobs:
@@ -43,13 +58,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
-      && startsWith(github.event.workflow_run.head_branch, 'cursor/')
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+        && startsWith(github.event.workflow_run.head_branch, 'cursor/')
+      ) || (
+        github.event_name == 'check_run' &&
+        github.event.check_run.name == 'Cursor Bugbot' &&
+        github.event.check_run.app.slug == 'cursor' &&
+        github.event.check_run.status == 'completed'
+      )
     permissions:
       # workflow_dispatch of deploy.yml and preview.yml requires actions: write.
       actions: write
+      checks: read
       contents: write
       pull-requests: write
     steps:
@@ -58,14 +82,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA:
+            ${{ github.event_name == 'workflow_run' &&
+            github.event.workflow_run.head_sha ||
+            github.event.check_run.head_sha }}
+          HEAD_BRANCH:
+            ${{ github.event_name == 'workflow_run' &&
+            github.event.workflow_run.head_branch ||
+            github.event.check_run.check_suite.head_branch }}
+          RHINO_REQUIRE_BUGBOT: ${{ vars.RHINO_REQUIRE_BUGBOT }}
         run: |
           set -euo pipefail
 
           REPOSITORY="${REPOSITORY:?REPOSITORY is required}"
           HEAD_SHA="${HEAD_SHA:?HEAD_SHA is required}"
-          HEAD_BRANCH="${HEAD_BRANCH:?HEAD_BRANCH is required}"
+          HEAD_BRANCH="${HEAD_BRANCH:-}"
           : "${GH_TOKEN:?GH_TOKEN is required}"
 
           note() {
@@ -88,9 +119,142 @@ jobs:
             echo "Refusing to merge: head SHA is not a full commit id." >&2
             exit 1
           fi
-          if [[ "$HEAD_BRANCH" != cursor/* ]]; then
+          if [[ -n "$HEAD_BRANCH" && "$HEAD_BRANCH" != cursor/* ]]; then
             note "Skipping: ${HEAD_BRANCH} does not start with cursor/."
             exit 0
+          fi
+
+          # Unset or any value other than false, 0, no, or off keeps the gate on.
+          require_bugbot() {
+            local value
+            value="$(printf '%s' "${RHINO_REQUIRE_BUGBOT:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+            case "$value" in
+              false|0|no|off) return 1 ;;
+              *) return 0 ;;
+            esac
+          }
+
+          validate_green() {
+            local runs latest status conclusion head_repo
+            runs="$(gh api "repos/${REPOSITORY}/actions/workflows/validate.yml/runs?head_sha=${HEAD_SHA}&event=pull_request&per_page=20")"
+            latest="$(jq -c --arg sha "$HEAD_SHA" '[.workflow_runs[] | select(.head_sha == $sha and .event == "pull_request")] | .[0] // empty' <<<"$runs")"
+            if [[ -z "$latest" || "$latest" == "null" ]]; then
+              note "Skipping: ✅ Validate has not run for pull_request on ${HEAD_SHA}."
+              return 1
+            fi
+            status="$(jq -r '.status // empty' <<<"$latest")"
+            conclusion="$(jq -r '.conclusion // empty' <<<"$latest")"
+            head_repo="$(jq -r '.head_repository.full_name // empty' <<<"$latest")"
+            if [[ "$head_repo" != "$REPOSITORY" ]]; then
+              note "Skipping: ✅ Validate head repository is ${head_repo:-unknown}."
+              return 1
+            fi
+            if [[ "$status" != "completed" || "$conclusion" != "success" ]]; then
+              note "Skipping: ✅ Validate is ${status:-unknown} (${conclusion:-none}) on ${HEAD_SHA}."
+              return 1
+            fi
+            return 0
+          }
+
+          # Check name from https://cursor.com/docs/bugbot (CI check statuses).
+          bugbot_check_clear() {
+            local runs run any status conclusion
+            runs="$(gh api "repos/${REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=Cursor%20Bugbot&filter=latest&per_page=20")"
+            any="$(jq '[.check_runs[] | select(.name == "Cursor Bugbot")] | length' <<<"$runs")"
+            run="$(jq -c --arg sha "$HEAD_SHA" '[.check_runs[] | select(.name == "Cursor Bugbot" and ((.app.slug // "") == "cursor") and .head_sha == $sha)] | sort_by(.completed_at // .started_at // "") | last // empty' <<<"$runs")"
+            if [[ -z "$run" || "$run" == "null" ]]; then
+              if [[ "$any" != "0" ]]; then
+                note "Skipping: Cursor Bugbot on ${HEAD_SHA} is not from the Cursor GitHub app."
+              else
+                note "Skipping: Cursor Bugbot has not reported on ${HEAD_SHA}."
+              fi
+              return 1
+            fi
+            status="$(jq -r '.status // empty' <<<"$run")"
+            conclusion="$(jq -r '.conclusion // empty' <<<"$run")"
+            if [[ "$status" != "completed" ]]; then
+              note "Skipping: Cursor Bugbot is ${status:-unknown} on ${HEAD_SHA}."
+              return 1
+            fi
+            case "$conclusion" in
+              success|neutral) return 0 ;;
+              *)
+                note "Skipping: Cursor Bugbot concluded ${conclusion:-none} on ${HEAD_SHA}."
+                return 1
+                ;;
+            esac
+          }
+
+          # Unresolved threads opened by the Cursor bot block the merge. Login
+          # "cursor" is what GitHub GraphQL returns for that bot (__typename Bot).
+          bugbot_threads_clear() {
+            local number owner name cursor page page_code has_next unresolved found page_index query
+            number="$1"
+            owner="${REPOSITORY%%/*}"
+            name="${REPOSITORY#*/}"
+            cursor=""
+            unresolved=0
+            has_next=""
+            page_index=0
+            # GraphQL variables are for gh, not the shell.
+            # shellcheck disable=SC2016
+            query='query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{isResolved comments(first:1){nodes{author{__typename login}}}}}}}}'
+            while [[ "$page_index" -lt 10 ]]; do
+              page_index=$((page_index + 1))
+              set +e
+              page="$(jq -n \
+                --arg query "$query" \
+                --arg owner "$owner" \
+                --arg name "$name" \
+                --argjson number "$number" \
+                --arg cursor "$cursor" \
+                '{query:$query,variables:{owner:$owner,name:$name,number:$number,cursor:(if $cursor=="" then null else $cursor end)}}' \
+                | gh api graphql --input -)"
+              page_code=$?
+              set -e
+              if [[ "$page_code" -ne 0 ]]; then
+                note "Skipping #${number}: could not read Cursor Bugbot review threads."
+                return 1
+              fi
+              if [[ "$(jq -r 'if .data.repository.pullRequest.reviewThreads then "ok" else "bad" end' <<<"$page")" != "ok" ]]; then
+                note "Skipping #${number}: Cursor Bugbot review threads response was unusable."
+                return 1
+              fi
+              found="$(jq '[.data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved==false) | .comments.nodes[0].author as $author | select($author.__typename=="Bot" and ($author.login=="cursor" or $author.login=="cursor[bot]" or $author.login=="cursor-bot"))] | length' <<<"$page")"
+              unresolved=$((unresolved + found))
+              has_next="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"$page")"
+              if [[ "$has_next" != "true" ]]; then
+                break
+              fi
+              cursor="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty' <<<"$page")"
+              if [[ -z "$cursor" ]]; then
+                note "Skipping #${number}: Cursor Bugbot review thread page had no cursor."
+                return 1
+              fi
+            done
+            if [[ "$has_next" == "true" ]]; then
+              note "Skipping #${number}: Cursor Bugbot review threads did not finish paging."
+              return 1
+            fi
+            if [[ "$unresolved" -gt 0 ]]; then
+              note "Skipping #${number}: ${unresolved} unresolved Cursor Bugbot review thread(s)."
+              return 1
+            fi
+            return 0
+          }
+
+          if ! validate_green; then
+            exit 0
+          fi
+
+          bugbot_ok=0
+          if require_bugbot; then
+            if bugbot_check_clear; then
+              bugbot_ok=1
+            fi
+          else
+            bugbot_ok=1
+            note "Cursor Bugbot gate is off (RHINO_REQUIRE_BUGBOT=${RHINO_REQUIRE_BUGBOT:-unset})."
           fi
 
           dispatch_deploy() {
@@ -165,8 +329,16 @@ jobs:
               note "Skipping #${number}: head repository is ${head_repo:-unknown}."
               continue
             fi
-            if [[ "$head_ref" != "$HEAD_BRANCH" || "$head_sha" != "$HEAD_SHA" ]]; then
-              note "Skipping #${number}: head is ${head_ref} @ ${head_sha}, not ${HEAD_BRANCH} @ ${HEAD_SHA}."
+            if [[ "$head_sha" != "$HEAD_SHA" ]]; then
+              note "Skipping #${number}: head is ${head_sha}, not ${HEAD_SHA}."
+              continue
+            fi
+            if [[ "$head_ref" != cursor/* ]]; then
+              note "Skipping #${number}: head branch is ${head_ref}."
+              continue
+            fi
+            if [[ -n "$HEAD_BRANCH" && "$head_ref" != "$HEAD_BRANCH" ]]; then
+              note "Skipping #${number}: head is ${head_ref}, not ${HEAD_BRANCH}."
               continue
             fi
             if [[ "$base_ref" != "main" ]]; then
@@ -214,6 +386,11 @@ jobs:
               continue
             fi
 
+            if [[ "$bugbot_ok" -ne 1 ]]; then
+              note "Skipping #${number}: Cursor Bugbot gate is not satisfied for ${HEAD_SHA}."
+              continue
+            fi
+
             attempt=0
             mergeable="$(jq -r '.mergeable' <<<"$detail")"
             while [[ "$mergeable" == "null" && "$attempt" -lt 12 ]]; do
@@ -245,6 +422,11 @@ jobs:
             if jq -e 'any(.labels[]; .name == "no-automerge")' <<<"$detail" >/dev/null; then
               note "Skipping #${number}: no-automerge label."
               continue
+            fi
+            if require_bugbot; then
+              if ! bugbot_threads_clear "$number"; then
+                continue
+              fi
             fi
             if [[ "$mergeable" != "true" ]]; then
               mergeable_state="$(jq -r '.mergeable_state' <<<"$detail")"
