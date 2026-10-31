@@ -21,6 +21,7 @@ import {
 	notFound,
 	isNotFound,
 	isRedirect,
+	redirect,
 	Outlet,
 	Scripts,
 	useLocation,
@@ -65,6 +66,12 @@ import {
 } from '#universal/document-head.ts'
 import { SiteHeader } from '../components/site-header.tsx'
 import { SiteFooter } from '../components/site-footer.tsx'
+import {
+	isRhinoMarketingPath,
+	rhinoPersonalHomeHref,
+	rhinoPersonalUse,
+} from '../brand/rhino-personal.ts'
+import { loadRhinoMarketingHome } from '#start/server/rhino-marketing'
 import { visuallyHiddenUntilFocusedCss } from '#universal/styles/style-primitives.ts'
 import { PageHead } from '../components/page-head.tsx'
 import { buildAuthLink } from '#client/auth-links.ts'
@@ -101,6 +108,13 @@ export const Route = createRootRouteWithContext<{
 		context,
 		matches,
 	}) => {
+		if (isRhinoMarketingPath(location.pathname)) {
+			const { href } = await loadRhinoMarketingHome({
+				data: location.searchStr,
+				signal: abortController.signal,
+			})
+			throw redirect({ href, statusCode: 302, replace: true })
+		}
 		const pageNavigation = pageNavigationForMatches(matches)
 		const orgScope = orgNavigationScope(matches)
 		const appShell = appShellForMatches(matches)
@@ -283,6 +297,15 @@ function LoadedAppLayout() {
 				(match) => match.status === 'notFound' || match.status === 'error',
 			),
 	})
+	const homeHref = rhinoPersonalUse
+		? rhinoPersonalHomeHref({
+				signedIn: session !== null,
+				personalSlug:
+					session?.organizations.find((org) => org.personal)?.slug ??
+					session?.username ??
+					null,
+			})
+		: '/'
 	const authReturnHref = `${pageLocation.pathname}${pageLocation.searchStr}`
 	const loginHref = buildAuthLink(
 		'/login',
@@ -327,7 +350,11 @@ function LoadedAppLayout() {
 				<Outlet />
 			</Content>
 			{authShell || focused || workspace ? null : (
-				<SiteFooter loggedIn={session !== null} loginHref={loginHref} />
+				<SiteFooter
+					loggedIn={session !== null}
+					loginHref={loginHref}
+					homeHref={homeHref}
+				/>
 			)}
 			<YouTubeWatchOverlay snapshot={youtubeWatch} location={shellLocation} />
 		</div>

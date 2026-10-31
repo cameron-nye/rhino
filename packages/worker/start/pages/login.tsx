@@ -1,5 +1,10 @@
 /** @jsxImportSource @emotion/react */
 import { useServerFn } from '@tanstack/react-start'
+import { rhinoPersonalUse } from '../brand/rhino-personal.ts'
+import {
+	accountDeletedConfirmationMessage,
+	isAccountDeletedHome,
+} from '#universal/account-deletion-confirmation.ts'
 import {
 	getHandleFormatError,
 	suggestHandle,
@@ -377,6 +382,12 @@ export function LoginPage({
 						<p>{description}</p>
 					</header>
 
+					{isAccountDeletedHome(searchParams.toString()) ? (
+						<p role="status" data-testid="account-deleted-notice">
+							{accountDeletedConfirmationMessage}
+						</p>
+					) : null}
+
 					{oauthErrorMessage ? (
 						<>
 							<p aria-live="polite" data-tone="error" css={formMessageCss}>
@@ -496,9 +507,11 @@ export function LoginPage({
 					</footer>
 				</div>
 
-				<div css={authCornerCss}>
-					<SiteLink href="/">&larr; Back to Rhino</SiteLink>
-				</div>
+				{rhinoPersonalUse ? null : (
+					<div css={authCornerCss}>
+						<SiteLink href="/">&larr; Back to Rhino</SiteLink>
+					</div>
+				)}
 			</div>
 		</div>
 	)

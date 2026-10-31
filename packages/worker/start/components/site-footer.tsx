@@ -1,6 +1,7 @@
 /** @jsxImportSource @emotion/react */
 import { type CSSObject } from '@emotion/react'
 import { rhinoWordmarkFontFamily } from '../brand/rhino-mark.ts'
+import { rhinoPublicLinkVisible } from '../brand/rhino-personal.ts'
 import { KodyMark } from './kody-mark.tsx'
 import { SiteLink } from './site-link.tsx'
 import { colors, transitions, typography } from '#universal/styles/tokens.ts'
@@ -12,7 +13,30 @@ import {
 export type SiteFooterProps = {
 	loggedIn: boolean
 	loginHref: string
+	homeHref: string
 }
+
+const footerLinks = [
+	{ href: '/features', label: 'Features' },
+	{ href: '/community', label: 'Community' },
+	{ href: '/discord', label: 'Discord' },
+	{ href: '/docs', label: 'Docs' },
+	{ href: '/use-cases', label: 'Use cases' },
+	{ href: '/pricing', label: 'Pricing' },
+	{ href: '/faq', label: 'FAQ' },
+	{ href: '/about', label: 'About' },
+	{ href: '/brand-guide', label: 'Brand' },
+	{ href: '/contact', label: 'Contact' },
+	{ href: '/support', label: 'Support' },
+	{ href: '/blog', label: 'Blog' },
+	{
+		href: 'https://github.com/kody-hq/kody',
+		label: 'GitHub',
+		external: true,
+	},
+	{ href: '/privacy', label: 'Privacy' },
+	{ href: '/terms', label: 'Terms' },
+] as const
 
 /**
  * Site footer from the 2026 landing redesign: brand, the tagline voice line,
@@ -22,7 +46,7 @@ export function SiteFooter(props: SiteFooterProps) {
 	return (
 		<footer css={footerCss}>
 			<div css={footerInnerCss}>
-				<SiteLink href="/" css={brandCss}>
+				<SiteLink href={props.homeHref} css={brandCss}>
 					<KodyMark size={28} />
 					<span>RHINO</span>
 				</SiteLink>
@@ -39,36 +63,38 @@ export function SiteFooter(props: SiteFooterProps) {
 					)}
 				</p>
 				<nav aria-label="Footer" css={footerNavCss}>
-					<SiteLink href="/features">Features</SiteLink>
-					<SiteLink href="/community">Community</SiteLink>
-					<SiteLink href="/discord">Discord</SiteLink>
-					<SiteLink href="/docs">Docs</SiteLink>
-					<SiteLink href="/use-cases">Use cases</SiteLink>
-					<SiteLink href="/pricing">Pricing</SiteLink>
-					<SiteLink href="/faq">FAQ</SiteLink>
-					<SiteLink href="/about">About</SiteLink>
-					<SiteLink href="/brand-guide">Brand</SiteLink>
-					<SiteLink href="/contact">Contact</SiteLink>
-					<SiteLink href="/support">Support</SiteLink>
-					<SiteLink href="/blog">Blog</SiteLink>
-					<SiteLink
-						href="https://github.com/kody-hq/kody"
-						target="_blank"
-						rel="noreferrer noopener"
-					>
-						GitHub
-					</SiteLink>
-					<SiteLink href="/privacy">Privacy</SiteLink>
-					<SiteLink href="/terms">Terms</SiteLink>
+					{footerLinks.map((link) =>
+						rhinoPublicLinkVisible(link.href) ? (
+							'external' in link ? (
+								<SiteLink
+									key={link.href}
+									href={link.href}
+									target="_blank"
+									rel="noreferrer noopener"
+								>
+									{link.label}
+								</SiteLink>
+							) : (
+								<SiteLink key={link.href} href={link.href}>
+									{link.label}
+								</SiteLink>
+							)
+						) : null,
+					)}
 					{props.loggedIn ? (
 						<SiteLink href="/account">Account</SiteLink>
 					) : (
 						<SiteLink href={props.loginHref}>Log in</SiteLink>
 					)}
-					<section aria-labelledby="footer-for-heading" css={footerAudienceCss}>
-						<h2 id="footer-for-heading">For</h2>
-						<SiteLink href="/for/business">Business</SiteLink>
-					</section>
+					{rhinoPublicLinkVisible('/for/business') ? (
+						<section
+							aria-labelledby="footer-for-heading"
+							css={footerAudienceCss}
+						>
+							<h2 id="footer-for-heading">For</h2>
+							<SiteLink href="/for/business">Business</SiteLink>
+						</section>
+					) : null}
 				</nav>
 			</div>
 		</footer>

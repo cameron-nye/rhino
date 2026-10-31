@@ -7,16 +7,11 @@ test('smoke test covers shell, auth redirect, and login', async ({ page }) => {
 	await page.context().clearCookies()
 
 	await page.goto('/')
-	// The redesigned header has no "Home" link — the brand mark is the link
-	// home, so this is scoped to the header because the footer carries its own
-	// "Rhino" brand link. The headline assertion goes with it, so the test
-	// covers the landing page rendering and not just the shell mounting.
+	// Personal-use Rhino sends signed-out visitors from `/` to login.
+	await expect(page).toHaveURL(/\/login$/)
 	await expect(
-		page.getByRole('navigation', { name: 'Main' }).getByRole('link', {
-			name: 'Rhino',
-		}),
+		page.getByRole('heading', { name: 'Welcome back' }),
 	).toBeVisible()
-	await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
 
 	await page.goto('/account')
 	await expect(page).toHaveURL(/\/login\?redirectTo=%2Faccount$/)
@@ -125,20 +120,19 @@ test('smoke test covers shell, auth redirect, and login', async ({ page }) => {
 		page.getByRole('heading', { name: 'What an admin can never see' }),
 	).toBeVisible()
 
+	await expect(page.getByRole('link', { name: 'Pricing' })).toHaveCount(0)
+	await expect(page.getByRole('link', { name: 'Blog' })).toHaveCount(0)
+	await expect(
+		page.getByRole('navigation', { name: 'Footer' }).getByRole('link', {
+			name: 'Terms',
+		}),
+	).toBeVisible()
+
 	await page.goto('/pricing')
+	await expect(page).toHaveURL(/\/login$/)
+	await page.goto('/blog')
+	await expect(page).toHaveURL(/\/login$/)
 	await expect(
-		page.getByRole('heading', { name: 'Free', exact: true }),
-	).toBeVisible()
-	await expect(
-		page.getByRole('heading', { name: 'Pro', exact: true }),
-	).toBeVisible()
-	await expect(
-		page.getByRole('heading', { name: 'Standard', exact: true }),
-	).toHaveCount(0)
-	await expect(
-		page.getByRole('heading', { name: 'Prepaid credits', exact: true }),
-	).toBeVisible()
-	await expect(
-		page.getByRole('heading', { name: 'Teams / Enterprise', exact: true }),
+		page.getByRole('heading', { name: 'Welcome back' }),
 	).toBeVisible()
 })

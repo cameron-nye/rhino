@@ -13,7 +13,7 @@ const { renderStart } = vi.hoisted(() => ({
 		) => {
 			// Yield so simultaneous requests overlap across the same Start handler.
 			await new Promise<void>((resolve) =>
-				setTimeout(resolve, request.url.endsWith('/pricing') ? 5 : 0),
+				setTimeout(resolve, request.url.endsWith('/login') ? 5 : 0),
 			)
 			return new Response(
 				JSON.stringify({ url: request.url, nonce: options.context.nonce }),
@@ -39,7 +39,7 @@ test('Start creates a fresh matching nonce for overlapping requests', async () =
 		COOKIE_SECRET: 'test-only',
 		WRANGLER_IS_LOCAL_DEV: 'true',
 	} as Env
-	const requests = ['/pricing', '/faq'].map(
+	const requests = ['/login', '/privacy'].map(
 		(path) => new Request(`https://kody.test${path}`),
 	)
 	const responses = await Promise.all(
@@ -72,7 +72,7 @@ test('Start preserves each provider binding object across overlapping requests',
 				OAUTH_PROVIDER: { provider },
 			}) as unknown as Env,
 	)
-	const requests = ['/pricing', '/faq'].map(
+	const requests = ['/login', '/privacy'].map(
 		(path) => new Request(`https://kody.test${path}`),
 	)
 	renderStart.mockClear()
