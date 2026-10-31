@@ -259,7 +259,7 @@ test('a new user signs up, verifies email from the message, and reaches MCP conn
 		await page.getByTestId('delete-account-confirmation').fill('GOODBYE KODY')
 		await page.getByTestId('delete-account-password').fill(password)
 		await page.getByTestId('delete-account-confirm').click()
-		await expect(page).toHaveURL(/\/\?accountDeleted=1$/)
+		await expect(page).toHaveURL(/\/login\?accountDeleted=1$/)
 		await expect(page.getByTestId('account-deleted-notice')).toHaveText(
 			'Your Kody account has been deleted',
 		)

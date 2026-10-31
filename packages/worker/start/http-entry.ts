@@ -1,4 +1,5 @@
 import { isServerFunctionRequest } from './action-page-method.ts'
+import { isRhinoMarketingPath } from './brand/rhino-personal.ts'
 import * as Sentry from '@sentry/cloudflare'
 import { setAuthSessionSecret } from '../src/app/auth-session.ts'
 import { getEnv } from '../src/app/env.ts'
@@ -44,6 +45,11 @@ export function createHttpRequestHandler(renderDocument: RenderDocument) {
 						statusText: response.statusText,
 						headers,
 					})
+				}
+				if (isRhinoMarketingPath(new URL(request.url).pathname)) {
+					const { rhinoMarketingRedirectResponse } =
+						await import('./server/rhino-marketing-redirect.ts')
+					return rhinoMarketingRedirectResponse(request, bindings)
 				}
 				return renderDocument(request, bindings)
 			})

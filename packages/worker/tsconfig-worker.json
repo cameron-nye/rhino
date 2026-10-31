@@ -31,6 +31,9 @@
 	},
 	"include": [
 		"./start/http-entry.ts",
+		"./start/page-access.ts",
+		"./start/brand/rhino-personal.ts",
+		"./start/server/rhino-marketing-redirect.ts",
 		"./start/server.ts",
 		"./start/request-context.ts",
 		"./start/document-negotiation.ts",

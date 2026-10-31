@@ -6,6 +6,11 @@ import { type CSSObject } from '@emotion/react'
 import { BrandContextMenu } from './brand-context-menu.tsx'
 import { FeaturesMenu } from './features-menu.tsx'
 import { rhinoWordmarkFontFamily } from '../brand/rhino-mark.ts'
+import {
+	rhinoPersonalHomeHref,
+	rhinoPersonalUse,
+	rhinoPublicLinkVisible,
+} from '../brand/rhino-personal.ts'
 import { KodyMark } from './kody-mark.tsx'
 import { SiteLink } from './site-link.tsx'
 import { useEffect, useState } from 'react'
@@ -52,6 +57,10 @@ const marketingLinks = [
 	{ href: '/pricing', label: 'Pricing' },
 	{ href: '/blog', label: 'Blog' },
 ] as const
+const visibleMarketingLinks = marketingLinks.filter((link) =>
+	rhinoPublicLinkVisible(link.href),
+)
+const showFeaturesMenu = rhinoPublicLinkVisible('/features')
 
 /**
  * `aria-current="page"` for a nav link: exact match, or a subpath of the
@@ -74,6 +83,13 @@ export function SiteHeader(props: SiteHeaderProps) {
 	const workspaceHref = personal
 		? workspaceHomeHref(personal)
 		: '/account/organizations'
+	const brandHref = rhinoPersonalUse
+		? rhinoPersonalHomeHref({
+				signedIn: props.loggedIn,
+				personalSlug:
+					personal?.slug ?? (props.loggedIn ? props.username : null),
+			})
+		: '/'
 	useEffect(() => {
 		dismissOpenPopoverPanel(document.getElementById(menuPanelId))
 	}, [props.currentPathname])
@@ -86,7 +102,7 @@ export function SiteHeader(props: SiteHeaderProps) {
 			<header className="site-header" data-focused-header css={headerCss}>
 				<div css={navCss}>
 					<BrandContextMenu>
-						<SiteLink href="/" css={brandCss}>
+						<SiteLink href={brandHref} css={brandCss}>
 							<KodyMark size={34} />
 							<span>RHINO</span>
 						</SiteLink>
@@ -125,14 +141,16 @@ export function SiteHeader(props: SiteHeaderProps) {
 		<header className="site-header" css={headerCss}>
 			<nav aria-label="Main" css={navCss}>
 				<BrandContextMenu>
-					<SiteLink href="/" css={brandCss}>
+					<SiteLink href={brandHref} css={brandCss}>
 						<KodyMark size={34} />
 						<span>RHINO</span>
 					</SiteLink>
 				</BrandContextMenu>
 				<div css={navLinksCss}>
-					<FeaturesMenu currentPathname={props.currentPathname} />
-					{marketingLinks.map((link) => (
+					{showFeaturesMenu ? (
+						<FeaturesMenu currentPathname={props.currentPathname} />
+					) : null}
+					{visibleMarketingLinks.map((link) => (
 						<SiteLink
 							key={link.href}
 							href={link.href}
@@ -191,8 +209,10 @@ export function SiteHeader(props: SiteHeaderProps) {
 					onToggle={(event) => onMenuToggle(event.nativeEvent)}
 				>
 					<div css={menuGroupCss}>
-						<FeaturesMenu currentPathname={props.currentPathname} mobile />
-						{marketingLinks.map((link) => (
+						{showFeaturesMenu ? (
+							<FeaturesMenu currentPathname={props.currentPathname} mobile />
+						) : null}
+						{visibleMarketingLinks.map((link) => (
 							<SiteLink
 								key={link.href}
 								href={link.href}

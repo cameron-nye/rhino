@@ -1,5 +1,6 @@
 /** @jsxImportSource @emotion/react */
 import { useServerFn } from '@tanstack/react-start'
+import { rhinoPersonalUse } from '../brand/rhino-personal.ts'
 import { handlePermanenceConfirmMessage } from '@kody-internal/shared/handle-permanence.ts'
 import { completeOauthPendingSignup } from '#start/server/auth-mutations'
 import { type CSSObject } from '@emotion/react'
@@ -230,7 +231,9 @@ export function SignupChooseUsernamePage(props: {
 					</footer>
 				</div>
 				<div css={authCornerCss}>
-					<SiteLink href="/">&larr; Back to Rhino</SiteLink>
+					<SiteLink href={rhinoPersonalUse ? '/login' : '/'}>
+						&larr; Back to Rhino
+					</SiteLink>
 				</div>
 			</div>
 		</div>

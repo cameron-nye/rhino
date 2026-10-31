@@ -4,6 +4,7 @@ import { PasswordRevealInput } from '../components/password-reveal-input.tsx'
 import { type CSSObject } from '@emotion/react'
 import { type CSSProperties, type FormEvent } from 'react'
 import { rhinoWordmarkFontFamily } from '../brand/rhino-mark.ts'
+import { rhinoPersonalUse } from '../brand/rhino-personal.ts'
 import { KodyMark } from '../components/kody-mark.tsx'
 import { SiteLink } from '../components/site-link.tsx'
 import {
@@ -42,7 +43,7 @@ function renderBrand(
 ) {
 	return (
 		<SiteLink
-			href="/"
+			href={rhinoPersonalUse ? '/login' : '/'}
 			// Inside the aria-hidden visual panel the brand is decorative;
 			// keeping it out of the tab order avoids focusing content that
 			// assistive tech cannot see.

@@ -1,4 +1,8 @@
 /** @jsxImportSource @emotion/react */
+import {
+	rhinoPersonalUse,
+	rhinoPublicLinkVisible,
+} from '../brand/rhino-personal.ts'
 import { SiteLink } from '../components/site-link.tsx'
 import { type CSSObject } from '@emotion/react'
 import { colors, spacing, typography } from '#universal/styles/tokens.ts'
@@ -428,16 +432,20 @@ export function PrivacyRoute() {
 			</section>
 
 			<p css={{ margin: 0 }}>
-				<SiteLink href="/pricing" css={mutedLinkCss}>
-					Pricing
-				</SiteLink>
-				{' · '}
+				{rhinoPublicLinkVisible('/pricing') ? (
+					<>
+						<SiteLink href="/pricing" css={mutedLinkCss}>
+							Pricing
+						</SiteLink>
+						{' · '}
+					</>
+				) : null}
 				<SiteLink href="/terms" css={mutedLinkCss}>
 					Terms
 				</SiteLink>
 				{' · '}
-				<SiteLink href="/" css={mutedLinkCss}>
-					Back home
+				<SiteLink href={rhinoPersonalUse ? '/login' : '/'} css={mutedLinkCss}>
+					{rhinoPersonalUse ? 'Log in' : 'Back home'}
 				</SiteLink>
 			</p>
 		</section>

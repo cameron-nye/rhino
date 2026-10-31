@@ -54,7 +54,7 @@ test('admin RBAC controls access, role assignment, and privacy boundaries', asyn
 		password: adminUser.password,
 		mode: 'login',
 	})
-	await page.goto('/')
+	await page.goto('/privacy')
 
 	await expect(
 		page.getByRole('link', { name: 'Admin', exact: true }),

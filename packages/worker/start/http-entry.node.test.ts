@@ -160,12 +160,37 @@ test('handleRequest skips Sentry when SSR already reported the failure', async (
 test('unmapped document requests go to the native renderer with the original URL', async () => {
 	const render = vi.fn(async () => new Response('document'))
 	const handle = createHttpRequestHandler(render)
+	const request = new Request('https://example.com/not-a-marketing-page?test=1')
+	const response = await handle(request, createEnv())
+	expect(response.status).toBe(200)
+	expect(render).toHaveBeenCalledWith(request, expect.anything())
+})
+
+test('a deleted account confirmation opens login with the notice query', async () => {
+	const render = vi.fn(async () => new Response('document'))
+	const handle = createHttpRequestHandler(render)
+	const request = new Request('https://example.com/?accountDeleted=1')
+	const response = await handle(request, createEnv())
+	expect(response.status).toBe(302)
+	const location = new URL(response.headers.get('Location') ?? '', request.url)
+	expect(location.pathname).toBe('/login')
+	expect(location.search).toBe('?accountDeleted=1')
+	expect(render).not.toHaveBeenCalled()
+})
+
+test('marketing documents redirect home without rendering', async () => {
+	const render = vi.fn(async () => new Response('document'))
+	const handle = createHttpRequestHandler(render)
 	const request = new Request(
 		'https://example.com/blog/kody-vs-executor?test=1',
 	)
 	const response = await handle(request, createEnv())
-	expect(response.status).toBe(200)
-	expect(render).toHaveBeenCalledWith(request, expect.anything())
+	expect(response.status).toBe(302)
+	expect(
+		new URL(response.headers.get('Location') ?? '', request.url).pathname,
+	).toBe('/login')
+	expect(response.headers.get('Cache-Control')).toBe('private, no-store')
+	expect(render).not.toHaveBeenCalled()
 })
 
 test('a failed native mutation is never dispatched again to render an error', async () => {
@@ -249,7 +274,7 @@ test('canonical document redirects retain their public cache policy', async () =
 			}),
 	)
 	const response = await handle(
-		new Request('https://example.com/community/old'),
+		new Request('https://example.com/@acme/old'),
 		createEnv(),
 	)
 	expect(response.status).toBe(301)

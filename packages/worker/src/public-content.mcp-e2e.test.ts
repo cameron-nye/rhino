@@ -23,8 +23,23 @@ async function document(path: string, cookie?: string) {
 	return { html, response, url }
 }
 
-function contains(html: string, markers: string[]) {
-	for (const marker of markers) expect(html).toContain(marker)
+async function expectMarketingRedirect(
+	path: string,
+	pathname: string,
+	cookie?: string,
+) {
+	const server = await getSharedMcpE2eServer()
+	const response = await fetch(new URL(path, server.origin), {
+		headers: cookie ? { Cookie: cookie } : {},
+		redirect: 'manual',
+	})
+	expect(response.status, path).toBe(302)
+	const location = response.headers.get('Location')
+	expect(location, path).toBeTruthy()
+	const destination = new URL(location!, server.origin)
+	expect(destination.origin).toBe(server.origin)
+	expect(destination.pathname, path).toBe(pathname)
+	await response.body?.cancel()
 }
 
 test('native document middleware preserves complete SSR streams on public and personalized requests', async () => {
@@ -36,11 +51,13 @@ test('native document middleware preserves complete SSR streams on public and pe
 	// ownership reconciler must not dispose SSR when cache delivery wraps it.
 	for (const headers of [new Headers(), new Headers({ Cookie: cookie })]) {
 		for (let attempt = 0; attempt < 2; attempt++) {
-			const response = await fetch(new URL('/faq', server.origin), { headers })
+			const response = await fetch(new URL('/privacy', server.origin), {
+				headers,
+			})
 			expect(response.status).toBe(200)
 			const html = await response.text()
 			expect(html).toContain('</html>')
-			expect(html).toContain('data-faq="replace-agents"')
+			expect(html).toContain('Connected accounts')
 			const nonce = response.headers
 				.get('Content-Security-Policy')
 				?.match(/'nonce-([^']+)'/)?.[1]
@@ -97,90 +114,42 @@ export default async function main(input) {
 	}
 })
 
-test.each(['', '/memory', '/packages', '/triggers', '/credentials', '/apps'])(
-	'feature %s renders its content before client JavaScript',
-	async (suffix) => {
-		const { html } = await document(`/features${suffix}?utm_source=test`)
-		expect(html.match(/<h1[ >]/g)).toHaveLength(1)
-		expect(html.match(/<main[ >]/g)).toHaveLength(1)
-	},
-)
-
-test.each(['/features/secrets', '/features/integrations'])(
-	'retired feature %s permanently redirects without dropping attribution',
-	async (path) => {
-		const server = await getSharedMcpE2eServer()
-		const url = new URL(`${path}?utm_source=test`, server.origin)
-		const response = await fetch(url, { redirect: 'manual' })
-		expect(response.status).toBe(301)
-		const location = response.headers.get('Location')
-		expect(location).toBeTruthy()
-		const destination = new URL(location!, server.origin)
-		expect(destination.origin).toBe(server.origin)
-		expect(destination.pathname).toBe('/features/credentials')
-		expect(destination.search).toBe(url.search)
-		expect(response.headers.get('Cache-Control')).toBe('public, max-age=3600')
-		expect(response.headers.has('Set-Cookie')).toBe(false)
-
-		// Referral attribution deliberately makes the response uncacheable:
-		// its Set-Cookie must never be shared with another visitor.
-		url.searchParams.set('ref', 'shared')
-		const referralResponse = await fetch(url, { redirect: 'manual' })
-		expect(referralResponse.status).toBe(301)
-		const referralDestination = new URL(
-			referralResponse.headers.get('Location')!,
-			server.origin,
-		)
-		expect(referralDestination.origin).toBe(server.origin)
-		expect(referralDestination.pathname).toBe('/features/credentials')
-		expect(referralDestination.search).toBe(url.search)
-		expect(referralResponse.headers.get('Cache-Control')).toBe('no-store')
-		expect(referralResponse.headers.get('Set-Cookie')).toContain(
-			'kody_ref=shared;',
-		)
-	},
-)
-
-test('homepage OG variants preserve a clean canonical and reject unknown variants', async () => {
-	const { html, url } = await document('/?og=triggers&utm_source=youtube')
-	contains(html, [
-		`property="og:image" content="${url.origin}/og/home.png?og=triggers&amp;v=3"`,
-		`name="twitter:image" content="${url.origin}/og/home.png?og=triggers&amp;v=3"`,
-		'property="og:title" content="Invoke deterministic code from anything"',
-		`rel="canonical" href="${url.origin}/"`,
-	])
-	expect(html).not.toContain(`og:url" content="${url.origin}/?og=`)
-	const { html: unknown } = await document('/?og=nope')
-	expect(unknown).toContain(
-		`property="og:image" content="${url.origin}/og/home.png?v=3"`,
-	)
-	expect(unknown).not.toContain('/og/home.png?og=')
+test.each([
+	'/',
+	'/pricing',
+	'/blog',
+	'/features',
+	'/features/memory',
+	'/features/secrets',
+	'/docs',
+	'/docs/what-is-kody',
+	`/blog/${landingTestimonialsStorySlug}`,
+	'/llms.txt',
+])('anonymous %s redirects to login instead of rendering', async (path) => {
+	await expectMarketingRedirect(path, '/login')
 })
 
-test('native home Markdown retains agent discovery headers and content', async () => {
+test('a referral on a marketing URL still sets kody_ref and does not render', async () => {
 	const server = await getSharedMcpE2eServer()
-	const response = await fetch(server.origin, {
-		headers: { Accept: 'text/markdown' },
-	})
-	expect(response.status).toBe(200)
-	expect(response.headers.get('content-type')).toBe(
-		'text/markdown; charset=utf-8',
+	const response = await fetch(
+		new URL('/features/secrets?ref=shared', server.origin),
+		{ redirect: 'manual' },
 	)
-	expect(response.headers.get('link')).toContain('rel="api-catalog"')
-	expect(response.headers.get('vary')).toMatch(/accept/i)
-	expect(await response.text()).toMatch(/^# Rhino\n/)
+	expect(response.status).toBe(302)
+	expect(
+		new URL(response.headers.get('Location')!, server.origin).pathname,
+	).toBe('/login')
+	expect(response.headers.get('Cache-Control')).toBe('no-store')
+	expect(response.headers.get('Set-Cookie')).toContain('kody_ref=shared;')
+	await response.body?.cancel()
 })
 
-test('homepage testimonial story links land on anchors in the case-study post', async () => {
-	const { html: home } = await document('/')
-	const anchors = [
-		...home.matchAll(
-			new RegExp(`href="/blog/${landingTestimonialsStorySlug}#([^"]+)"`, 'g'),
-		),
-	].map((match) => match[1])
-	expect(anchors.length).toBeGreaterThan(0)
-	const { html: story } = await document(
-		`/blog/${landingTestimonialsStorySlug}`,
-	)
-	for (const anchor of anchors) expect(story).toContain(`id="${anchor}"`)
+test('signed-in marketing paths open the workspace dashboard', async () => {
+	const server = await getSharedMcpE2eServer()
+	const user = createUniqueTestUser()
+	await server.ensureUser(user)
+	const cookie = await loginToApp(server.origin, user)
+	for (const path of ['/', '/pricing', '/blog', '/docs/what-is-kody']) {
+		await expectMarketingRedirect(path, `/@${user.username}/-/overview`, cookie)
+	}
 })
