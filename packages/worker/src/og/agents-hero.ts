@@ -1,8 +1,8 @@
 /**
- * Satori composition of the homepage agents-around-lantern hero for OG cards.
- * Uses the upstream koala still (`og/kody-base.png`), then
+ * Satori composition of the agents hero for OG cards.
+ * Uses the Rhino pilot with the jet (`og/kody-base.png`), then
  * draws chips, tethers, and mid-flight lantern lights from shared orbit
- * geometry so the share card matches the homepage still.
+ * geometry. The lantern glow stays off: it would halo the pilot.
  */
 
 import {
@@ -33,27 +33,6 @@ const LIGHT_CORE_SIZE = 10
 
 function pctToPx(pct: number, size: number = AGENTS_HERO_SIZE): number {
 	return (pct / 100) * size
-}
-
-function createLanternGlow(theme: OgTheme): SatoriElement {
-	const isLight = theme === 'light'
-	const size = AGENTS_HERO_SIZE * 0.26
-	return {
-		type: 'div',
-		props: {
-			style: {
-				position: 'absolute',
-				left: pctToPx(landingLantern.x) - size / 2,
-				top: pctToPx(landingLantern.y) - size / 2,
-				width: size,
-				height: size,
-				borderRadius: size / 2,
-				backgroundImage: isLight
-					? 'radial-gradient(circle at center, rgba(232, 168, 32, 0.28) 0%, rgba(232, 168, 32, 0.1) 42%, rgba(232, 168, 32, 0) 72%)'
-					: 'radial-gradient(circle at center, rgba(245, 198, 90, 0.55) 0%, rgba(245, 198, 90, 0.18) 42%, rgba(245, 198, 90, 0) 72%)',
-			},
-		},
-	}
 }
 
 /** Clearer than raw `palette.border` on the dark OG ground (Satori softens 1px). */
@@ -254,8 +233,8 @@ function createOrbitLight(input: {
 }
 
 /**
- * Full agents hero for lantern-kind page OG cards: Kody + orbit chips +
- * tethers + a couple of glowing balls mid-flight toward the lantern.
+ * Agents hero for page OG cards: the Rhino pilot, orbit chips, tethers,
+ * and a couple of glowing balls mid-flight toward the pilot.
  */
 export function createAgentsHero(theme: OgTheme = 'dark'): SatoriElement {
 	const chips = landingOrbitAgents.map((agent) =>
@@ -305,7 +284,6 @@ export function createAgentsHero(theme: OgTheme = 'dark'): SatoriElement {
 						},
 					},
 				},
-				createLanternGlow(theme),
 				withLanternTetherMask([createTetherLayer(theme), ...lights]),
 				...chips,
 			],
