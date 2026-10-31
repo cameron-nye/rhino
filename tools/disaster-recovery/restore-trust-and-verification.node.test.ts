@@ -245,42 +245,21 @@ test('restore trust registry is exact, pins the reviewed identities, and cannot 
 		parseTrustedManifestPublicKeyRegistry(
 			await readJson(manifestPublicKeyRegistryPath),
 		).keys,
-	).toEqual([
-		{
-			algorithm: 'Ed25519',
-			keyId: 'kody-dr-2026-07',
-			publicKeyPem:
-				'-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA3jqjPcGTzWefE5PGyRBdUQKAEj7FFGtFIz+223sbt9A=\n-----END PUBLIC KEY-----\n',
-		},
-	])
+	).toEqual([])
 	expect(
 		parseTrustedRestoreBaselineRegistry(
 			await readJson(restoreBaselineRegistryPath),
 			parseBaseline,
 		).baselines,
 	).toEqual([])
-	// These exact identities are the reviewed allowlist for restore flows.
-	// Changing them requires updating this pin in the same reviewed change.
+	// Rhino does not trust Kent's production D1
+	// (a99ee2e72728dd52902ef288b7b1447d) or the KCD drill account
+	// (a41d50ecaf0ae0f86dd1824ef6729cb2). An empty allowlist rejects every
+	// restore until a Rhino identity is added in the same reviewed change.
 	expect(parseRestoreTrustRegistry(checkedRegistry)).toEqual({
 		schemaVersion: 1,
-		productionSources: [
-			{
-				accountId: 'a99ee2e72728dd52902ef288b7b1447d',
-				databaseId: '8c1014d1-6b41-4695-a0a2-159071f0f919',
-				databaseName: 'kody',
-			},
-			{
-				accountId: 'a99ee2e72728dd52902ef288b7b1447d',
-				databaseId: jobsDatabaseId,
-				databaseName: 'kody-jobs',
-			},
-		],
-		drillTargets: [
-			{
-				accountId: 'a41d50ecaf0ae0f86dd1824ef6729cb2',
-				databaseName: 'kody-dr-drill-manual',
-			},
-		],
+		productionSources: [],
+		drillTargets: [],
 	})
 	for (const dryRun of [true, false]) {
 		await expectDrillRejected(

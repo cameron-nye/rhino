@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { createMemoryKv } from '#worker/test-support/auth-provider-harness.ts'
 import { consoleWarn } from '#worker/test-support/console-spies.ts'
@@ -9,6 +9,12 @@ import {
 	youtubePlaylistItemsApiOrigin,
 } from '#universal/youtube-playlist.ts'
 import { loadLandingHeroVideos } from './landing-hero-videos.ts'
+
+// Personal-use mode skips the upstream playlist. These cases cover the fetch
+// that runs when that switch is off.
+vi.mock('../../start/brand/rhino-personal.ts', () => ({
+	rhinoPersonalUse: false,
+}))
 
 const first: LandingHeroVideo = {
 	videoId: 'iGMkgjXc8Ho',

@@ -439,11 +439,11 @@ jobs:
           WORKFLOW_DISPATCH_SHA: ${{ github.sha }}
           PRODUCTION_URL:
             ${{ vars.APP_BASE_URL || 'https://rhino.nyneelevenlabs.com' }}
-          # Job-level `if` cannot read secrets. Fold the presence check into
-          # these outputs so the DR and Nx cache jobs are skipped entirely.
-          DR_DEPLOY_CONFIGURED:
-            ${{ secrets.DR_DEPLOY_TOKEN != '' && secrets.DR_BACKUP_ACCOUNT_ID !=
-            '' }}
+          # Job-level `if` cannot read secrets. Nx cache stays skipped unless
+          # its token is set. The backup control plane stays skipped even
+          # when DR_DEPLOY_TOKEN and DR_BACKUP_ACCOUNT_ID are set: those
+          # secrets belong to Kent's DR account. See
+          # docs/contributing/rhino.md.
           NX_CACHE_CONFIGURED:
             ${{ secrets.NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN != '' }}
           # Tip-of-main workflow ↔ checkout contract. Bump together with
@@ -522,13 +522,8 @@ jobs:
             echo "deploy_jobs=true" >> "$GITHUB_OUTPUT"
             echo "deploy_highlight=true" >> "$GITHUB_OUTPUT"
             echo "deploy_push_queue=true" >> "$GITHUB_OUTPUT"
-            if [ "$DR_DEPLOY_CONFIGURED" = "true" ]; then
-              echo "deploy_backup_control_plane=true" >> "$GITHUB_OUTPUT"
-              echo "Backup control plane deploy: forced (workflow_dispatch)."
-            else
-              echo "deploy_backup_control_plane=false" >> "$GITHUB_OUTPUT"
-              echo "Backup control plane deploy: skipped (DR_DEPLOY_TOKEN or DR_BACKUP_ACCOUNT_ID is unset)."
-            fi
+            echo "deploy_backup_control_plane=false" >> "$GITHUB_OUTPUT"
+            echo "Backup control plane deploy: skipped (Rhino does not deploy Kent's DR control plane)."
             echo "deploy_status_worker=true" >> "$GITHUB_OUTPUT"
             echo "deploy_api_worker=true" >> "$GITHUB_OUTPUT"
             echo "deploy_api_docs_worker=true" >> "$GITHUB_OUTPUT"
@@ -565,18 +560,8 @@ jobs:
 
           node tools/ci/deploy-path-filter.ts <"$PATH_FILTER_LIST" | tee -a "$GITHUB_OUTPUT"
 
-          if [ "$DR_DEPLOY_CONFIGURED" != "true" ]; then
-            echo "deploy_backup_control_plane=false" >> "$GITHUB_OUTPUT"
-            echo "Backup control plane deploy: skipped (DR_DEPLOY_TOKEN or DR_BACKUP_ACCOUNT_ID is unset)."
-          elif grep -E \
-            '^(\.github/workflows/deploy\.yml|tools/ci/backup-resources|packages/backup-control-plane/|packages/shared/src/backup-)' \
-            "$PATH_FILTER_LIST" >/dev/null; then
-            echo "deploy_backup_control_plane=true" >> "$GITHUB_OUTPUT"
-            echo "Backup control plane deploy: path filter matched."
-          else
-            echo "deploy_backup_control_plane=false" >> "$GITHUB_OUTPUT"
-            echo "Backup control plane deploy: skipped (no relevant path changes)."
-          fi
+          echo "deploy_backup_control_plane=false" >> "$GITHUB_OUTPUT"
+          echo "Backup control plane deploy: skipped (Rhino does not deploy Kent's DR control plane)."
 
           if grep -E \
             '^(\.github/workflows/deploy\.yml|packages/status/)' \
@@ -2545,14 +2530,16 @@ jobs:
     name: 🛟 Deploy DR backup control plane
     timeout-minutes: 8
     needs: sha-guard
-    # Credential presence is folded into deploy_backup_control_plane. Job-level
+    # deploy_backup_control_plane is always false on this fork. Job-level
     # `if` cannot read secrets; a secrets expression here fails workflow parsing.
     if: >-
       needs.sha-guard.outputs.should_deploy == 'true' &&
       needs.sha-guard.outputs.deploy_backup_control_plane == 'true'
     environment:
       name: production
-      url: https://kody-dr.kentcdodds.com
+      # Upstream environment URL was https://kody-dr.kentcdodds.com. This
+      # job does not run on Rhino. The URL is the app, not Kent's DR host.
+      url: https://rhino.nyneelevenlabs.com
     steps:
       - name: 📦 Checkout
         uses: actions/checkout@v6.0.2
@@ -2572,12 +2559,17 @@ jobs:
       - name: 🔒 Reconcile DR backup retention policies when authorized
         env:
           DR_BACKUP_ADMIN_TOKEN: ${{ secrets.DR_BACKUP_ADMIN_TOKEN }}
-          BACKUP_SOURCE_ACCOUNT_ID: a99ee2e72728dd52902ef288b7b1447d
+          # Upstream hardcoded Kent's production account
+          # a99ee2e72728dd52902ef288b7b1447d and D1
+          # 8c1014d1-6b41-4695-a0a2-159071f0f919. Leave the variables unset.
+          # An empty source id fails reconcile before any Cloudflare call.
+          # This job does not run on Rhino (deploy_backup_control_plane is
+          # always false).
+          BACKUP_SOURCE_ACCOUNT_ID: ${{ vars.DR_BACKUP_SOURCE_ACCOUNT_ID }}
           BACKUP_DESTINATION_ACCOUNT_ID: ${{ secrets.DR_BACKUP_ACCOUNT_ID }}
           BACKUP_R2_BUCKET_NAME: kody-production-backups
           BACKUP_WORKER_NAME: kody-production-d1-backups
-          BACKUP_SOURCE_D1_ALLOWLIST: >-
-            [{"uuid":"8c1014d1-6b41-4695-a0a2-159071f0f919","name":"kody"}]
+          BACKUP_SOURCE_D1_ALLOWLIST: ${{ vars.DR_BACKUP_SOURCE_D1_ALLOWLIST }}
         run: node tools/ci/backup-resources-reconcile-cli.ts
 
       - name: ☁️ Deploy backup control plane to DR account
