@@ -9,11 +9,11 @@ export const heroBaseImage = {
 	srcSet: [
 		'/images/hero/kody-base-640.webp 640w',
 		'/images/hero/kody-base-960.webp 960w',
-		'/images/hero/kody-base.webp 1254w',
+		'/images/hero/kody-base.webp 1024w',
 	].join(', '),
 	sizes: '(max-width: 640px) 90vw, 640px',
-	width: 1254,
-	height: 1254,
+	width: 1024,
+	height: 1024,
 } as const
 
 const landingArtNames = [

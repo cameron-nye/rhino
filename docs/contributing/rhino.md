@@ -135,8 +135,8 @@ purpose.
 | `packages/worker/start/brand/kody-logo.node.test.ts`                      | Pins the Rhino logo SVG and its PNG aspect.                                                                                                                                                           |
 | `packages/worker/start/brand/favicon-assets.node.test.ts`                 | Pins the tiled Rhino favicon instead of the koala outline.                                                                                                                                            |
 | `packages/worker/src/og/og-kody-mark.node.test.ts`                        | OG mark keeps the orange horn instead of a flat tint.                                                                                                                                                 |
-| `packages/worker/src/og/og-binary-assets.ts`                              | OG mark is not retinted, so the horn stays orange.                                                                                                                                                    |
-| `packages/worker/src/og/og-binary-assets.node.ts`                         | Node twin of the OG mark. The horn stays orange.                                                                                                                                                      |
+| `packages/worker/src/og/og-binary-assets.ts`                              | OG mark is not retinted, so the horn stays orange. The agents card still uses the koala still.                                                                                                        |
+| `packages/worker/src/og/og-binary-assets.node.ts`                         | Node twin of the OG mark. The horn stays orange. The agents card still uses the koala still.                                                                                                          |
 | `packages/worker/public/styles.css`                                       | Self-hosts Saira Stencil One for the brand wordmark only.                                                                                                                                             |
 | `packages/worker/public/site.webmanifest`                                 | Installed-app name and short name are Rhino.                                                                                                                                                          |
 | `packages/worker/start/pages/brand-guide.tsx`                             | Brand guide describes the jet. The page stays.                                                                                                                                                        |
@@ -186,6 +186,12 @@ purpose.
 | `packages/status/public/favicon-operational.png`                          | Status favicon is the Rhino pilot with a green check.                                                                                                                                                 |
 | `packages/status/public/favicon-down.png`                                 | Status favicon is the Rhino pilot with a red mark.                                                                                                                                                    |
 | `packages/status/public/favicon-unknown.png`                              | Status favicon is the Rhino pilot with an amber question.                                                                                                                                             |
+| `packages/worker/start/components/hero-stage.tsx`                         | Orbit props stay off. They cover the Rhino jet and the pilot.                                                                                                                                         |
+| `packages/worker/universal/landing-images.ts`                             | Hero base intrinsic size matches the 1024px Rhino pilot.                                                                                                                                              |
+| `packages/worker/src/og/agents-hero.ts`                                   | Agents share card still composites chips on the upstream koala still.                                                                                                                                 |
+| `packages/worker/public/images/hero/kody-base.webp`                       | Stage base is the Rhino pilot with the jet. Filename stays.                                                                                                                                           |
+| `packages/worker/public/images/hero/kody-base-960.webp`                   | Same Rhino pilot at 960. Filename stays.                                                                                                                                                              |
+| `packages/worker/public/images/hero/kody-base-640.webp`                   | Same Rhino pilot at 640. Filename stays.                                                                                                                                                              |
 
 Production hostnames and the CI skips for this fork are in
 [Production hostnames](#production-hostnames). Product copy still names upstream
@@ -299,10 +305,12 @@ upstream sync, stay Kody until a later pass adds them here:
   `api.kody.codes`).
 - Longer marketing paragraphs on acquisition, feature, and legal pages.
 - Marketing scene illustrations stay upstream: greeting, keys, lantern, factory,
-  hero, parcels, envelope, and the other koala scenes. There is no Rhino scene
-  art, and those pages are a later pass. Error pages and the status favicons use
-  the Rhino pilot. The brand-guide OG description still says "Download the Kody
-  koala mark…" and stays with the other OG descriptions.
+  hero, parcels, envelope, and the other koala scenes. Those pages are a later
+  pass. The login stage is the Rhino pilot with the jet. Error pages and the
+  status favicons use the Rhino pilot. The agents share card still uses the
+  upstream koala still (`packages/worker/public/og/kody-base.png`) because its
+  chips sit on a centered figure. The brand-guide OG description still says
+  "Download the Kody koala mark…" and stays with the other OG descriptions.
 - README license paragraphs (the Functional Source License names the upstream
   work).
 - Outbound MCP client name `{ name: 'Kody' }` and the git-notes author name in

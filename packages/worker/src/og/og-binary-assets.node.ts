@@ -86,7 +86,8 @@ function ensureCache(): OgBinaryAssetCache {
 		kodyPatternLightDataUri: bytesToPngDataUri(
 			readOgAssetFile('kody-pattern-light.png'),
 		),
-		// Same pixels as `images/hero/kody-base-640.webp` (PNG for Satori).
+		// Upstream koala still for the agents share card. The login stage webp
+		// is the Rhino pilot and is not this file.
 		kodyBaseDataUri: bytesToPngDataUri(readOgAssetFile('kody-base.png')),
 		// Rest pose of the layered homepage lantern (PNG for Satori).
 		kodyPrimitivesLanternDataUri: bytesToPngDataUri(

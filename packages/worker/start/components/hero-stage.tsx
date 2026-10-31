@@ -5,17 +5,20 @@ import { type CSSProperties, type RefCallback } from 'react'
 import { heroBaseImage } from '#universal/landing-images.ts'
 
 /**
- * Layered mascot stage from the 2026 landing redesign: Kody stands still
- * holding the lantern while each prop drifts on its own clock, and the whole
- * field responds to the pointer with depth-weighted parallax. Used by the
- * landing hero and the login brand panel. Coordinates come straight from the
- * prototype markup (`landing/landing.html` / `landing/login.html`).
+ * Layered mascot stage from the 2026 landing redesign. The base art is the
+ * Rhino pilot with the jet. The orbit props below were placed around a
+ * standing koala and cover this frame, so they stay off. Pointer parallax
+ * still tracks the base. Coordinates come straight from the prototype markup
+ * (`landing/landing.html` / `landing/login.html`).
  *
  * Motion is enhance-only: prop entrances/drift are gated on `:root.js` and
  * `prefers-reduced-motion: no-preference`; parallax bails on touch and
  * reduced motion. The pattern/lantern backdrops stay with the callers , they
  * differ per surface.
  */
+
+/** Koala-orbit props cover the jet and the pilot, so the stage draws the base only. */
+const showOrbitProps = false
 
 const motionOk = '@media (prefers-reduced-motion: no-preference)'
 
@@ -263,20 +266,22 @@ export function HeroStage(props: HeroStageProps) {
 				alt={props.alt}
 				css={{ width: '100%', height: 'auto', display: 'block' }}
 			/>
-			{stageProps.map((prop) => (
-				<img
-					key={prop.src}
-					src={publicAsset(`/images/hero/${prop.src}.webp`)}
-					width={prop.w}
-					height={prop.h}
-					alt=""
-					loading="lazy"
-					decoding="async"
-					data-depth={String(prop.depth)}
-					style={prop.vars as CSSProperties}
-					css={prop.tilt ? stagePropTiltCss : stagePropCss}
-				/>
-			))}
+			{showOrbitProps
+				? stageProps.map((prop) => (
+						<img
+							key={prop.src}
+							src={publicAsset(`/images/hero/${prop.src}.webp`)}
+							width={prop.w}
+							height={prop.h}
+							alt=""
+							loading="lazy"
+							decoding="async"
+							data-depth={String(prop.depth)}
+							style={prop.vars as CSSProperties}
+							css={prop.tilt ? stagePropTiltCss : stagePropCss}
+						/>
+					))
+				: null}
 		</div>
 	)
 }

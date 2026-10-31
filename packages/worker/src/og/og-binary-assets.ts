@@ -18,8 +18,8 @@ const OG_ASSET_URLS = {
 		'https://assets.local/og/wix-madefor-text-latin-400.ttf',
 	kodyPatternDark: 'https://assets.local/og/kody-pattern-dark.png',
 	kodyPatternLight: 'https://assets.local/og/kody-pattern-light.png',
-	// PNG of the homepage hero (`images/hero/kody-base-*.webp`) — Satori/resvg
-	// need PNG; pixels match the live landing base (chips/tethers drawn on top).
+	// Upstream koala still. The login stage webp is the Rhino pilot; this PNG
+	// stays so the agents share card can draw orbit chips on a centered figure.
 	kodyBase: 'https://assets.local/og/kody-base.png',
 	// PNG of the homepage lantern at the orbs' rest pose.
 	kodyPrimitivesLantern: 'https://assets.local/og/kody-primitives-lantern.png',
