@@ -22,7 +22,6 @@ import {
 	authFieldLabelRowCss,
 	getAuthInputCss,
 	getGhostButtonCss,
-	getLanternGlowCss,
 	getPillButtonCss,
 	getSwapLabelCss,
 	hoverMq,
@@ -398,7 +397,7 @@ const authSceneCss: CSSObject = {
 	width: '100%',
 }
 
-/* The lantern casts its light here too. */
+/* No lantern glow. The Rhino stage has no lantern, and the warm spot sat under the jet. */
 const authStageWrapCss: CSSObject = {
 	position: 'relative' as const,
 	width: 'min(100%, 440px)',
@@ -407,7 +406,6 @@ const authStageWrapCss: CSSObject = {
 	'@media (min-width: 901px) and (max-height: 820px)': {
 		width: 'min(100%, 340px)',
 	},
-	...getLanternGlowCss({ maxWidth: '160px' }),
 }
 
 const authGreetingCss: CSSObject = {
