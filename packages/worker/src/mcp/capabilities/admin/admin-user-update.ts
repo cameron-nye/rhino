@@ -1,9 +1,13 @@
 import { z } from 'zod'
-import { updateAdminUserPlan } from '#worker/admin/users-data.ts'
 import { McpCallerError } from '#mcp/caller-error.ts'
 import { defineDomainCapability } from '#mcp/capabilities/define-domain-capability.ts'
 import { capabilityDomainNames } from '#mcp/capabilities/domain-metadata.ts'
 import { resolvePlanWrite } from '#universal/plans.ts'
+import {
+	AdminOrgBillingMutationError,
+	setAdminOrgPlan,
+} from '#worker/admin/org-billing-mutations.ts'
+import { FreeOrgLimitError } from '#worker/orgs/billing.ts'
 import {
 	adminMutationCapabilityAccess,
 	adminUserMetadataSchema,
@@ -11,6 +15,12 @@ import {
 	planNameSchema,
 	stableUserIdSchema,
 } from './admin-shared.ts'
+import {
+	legacyAuditWriter,
+	legacyReason,
+	resolveLegacyPersonalOrg,
+} from './admin-legacy-billing.ts'
+import { orgLimitOverrideReasonMaxLength } from '#worker/admin/org-limit-overrides.ts'
 
 const inputSchema = z
 	.object({
@@ -22,6 +32,12 @@ const inputSchema = z
 			.describe(
 				'Manual entitlement grant to set (orgs.plan on the personal org). Null maps to free (never persists NULL). Does not change the Stripe subscription.',
 			),
+		reason: z
+			.string()
+			.trim()
+			.max(orgLimitOverrideReasonMaxLength)
+			.optional()
+			.describe('Why the manual plan changed.'),
 	})
 	.refine(
 		(value) =>
@@ -42,30 +58,50 @@ export const adminUserUpdateCapability = defineDomainCapability(
 		name: 'adminUserUpdate',
 		contextRuns: 'deny',
 		description:
-			'Update account metadata for one user by stable user id, email, or username. Supports setting the manual entitlement grant on that user’s personal organization (null maps to free; Stripe subscriptions stay on stripe_plan). Admin-only; never touches user content. Use adminOrgPlanSet for plan changes on any organization.',
+			'Deprecated: use adminOrgPlanSet with an org handle. Update account metadata for one user by stable user id, email, or username. Supports setting the manual entitlement grant on that user’s personal organization (null maps to free; Stripe subscriptions stay on stripe_plan). Admin-only; never touches user content. Use adminOrgPlanSet for plan changes on any organization.',
 		keywords: ['admin', 'user', 'update', 'account', 'plan', 'entitlements'],
 		inputSchema,
 		outputSchema,
 		async handler(args, ctx) {
+			const reason = legacyReason('adminUserUpdate', args.reason)
+			const { admin, audit } = await legacyAuditWriter(ctx)
 			return auditAdminCapabilityInvocation(
 				ctx,
 				'adminUserUpdate',
 				async () => {
-					const user = await updateAdminUserPlan(ctx.env.APP_DB, {
-						stableUserId: args.stableUserId,
-						email: args.email,
-						username: args.username,
-						plan: resolvePlanWrite(args.plan),
-					})
-					// Missing target is caller-supplied; keep off Sentry via McpCallerError.
-					if (!user) {
-						throw new McpCallerError('User not found.')
+					const { user: target, orgId } = await resolveLegacyPersonalOrg(
+						ctx,
+						args,
+					)
+					try {
+						await setAdminOrgPlan({
+							env: ctx.env,
+							audit: {
+								...audit,
+								actorUserId: audit.actorUserId ?? admin.stableUserId,
+							},
+							target: { orgId },
+							plan: resolvePlanWrite(args.plan),
+							reason,
+							platformAudit: false,
+						})
+					} catch (error) {
+						if (
+							error instanceof FreeOrgLimitError ||
+							error instanceof AdminOrgBillingMutationError
+						) {
+							throw new McpCallerError(error.message, { cause: error })
+						}
+						throw error
 					}
+					const { user } = await resolveLegacyPersonalOrg(ctx, {
+						stableUserId: target.stableUserId,
+					})
 					return { user }
 				},
 				{
 					successReason: ({ user }) =>
-						`target_stable_user_id=${user.stableUserId};plan=${user.plan}`,
+						`target_stable_user_id=${user.stableUserId};plan=${user.plan};reason=${reason}`,
 				},
 			)
 		},
