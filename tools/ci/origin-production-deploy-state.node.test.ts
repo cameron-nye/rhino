@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { expect, test } from 'vitest'
@@ -8,10 +8,14 @@ import {
 } from '#worker/test-support/console-spies.ts'
 import {
 	classifyOriginProductionScriptState,
+	durableObjectClassesConfiguredByMigrations,
 	inspectOriginProductionScriptState,
 	getCloudflareWorkerScriptExists,
 	isCloudflareNotFoundError,
 	isCloudflareOkNonJsonError,
+	localDurableObjectClassNames,
+	migrationsForDurableObjectTarget,
+	omitLocalDurableObjectBindingsWithoutMigration,
 	originBootstrapConfigPath,
 	planOriginPreviewDeploy,
 	planOriginProductionDeploy,
@@ -28,6 +32,10 @@ import {
 	writeOriginBootstrapWranglerConfig,
 	type DurableObjectNamespaceOwnership,
 } from './origin-production-deploy-state.ts'
+import { planProductionJobsWorkerConfig } from './jobs-worker-resources.ts'
+import { removeRuntimeReferencesFromPlatformEnv } from './platform-worker-config.ts'
+import { parseJsonc } from './resource-utils.ts'
+import { omitUnexportedRuntimeTransfer } from './runtime-worker-config.ts'
 
 function ownership(
 	script: string,
@@ -501,3 +509,346 @@ test('originBootstrapConfigPath writes beside the generated config and rejects o
 		originBootstrapConfigPath('packages/worker/wrangler-production.json'),
 	).toThrow(/\.generated\.json/)
 })
+
+test('origin bootstrap drops local Durable Object classes the migrations do not configure', async () => {
+	const config = {
+		migrations: [
+			{
+				tag: 'v1',
+				new_sqlite_classes: ['Kept', 'RenamedFrom'],
+				new_classes: ['Classic'],
+			},
+			{
+				tag: 'v2',
+				renamed_classes: [{ from: 'RenamedFrom', to: 'RenamedTo' }],
+			},
+			{ tag: 'v3', deleted_classes: ['Classic'] },
+			{
+				tag: 'v4',
+				transferred_classes: [
+					{ from: 'Moved', from_script: 'other', to: 'Moved' },
+				],
+			},
+		],
+		durable_objects: {
+			bindings: [
+				{ name: 'A', class_name: 'Kept' },
+				{ name: 'B', class_name: 'RenamedFrom' },
+				{ name: 'C', class_name: 'RenamedTo' },
+				{ name: 'D', class_name: 'Classic' },
+				{ name: 'E', class_name: 'Moved' },
+				{ name: 'F', class_name: 'Missing' },
+				{ name: 'G', class_name: 'Remote', script_name: 'elsewhere' },
+			],
+		},
+		env: {
+			production: {
+				durable_objects: {
+					bindings: [
+						{
+							name: 'MCP_OBJECT',
+							class_name: 'MCP',
+							script_name: productionPlatformScriptName,
+						},
+						{
+							name: 'SESSION',
+							class_name: 'ExecutionContextSessionV1',
+							script_name: productionPlatformScriptName,
+						},
+						{ name: 'GONE', class_name: 'Gone' },
+						{
+							name: 'UNRELATED',
+							class_name: 'Other',
+							script_name: 'someone-else',
+						},
+					],
+				},
+				migrations: [
+					{ tag: 'v1', new_sqlite_classes: ['MCP', 'Gone'] },
+					{ tag: 'v2', deleted_classes: ['Gone'] },
+				],
+			},
+		},
+	}
+	omitLocalDurableObjectBindingsWithoutMigration(config)
+	expect(
+		config.durable_objects.bindings.map((binding) => binding.class_name),
+	).toEqual(['Kept', 'RenamedTo', 'Moved', 'Remote'])
+	expect(
+		config.env.production.durable_objects.bindings.map((binding) => [
+			binding.class_name,
+			'script_name' in binding ? binding.script_name : undefined,
+		]),
+	).toEqual([
+		['MCP', productionPlatformScriptName],
+		['ExecutionContextSessionV1', productionPlatformScriptName],
+		['Other', 'someone-else'],
+	])
+
+	const tempDir = await mkdtemp(path.join(os.tmpdir(), 'kody-origin-do-omit-'))
+	try {
+		const outPath = path.join(tempDir, 'bootstrap.generated.json')
+		await writeOriginBootstrapWranglerConfig({
+			generatedConfig: config,
+			outConfigPath: outPath,
+		})
+		const written = JSON.parse(await readFile(outPath, 'utf8')) as {
+			env: {
+				production: {
+					durable_objects: {
+						bindings: Array<{ class_name: string; script_name?: string }>
+					}
+				}
+			}
+		}
+		expect(
+			written.env.production.durable_objects.bindings.map((binding) => [
+				binding.class_name,
+				binding.script_name,
+			]),
+		).toEqual([
+			['MCP', undefined],
+			['Other', 'someone-else'],
+		])
+	} finally {
+		await rm(tempDir, { recursive: true, force: true })
+	}
+})
+
+test('fresh-account deploys only bind Durable Object classes their migrations configure', async () => {
+	const files = (
+		await listWranglerConfigs(path.join(repoRoot, 'packages'))
+	).sort()
+	const seen: Array<string> = []
+	for (const file of files) {
+		const relative = path.relative(repoRoot, file)
+		seen.push(relative)
+		const config = parseJsonc<Record<string, unknown>>(
+			await readFile(file, 'utf8'),
+		)
+		if (relative === 'packages/worker/wrangler.jsonc') {
+			await assertOriginBootstrapDurableObjects(config)
+			continue
+		}
+		if (relative === 'packages/platform-worker/wrangler.jsonc') {
+			const production = productionEnvOrRoot(config)
+			removeRuntimeReferencesFromPlatformEnv(
+				production,
+				productionRuntimeScriptName,
+			)
+			expect(localDurableObjectClassNames(production).sort()).toEqual(
+				[...platformOwnedClassNames, 'ExecutionContextSessionV1'].sort(),
+			)
+			expect(durableObjectScriptNames(production)).not.toContain(
+				productionRuntimeScriptName,
+			)
+			assertLocalClassesConfigured(config, production, relative)
+			continue
+		}
+		if (relative === 'packages/runtime-worker/wrangler.jsonc') {
+			omitUnexportedRuntimeTransfer(config, 'PackageServiceInstance')
+			const production = productionEnvOrRoot(config)
+			expect(localDurableObjectClassNames(production).sort()).toEqual(
+				[...runtimeOwnedClassNames].sort(),
+			)
+			assertLocalClassesConfigured(config, production, relative)
+			const transferredFrom = transferredClassNames(config)
+			expect(transferredFrom).not.toContain('PackageServiceInstance')
+			expect(transferredFrom.sort()).toEqual([...runtimeOwnedClassNames].sort())
+			continue
+		}
+		if (relative === 'packages/jobs-worker/wrangler.jsonc') {
+			const plan = planProductionJobsWorkerConfig(config, {
+				originScriptExists: false,
+			})
+			expect(plan.deferHostBinding).toBe(true)
+			const bootstrap = plan.bootstrapConfig
+			if (!bootstrap) throw new Error('jobs bootstrap config missing')
+			const production = productionEnvOrRoot(bootstrap)
+			expect(localDurableObjectClassNames(production)).toEqual(['JobManager'])
+			expect(serviceBindingNames(production)).not.toContain('HOST')
+			expect(bootstrap.migrations).toEqual([
+				{ tag: 'v1', new_sqlite_classes: ['JobManager'] },
+			])
+			assertLocalClassesConfigured(bootstrap, production, relative)
+			continue
+		}
+		const production = productionEnvOrRoot(config)
+		assertLocalClassesConfigured(config, production, relative)
+		if (production !== config) {
+			assertLocalClassesConfigured(config, config, `${relative} top-level`)
+		}
+	}
+	expect(seen).toEqual([
+		'packages/api-docs-worker/wrangler.jsonc',
+		'packages/api-worker/wrangler.jsonc',
+		'packages/backup-control-plane/wrangler.jsonc',
+		'packages/highlight-worker/wrangler.jsonc',
+		'packages/jobs-worker/wrangler.jsonc',
+		'packages/mock-servers/cloudflare/wrangler.jsonc',
+		'packages/nx-cache/wrangler.jsonc',
+		'packages/platform-worker/wrangler.jsonc',
+		'packages/push-queue-worker/wrangler.jsonc',
+		'packages/runtime-worker/wrangler.jsonc',
+		'packages/start-routing-worker/wrangler.jsonc',
+		'packages/status/wrangler.jsonc',
+		'packages/worker/wrangler.jsonc',
+	])
+})
+
+const repoRoot = path.resolve(import.meta.dirname, '../..')
+
+function productionEnvOrRoot(config: Record<string, unknown>) {
+	const env = config.env
+	if (!env || typeof env !== 'object' || Array.isArray(env)) return config
+	const production = (env as Record<string, unknown>).production
+	if (
+		!production ||
+		typeof production !== 'object' ||
+		Array.isArray(production)
+	) {
+		return config
+	}
+	return production as Record<string, unknown>
+}
+
+function assertLocalClassesConfigured(
+	config: Record<string, unknown>,
+	target: Record<string, unknown>,
+	label: string,
+) {
+	const local = localDurableObjectClassNames(target)
+	if (local.length === 0) return
+	const migrations = migrationsForDurableObjectTarget(config, target)
+	const configured = durableObjectClassesConfiguredByMigrations(migrations)
+	const missing = local.filter((name) => !configured.has(name))
+	if (!Array.isArray(migrations) || missing.length > 0) {
+		throw new Error(
+			`${label} binds ${missing.join(', ') || '(no class)'} without a Durable Object migration`,
+		)
+	}
+}
+
+function serviceBindingNames(target: Record<string, unknown>) {
+	const services = target.services
+	if (!Array.isArray(services)) return []
+	return services.flatMap((entry) => {
+		if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
+		const binding = (entry as Record<string, unknown>).binding
+		return typeof binding === 'string' ? [binding] : []
+	})
+}
+
+function durableObjectScriptNames(target: Record<string, unknown>) {
+	const durableObjects = target.durable_objects
+	if (
+		!durableObjects ||
+		typeof durableObjects !== 'object' ||
+		Array.isArray(durableObjects)
+	) {
+		return []
+	}
+	const bindings = (durableObjects as Record<string, unknown>).bindings
+	if (!Array.isArray(bindings)) return []
+	return bindings.flatMap((entry) => {
+		if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
+		const scriptName = (entry as Record<string, unknown>).script_name
+		return typeof scriptName === 'string' ? [scriptName] : []
+	})
+}
+
+function transferredClassNames(config: Record<string, unknown>) {
+	const migrations = config.migrations
+	if (!Array.isArray(migrations)) return []
+	return migrations.flatMap((entry) => {
+		if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
+		const transferred = (entry as Record<string, unknown>).transferred_classes
+		if (!Array.isArray(transferred)) return []
+		return transferred.flatMap((item) => {
+			if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+			const from = (item as Record<string, unknown>).from
+			return typeof from === 'string' ? [from] : []
+		})
+	})
+}
+
+function classScriptName(
+	target: Record<string, unknown>,
+	className: string,
+): string | undefined {
+	const durableObjects = target.durable_objects
+	if (
+		!durableObjects ||
+		typeof durableObjects !== 'object' ||
+		Array.isArray(durableObjects)
+	) {
+		return undefined
+	}
+	const bindings = (durableObjects as Record<string, unknown>).bindings
+	if (!Array.isArray(bindings)) return undefined
+	for (const entry of bindings) {
+		if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+		const binding = entry as Record<string, unknown>
+		if (binding.class_name !== className) continue
+		return typeof binding.script_name === 'string'
+			? binding.script_name
+			: undefined
+	}
+	return undefined
+}
+
+async function assertOriginBootstrapDurableObjects(
+	config: Record<string, unknown>,
+) {
+	const tempDir = await mkdtemp(path.join(os.tmpdir(), 'kody-origin-do-audit-'))
+	try {
+		const outPath = path.join(tempDir, 'bootstrap.generated.json')
+		await writeOriginBootstrapWranglerConfig({
+			generatedConfig: config,
+			outConfigPath: outPath,
+		})
+		const bootstrap = JSON.parse(await readFile(outPath, 'utf8')) as Record<
+			string,
+			unknown
+		>
+		const production = productionEnvOrRoot(bootstrap)
+		const local = localDurableObjectClassNames(production).sort()
+		expect(local).toEqual(
+			[...platformOwnedClassNames, ...runtimeOwnedClassNames].sort(),
+		)
+		expect(local).not.toContain('ExecutionContextSessionV1')
+		expect(platformOwnedClassNames).not.toContain('ExecutionContextSessionV1')
+		expect(serviceBindingNames(production)).not.toContain('RUNTIME_WORKER')
+		expect(serviceBindingNames(production)).toEqual(
+			expect.arrayContaining(['JOBS', 'HIGHLIGHT', 'REPO_PUSH_QUEUE']),
+		)
+		assertLocalClassesConfigured(
+			bootstrap,
+			production,
+			'packages/worker/wrangler.jsonc',
+		)
+		assertLocalClassesConfigured(
+			bootstrap,
+			bootstrap,
+			'packages/worker/wrangler.jsonc top-level',
+		)
+		expect(
+			classScriptName(productionEnvOrRoot(config), 'ExecutionContextSessionV1'),
+		).toBe(productionPlatformScriptName)
+	} finally {
+		await rm(tempDir, { recursive: true, force: true })
+	}
+}
+
+async function listWranglerConfigs(dir: string): Promise<Array<string>> {
+	const entries = await readdir(dir, { withFileTypes: true })
+	const files: Array<string> = []
+	for (const entry of entries) {
+		if (entry.name === 'node_modules' || entry.name === 'dist') continue
+		const full = path.join(dir, entry.name)
+		if (entry.isDirectory()) {
+			files.push(...(await listWranglerConfigs(full)))
+		} else if (entry.name === 'wrangler.jsonc') files.push(full)
+	}
+	return files
+}

@@ -87,6 +87,7 @@ purpose.
 | `packages/worker/src/public-content.mcp-e2e.test.ts`                      | Home markdown heading.                                                                                                                                                |
 | `packages/worker/src/origin-handler.anonymous-html-cache.mcp-e2e.test.ts` | `llms.txt` heading.                                                                                                                                                   |
 | `packages/worker/wrangler.jsonc`                                          | Production email domains, package-app apex `https://nyneelevenlabs.dev`, no Fathom site id, no `sentry-otlp-traces` destination.                                      |
+| `packages/worker/src/orgs/create-organization.node.test.ts`               | Soft-deleted org fixture stays inside the 30-day restore window.                                                                                                      |
 | `packages/worker/worker-type-secrets.env`                                 | Keeps `FATHOM_SITE_ID` on the generated `Env` type after that wrangler pin is removed.                                                                                |
 | `packages/worker/worker-configuration.d.ts`                               | Regenerated. Email-domain and package-app URL pins are widened to `string` so fixture hosts still typecheck.                                                          |
 | `tools/generate-worker-configuration-types.ts`                            | Applies that widening after `wrangler types`.                                                                                                                         |
@@ -116,8 +117,8 @@ purpose.
 | `.github/workflows/dr-escrow.yml`                                         | Escrow job skips when DR credentials are absent.                                                                                                                      |
 | `tools/ci/jobs-worker-resources.ts`                                       | Fresh account creates `JobManager` in place and deploys jobs without `HOST` until `kody-production` exists.                                                           |
 | `tools/ci/jobs-worker-resources.node.test.ts`                             | Pins that jobs plan.                                                                                                                                                  |
-| `tools/ci/origin-production-deploy-state.ts`                              | Fresh origin bootstrap omits the `RUNTIME_WORKER` service binding.                                                                                                    |
-| `tools/ci/origin-production-deploy-state.node.test.ts`                    | Pins that omission.                                                                                                                                                   |
+| `tools/ci/origin-production-deploy-state.ts`                              | Fresh origin bootstrap omits `RUNTIME_WORKER` and local Durable Object bindings whose class the migrations do not create.                                             |
+| `tools/ci/origin-production-deploy-state.node.test.ts`                    | Pins that omission, including `ExecutionContextSessionV1`, and audits every worker's fresh-account Durable Object bindings.                                           |
 | `tools/ci/runtime-worker-config.ts`                                       | Production runtime migration does not transfer deleted `PackageServiceInstance`.                                                                                      |
 | `tools/ci/runtime-worker-config.node.test.ts`                             | Pins that migration.                                                                                                                                                  |
 | `tools/ci/deploy-workflow-contract.ts`                                    | Contract bump so older checkouts are not deployed with the fresh-account workflow.                                                                                    |
@@ -439,7 +440,15 @@ When `kody-production` is missing, the run does this:
    `wrangler deploy` and then 10143.
 3. Origin bootstrap uploads the full entry so platform and runtime can transfer
    their classes. That config omits `RUNTIME_WORKER` because `kody-runtime` does
-   not exist yet.
+   not exist yet. It also drops any Durable Object binding that became local
+   when its `script_name` was removed and that the origin migrations do not
+   create. `ExecutionContextSessionV1` is one of those: platform migration v2
+   creates it with `new_sqlite_classes`, and the slim origin deploy binds it on
+   `kody-platform` again. Leaving the binding on the bootstrap upload fails with
+   Cloudflare error 10061. The same check covers every other worker in the
+   production fleet (jobs creates `JobManager` in place, push queue and status
+   already create their classes, platform and runtime only bind classes their
+   migrations transfer or create).
 4. Platform bootstrap uploads without runtime bindings. Runtime deploys next. It
    still transfers `StorageRunner`, `RunLog`, and `PackageRealtimeSession`. It
    does not transfer `PackageServiceInstance`: that class was deleted upstream
@@ -467,3 +476,30 @@ the auto-merge dispatch after this lands). Nothing has to be deleted first:
 
 The dashboard list above still applies (Vectorize, Email Routing destination,
 Turnstile, worker tokens). The failed run already passed the worker-token check.
+
+The API docs healthcheck on the first production run
+(`api-docs.rhino.nyneelevenlabs.com`) was not a Universal SSL coverage gap. That
+hostname is a Workers custom domain, so Cloudflare issues a certificate for the
+name itself. The check saw NXDOMAIN, then TLS handshake failures while the
+certificate was issuing, then `/health` 200. The next request, `GET /`, returned
+502 until the custom domain finished propagating; a later request to `/`
+was 200. `/openapi.json` proxies
+`https://api.rhino.nyneelevenlabs.com/openapi.json` and answers 502
+`upstream_error` while the API worker is absent. That job was skipped because
+origin failed. The next production deploy creates the API worker before API
+docs. No certificate product is required.
+
+Origin production vars still name Kent's disaster-recovery account
+(`DR_BACKUP_ACCOUNT_ID` `a41d50ecaf0ae0f86dd1824ef6729cb2`; this account is
+`fc56d8089384bf6a7806ff0e9a9385a0`), bucket `kody-production-backups`, manifest
+key `kody-dr-2026-07`, Stripe prices `price_1UKHxZLAQpAnsYszwwqZTCCT` and
+`price_1UKHxaLAQpAnsYszlsVHHXjK`, billing portal `bpc_1UBzc8LAQpAnsYszyBkO2N3F`,
+and YouTube playlist `PLV5CVI1eNcJhP4nrJt85L7PxHjebFpDfY`. Deploy rewrites
+`DR_D1_PACED_SOURCES` to this account's D1 ids. Those committed values do not
+fail `wrangler deploy`. They misbehave later: export and the paced backup target
+Kent's account once S3 credentials exist, checkout and the billing portal use
+Kent's Stripe objects, and the YouTube overlay allowlists Kent's playlist when
+`YOUTUBE_DATA_API_KEY` is set. `packages/backup-control-plane/wrangler.jsonc`
+still names the same DR account. Leave them until a change retargets billing,
+the playlist, and the backup account together. Do not set the DR deploy secrets
+until that control-plane file is retargeted.

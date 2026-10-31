@@ -384,7 +384,10 @@ function parseArgs(argv: Array<string>): CliOptions {
  * Drop one class from top-level `transferred_classes` without touching
  * `new_sqlite_classes` or later delete tags. No-op when the class is absent.
  */
-function omitUnexportedRuntimeTransfer(config: JsonRecord, className: string) {
+export function omitUnexportedRuntimeTransfer(
+	config: JsonRecord,
+	className: string,
+) {
 	if (!Array.isArray(config.migrations)) return
 	for (const entry of config.migrations) {
 		if (!entry || typeof entry !== 'object') continue
