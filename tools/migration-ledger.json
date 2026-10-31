@@ -799,6 +799,10 @@
 		{
 			"filename": "0220-package-app-device-sign-in.sql",
 			"sha256": "bf0d240ef6db96cb0ae6a8c6d2ebeb567102244deac3881149c6810adf13d6f8"
+		},
+		{
+			"filename": "0222-profile-tokens-and-enablers.sql",
+			"sha256": "33160dee7165b61b0526bfee4eda395c89668c4b0b1f7744bcaf16a751699300"
 		}
 	]
 }
