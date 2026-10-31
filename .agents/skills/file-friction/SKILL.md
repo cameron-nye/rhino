@@ -1,12 +1,23 @@
 ---
 name: file-friction
 description: >
-  File durable repo or package papercuts through the friction-log package. Use
-  when a session hits leftover friction outside the ship-pr leftover pass.
-  Ship-pr already files leftovers with friction-log/file before Discord.
+  File durable repo or package papercuts. On cameron-nye/rhino, follow
+  rhino-friction and open GitHub issues on this fork only. The upstream
+  friction-log package applies on kody-hq/kody. Use when a session hits leftover
+  friction outside the ship-pr leftover pass.
 ---
 
 # File friction
+
+## Rhino fork
+
+This checkout is Cameron's fork. File with
+[rhino-friction](../rhino-friction/SKILL.md). Stop here. Do not run the upstream
+steps below. Do not call `@kentcdodds/friction-log` or `@kentcdodds/ship-pr`. Do
+not open issues on `kody-hq/kody` or any other Kent repository. Do not post to
+Discord.
+
+## Upstream (kody-hq/kody only)
 
 Policy (when to file, ownership, how to judge fixes):
 [docs/contributing/friction-log.md](../../../docs/contributing/friction-log.md).

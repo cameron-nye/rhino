@@ -1,11 +1,22 @@
 ---
 name: ship-pr
 description: >
-  Babysit a PR: iterate with AI reviewers and CI until green, get it ready,
-  optionally squash-merge as Kody and watch the publish, then send a Discord
-  summary. Medium risk waits for AI reviewer(s) and addresses valid feedback.
-  Use when a pull request needs to be shepherded to done.
+  Babysit a pull request to done. On cameron-nye/rhino, follow the root
+  rhino-ship-pr skill: wait for Cursor Bugbot, file friction on this fork, and
+  do not call @kentcdodds/ship-pr or Discord. Upstream kody-hq/kody still ticks
+  the ship-pr package. Use when a pull request needs to be shepherded to done.
 ---
+
+# Ship a pull request
+
+## Rhino fork
+
+This checkout is Cameron's fork. Follow
+[rhino-ship-pr](../../../../../.agents/skills/rhino-ship-pr/SKILL.md). Stop
+here. Do not run the tick command below. Do not call `@kentcdodds/ship-pr` or
+post to Discord. Do not open issues on Kent's repositories.
+
+## Upstream (kody-hq/kody only)
 
 ```bash
 npx @kodycodes/cli execute --local \

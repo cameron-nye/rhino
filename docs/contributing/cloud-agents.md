@@ -210,8 +210,16 @@ replies (`403` / GraphQL `Resource not accessible by integration`). That
 includes `gh issue comment`, `gh issue close`, `gh issue edit --add-label`, and
 review-thread replies.
 
-Write those with `kody:@kentcdodds/github/request` (kody-bot) or Cursor
-`ManagePullRequest` `post_comment` / `in_reply_to`. See
+On this fork, do not follow the kody-bot write path below. File friction on
+`cameron-nye/rhino` with `gh` as
+[rhino-friction](../../.agents/skills/rhino-friction/SKILL.md) describes, and
+shepherd pull requests with
+[rhino-ship-pr](../../.agents/skills/rhino-ship-pr/SKILL.md). Never post to
+Kent's repositories or Discord. If `gh` cannot write, stop and report that.
+
+Upstream (`kody-hq/kody` only): write those with
+`kody:@kentcdodds/github/request` (kody-bot) or Cursor `ManagePullRequest`
+`post_comment` / `in_reply_to`. See
 [ship-pr](../../.agents/skills/ship-pr/SKILL.md).
 
 ## GitHub token expiry mid-run

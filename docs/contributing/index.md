@@ -34,8 +34,10 @@ style, tests, MCP capabilities, and runtime architecture.
   still work and will be removed later, including `kody_id` / `kody.id`)
 - [Release notes](./release-notes.md) (PR bodies / Discord; **May break
   packages** heading)
-- [Friction log](./friction-log.md) (when/where/how-to-fix policy; package owns
-  create/file/daily at
+- [Friction log](./friction-log.md) (when/where/how-to-fix policy; on this fork
+  file issues on `cameron-nye/rhino` with
+  [rhino-friction](../../.agents/skills/rhino-friction/SKILL.md), see
+  [Rhino fork](./rhino.md#friction). Upstream package:
   [@kentcdodds/friction-log](https://kody.codes/@kentcdodds/friction-log))
 - [Repo health](./repo-health.md) (CI + in-repo budgets: AGENTS.md ratchet,
   Validate unit-job timing, ship-pr review-bot sort)
