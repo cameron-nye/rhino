@@ -4,6 +4,11 @@ import {
 } from '#app/auth-session.ts'
 import { readAuthenticatedAppUser } from '#app/authenticated-user.ts'
 import {
+	loadOrgBindingForPerson,
+	loadOrgBindingForSlug,
+} from '#worker/orgs/repo.ts'
+import { decidePackageAppBilling } from '#worker/package-runtime/package-app-billing.ts'
+import {
 	packageAppOauthAppDomain,
 	packageAppOauthClaimLabels,
 } from '#app/package-app-oauth-consent-copy.ts'
@@ -229,6 +234,7 @@ export async function loadConsentPackageMeta(input: {
 	let packageName = input.kodyId
 	let publisherDisplayName = input.orgUsername
 	let iconUrl: string | null = null
+	let internetVisible = true
 	try {
 		const org = await resolvePackageAppOrgOwnerByHandle({
 			env: input.env,
@@ -243,6 +249,7 @@ export async function loadConsentPackageMeta(input: {
 			})
 			if (lookup) {
 				packageName = getPackageNameLeaf(lookup.savedPackage.name)
+				internetVisible = lookup.savedPackage.isInternetVisible
 				const source = await getEntitySourceById(
 					input.env.APP_DB,
 					lookup.savedPackage.sourceId,
@@ -259,7 +266,47 @@ export async function loadConsentPackageMeta(input: {
 	} catch {
 		// Consent still renders when package metadata tables are unavailable.
 	}
-	return { packageName, publisherDisplayName, iconUrl }
+	return { packageName, publisherDisplayName, iconUrl, internetVisible }
+}
+
+/**
+ * Who pays for the visitor's use of the app (ADR 0095). Members of the owning
+ * org and every visitor of an internet-visible app: the publisher. Someone
+ * from outside the org on an internal app: their own personal org.
+ */
+async function loadConsentBilling(input: {
+	env: Env
+	personId: string
+	viewerUsername: string
+	orgUsername: string
+	internetVisible: boolean
+}): Promise<NonNullable<PackageAppOauthConsentLoaderData['billing']>> {
+	if (input.internetVisible) return { payer: 'publisher' }
+	try {
+		const binding = await loadOrgBindingForSlug(
+			input.env.APP_DB,
+			input.personId,
+			input.orgUsername,
+		)
+		if (!binding) return { payer: 'publisher' }
+		const personal = await loadOrgBindingForPerson(
+			input.env.APP_DB,
+			input.personId,
+		)
+		const billing = decidePackageAppBilling({
+			ownerId: binding.org.id,
+			visitor: { role: binding.role },
+			internetVisible: false,
+			visitorPersonalOrgId: personal.org.id,
+		})
+		if (!billing) return { payer: 'publisher' }
+		return {
+			payer: 'visitor-org',
+			orgSlug: personal.org.slug ?? input.viewerUsername,
+		}
+	} catch {
+		return { payer: 'publisher' }
+	}
 }
 
 export async function parseAndValidateAuthorizeRequest(input: {
@@ -952,6 +999,13 @@ export async function handlePackageAppOauthAuthorizeRequest(
 		kodyId: validated.client.kodyId,
 		grantId: grant?.id ?? null,
 	})
+	const billing = await loadConsentBilling({
+		env,
+		personId: user.mcpUser.userId,
+		viewerUsername: user.username,
+		orgUsername: validated.client.username,
+		internetVisible: validated.savedPackage.isInternetVisible,
+	})
 
 	return {
 		consent: {
@@ -980,6 +1034,7 @@ export async function handlePackageAppOauthAuthorizeRequest(
 				validated.visitorNeedDescriptions,
 			).filter((label) => !requiredLabels.includes(label)),
 			hiddenFields,
+			billing,
 			device: deviceRow
 				? {
 						userCode: formatUserCode(deviceRow.user_code),

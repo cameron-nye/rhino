@@ -39,6 +39,7 @@ import {
 } from '@kody-internal/shared/owner-person-ids.ts'
 import {
 	type OrgRole,
+	type RequestBilling,
 	type RequestContext,
 	type RequestCredential,
 } from '@kody-internal/shared/request-context.ts'
@@ -100,6 +101,11 @@ export type PackageAppVisitClaims = {
 	 * as anonymous plus identity.
 	 */
 	executorOnly?: boolean
+	/**
+	 * The visitor's own org pays for this request's metered work (a visit
+	 * from another org to an internal app, ADR 0095). Absent: the owner pays.
+	 */
+	billing?: RequestBilling
 	exp: number
 }
 
@@ -152,6 +158,8 @@ type StoredVisitTicket = {
 	cpi?: string | null
 	cpc?: Array<string> | null
 	xo?: true
+	/** Billed org id when it is not the owner (ADR 0095). */
+	bo?: string
 }
 
 type StoredAnonymousVisitTicket = {
@@ -294,7 +302,8 @@ function isStoredVisitTicket(value: unknown): value is StoredVisitTicket {
 		(record.cpc === undefined ||
 			record.cpc === null ||
 			(Array.isArray(record.cpc) && record.cpc.every(isNonEmptyText))) &&
-		(record.xo === undefined || record.xo === true)
+		(record.xo === undefined || record.xo === true) &&
+		(record.bo === undefined || isNonEmptyText(record.bo))
 	)
 }
 
@@ -329,6 +338,7 @@ function claimsFromStored(stored: StoredVisitTicket): PackageAppVisitClaims {
 			? { credentialProfileChain: stored.cpc }
 			: {}),
 		...(stored.xo ? { executorOnly: true } : {}),
+		...(stored.bo ? { billing: { orgId: ownerIdFromStored(stored.bo) } } : {}),
 		exp: stored.exp,
 	}
 }
@@ -482,6 +492,7 @@ export async function mintPackageAppVisitTicket(input: {
 		'scopes' | 'profileName' | 'profileId' | 'profileChain'
 	> | null
 	executorOnly?: boolean
+	billing?: RequestBilling | null
 	nonce?: string
 	now?: number
 }): Promise<{ ticket: string; nonce: string; exp: number }> {
@@ -523,6 +534,7 @@ export async function mintPackageAppVisitTicket(input: {
 					}
 				: {}),
 			...(input.executorOnly ? { xo: true as const } : {}),
+			...(input.billing ? { bo: input.billing.orgId } : {}),
 		},
 	})
 	beginPackageAppVisit(nonce, now)
@@ -689,6 +701,7 @@ export function requestContextFromVisitClaims(
 				: {}),
 		},
 		membership: claims.visitor.role ? { role: claims.visitor.role } : null,
+		...(claims.billing ? { billing: claims.billing } : {}),
 	}
 }
 
@@ -761,6 +774,7 @@ export async function createPackageAppRequestVisit(input: {
 			claims: null,
 		}
 	}
+	const billing = input.request.billing ?? null
 	const minted = await mintPackageAppVisitTicket({
 		env: input.env,
 		visitor: input.visitor,
@@ -770,6 +784,7 @@ export async function createPackageAppRequestVisit(input: {
 		grantId: input.grantId,
 		scopes: input.scopes,
 		credential: input.request.credential,
+		billing,
 		now: input.now,
 	})
 	const claims: PackageAppVisitClaims = {
@@ -784,6 +799,7 @@ export async function createPackageAppRequestVisit(input: {
 		credentialProfileName: input.request.credential.profileName,
 		credentialProfileId: input.request.credential.profileId ?? null,
 		credentialProfileChain: input.request.credential.profileChain ?? null,
+		...(billing ? { billing } : {}),
 		exp: minted.exp,
 	}
 	return {
