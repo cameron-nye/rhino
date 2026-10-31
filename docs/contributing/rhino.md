@@ -89,9 +89,9 @@ purpose.
 | `e2e/social-login.spec.ts`                                                | Onboarding heading.                                                                                                                                                                                                                                                                                     |
 | `packages/worker/src/public-content.mcp-e2e.test.ts`                      | Marketing documents redirect to login or the workspace dashboard. Privacy SSR stays.                                                                                                                                                                                                                    |
 | `packages/worker/src/origin-handler.anonymous-html-cache.mcp-e2e.test.ts` | Anonymous HTML cache is exercised on login. Marketing docs and llms.txt redirect to login.                                                                                                                                                                                                              |
-| `packages/worker/wrangler.jsonc`                                          | Production email domains, package-app apex `https://nyneelevenlabs.dev`, no Fathom site id, no `sentry-otlp-traces` destination.                                                                                                                                                                        |
+| `packages/worker/wrangler.jsonc`                                          | Production email domains, package-app apex `https://nyneelevenlabs.dev`, no Fathom site id, no Stripe prices, no YouTube playlist, no disaster-recovery account, no `sentry-otlp-traces` destination.                                                                                                   |
 | `packages/worker/src/orgs/create-organization.node.test.ts`               | Soft-deleted org fixture stays inside the 30-day restore window.                                                                                                                                                                                                                                        |
-| `packages/worker/worker-type-secrets.env`                                 | Keeps `FATHOM_SITE_ID` on the generated `Env` type after that wrangler pin is removed.                                                                                                                                                                                                                  |
+| `packages/worker/worker-type-secrets.env`                                 | Keeps `FATHOM_SITE_ID`, Stripe, YouTube, and disaster-recovery names on the generated `Env` type after those wrangler pins are removed.                                                                                                                                                                 |
 | `packages/worker/worker-configuration.d.ts`                               | Regenerated. Email-domain and package-app URL pins are widened to `string` so fixture hosts still typecheck.                                                                                                                                                                                            |
 | `tools/generate-worker-configuration-types.ts`                            | Applies that widening after `wrangler types`.                                                                                                                                                                                                                                                           |
 | `tools/widen-sentry-environment-type.ts`                                  | Widens the committed email-domain and `PACKAGE_APP_BASE_URL` literals.                                                                                                                                                                                                                                  |
@@ -105,7 +105,7 @@ purpose.
 | `packages/api-docs-worker/wrangler.jsonc`                                 | API docs custom domain and spec URL.                                                                                                                                                                                                                                                                    |
 | `packages/nx-cache/wrangler.jsonc`                                        | Nx cache custom domain.                                                                                                                                                                                                                                                                                 |
 | `tools/ci/resource-utils.ts`                                              | Publishes the app custom domain when `PACKAGE_APP_BASE_URL` is unset. DMARC reports forward to `csnye86@gmail.com`, and an existing `_dmarc` TXT is updated in place.                                                                                                                                   |
-| `tools/ci/resource-utils.node.test.ts`                                    | Covers the pinned package-app apex, the DMARC forward default, in-place DMARC TXT updates, and a package-app URL without an app origin.                                                                                                                                                                 |
+| `tools/ci/resource-utils.node.test.ts`                                    | Covers the pinned package-app apex, the DMARC forward default, in-place DMARC TXT updates, a package-app URL without an app origin, and a disabled paced-backup lane that does not invent D1 ids.                                                                                                       |
 | `tools/ci/production-resources.ts`                                        | `APP_BASE_URL` and `PACKAGE_APP_BASE_URL` fallbacks, and an optional Fathom site id.                                                                                                                                                                                                                    |
 | `tools/nx-remote-cache-probe.ts`                                          | Default Nx cache server hostname.                                                                                                                                                                                                                                                                       |
 | `.github/workflows/deploy.yml`                                            | Production hostnames, app and package-app origin fallbacks, optional Fathom site id, the DR job skip, and fresh-account worker bootstrap. Origin bootstrap runs only when `origin_bootstrap` is true. Origin secret sync copies `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` onto `kody-production`. |
@@ -117,7 +117,7 @@ purpose.
 | `.github/workflows/publish-cli.yml`                                       | CLI publish runs only on `kody-hq/kody`.                                                                                                                                                                                                                                                                |
 | `.github/workflows/publish-mcp-registry.yml`                              | MCP registry publish runs only on `kody-hq/kody`.                                                                                                                                                                                                                                                       |
 | `.github/workflows/status-incident-delete.yml`                            | Status incident delete URL, secret skip, and `cameron-nye` as an approved actor.                                                                                                                                                                                                                        |
-| `.github/workflows/dr-escrow.yml`                                         | Escrow job skips when DR credentials are absent.                                                                                                                                                                                                                                                        |
+| `.github/workflows/dr-escrow.yml`                                         | Escrow job always skips. Upstream runs it when DR credentials are set.                                                                                                                                                                                                                                  |
 | `tools/ci/jobs-worker-resources.ts`                                       | Fresh account creates `JobManager` in place and deploys jobs without `HOST` until `kody-production` exists.                                                                                                                                                                                             |
 | `tools/ci/jobs-worker-resources.node.test.ts`                             | Pins that jobs plan.                                                                                                                                                                                                                                                                                    |
 | `tools/ci/origin-production-deploy-state.ts`                              | A fresh account whose origin, platform, and runtime scripts implement none of the transferred Durable Object classes skips origin bootstrap. Platform and runtime create those classes in place.                                                                                                        |
@@ -216,6 +216,13 @@ purpose.
 | `packages/worker/public/images/openclaw-2-needs-a-home-og.jpg`            | Blog share artwork is the Rhino pilot. Filename stays.                                                                                                                                                                                                                                                  |
 | `packages/worker/start/components/home-document-head.node.test.ts`        | Pins share-card URLs at `v=4`.                                                                                                                                                                                                                                                                          |
 | `packages/worker/start/components/native-document-head.node.test.ts`      | Pins the feature-packages share-card URL at `v=4`.                                                                                                                                                                                                                                                      |
+| `packages/backup-control-plane/wrangler.jsonc`                            | Backup enable gates are false. Source account, drill account, Access, allowed email, manifest key, and primary origin are blank. Worker and bucket names stay.                                                                                                                                          |
+| `packages/worker/src/app/landing-hero-videos.ts`                          | Personal-use mode does not fetch the upstream homepage playlist `PLBPBUA8boGLA`.                                                                                                                                                                                                                        |
+| `packages/worker/src/app/landing-hero-videos.node.test.ts`                | Fetch cases run with personal-use mode off.                                                                                                                                                                                                                                                             |
+| `packages/worker/src/app/landing-hero-videos.rhino.node.test.ts`          | Pins that personal-use mode does not fetch the upstream playlist.                                                                                                                                                                                                                                       |
+| `tools/disaster-recovery/trusted-d1-restore-identities.json`              | Restore allowlist is empty. Upstream trusts Kent's production D1 and the KCD drill account.                                                                                                                                                                                                             |
+| `tools/disaster-recovery/trusted-backup-manifest-public-keys.json`        | Manifest public-key registry is empty. Upstream trusts key `kody-dr-2026-07`.                                                                                                                                                                                                                           |
+| `tools/disaster-recovery/restore-trust-and-verification.node.test.ts`     | Pins the empty restore allowlist and the empty public-key registry.                                                                                                                                                                                                                                     |
 
 Production hostnames and the CI skips for this fork are in
 [Production hostnames](#production-hostnames). Product copy still names upstream
@@ -429,14 +436,18 @@ Job-level `if` cannot read `secrets` (GitHub rejects the workflow). These checks
 live where the secrets context is allowed, and an empty secret skips the work
 instead of failing the run:
 
-- `deploy-backup-control-plane` stays skipped unless `DR_DEPLOY_TOKEN` and
-  `DR_BACKUP_ACCOUNT_ID` are both set. The production deploy guard writes
-  `deploy_backup_control_plane=false` in that case. Its wrangler file still
-  names Kent's DR account, `https://kody.codes`, and
-  `https://kody-dr.kentcdodds.com`. Do not set those secrets until that file is
-  retargeted.
-- DR secret escrow (`dr-escrow.yml`) skips its steps without the escrow
-  passphrase and `DR_BACKUP_*` credentials.
+- `deploy-backup-control-plane` always writes
+  `deploy_backup_control_plane=false`. Upstream runs the job when
+  `DR_DEPLOY_TOKEN` and `DR_BACKUP_ACCOUNT_ID` are both set and would upload to
+  Kent's DR account. The wrangler file keeps the worker and bucket names, turns
+  the enable gates off, and blanks the source account, drill account, Access
+  team, allowed email, manifest key, and `https://kody.codes` origin. The
+  workflow no longer hardcodes Kent's production account
+  `a99ee2e72728dd52902ef288b7b1447d` or D1
+  `8c1014d1-6b41-4695-a0a2-159071f0f919`. Do not set the DR secrets below.
+- DR secret escrow (`dr-escrow.yml`) always skips. Upstream seals
+  `SECRET_STORE_KEY` into the backup bucket when the escrow passphrase and
+  `DR_BACKUP_*` credentials are set.
 - Nx cache deploy (`nx-cache-deploy.yml`) skips its steps without
   `NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN`. Production deploy also withholds
   the workflow call when that secret is unset, so it does not ensure the R2
@@ -618,17 +629,84 @@ was 200. `/openapi.json` proxies
 origin failed. The next production deploy creates the API worker before API
 docs. No certificate product is required.
 
-Origin production vars still name Kent's disaster-recovery account
-(`DR_BACKUP_ACCOUNT_ID` `a41d50ecaf0ae0f86dd1824ef6729cb2`; this account is
-`fc56d8089384bf6a7806ff0e9a9385a0`), bucket `kody-production-backups`, manifest
-key `kody-dr-2026-07`, Stripe prices `price_1UKHxZLAQpAnsYszwwqZTCCT` and
-`price_1UKHxaLAQpAnsYszlsVHHXjK`, billing portal `bpc_1UBzc8LAQpAnsYszyBkO2N3F`,
-and YouTube playlist `PLV5CVI1eNcJhP4nrJt85L7PxHjebFpDfY`. Deploy rewrites
-`DR_D1_PACED_SOURCES` to this account's D1 ids. Those committed values do not
-fail `wrangler deploy`. They misbehave later: export and the paced backup target
-Kent's account once S3 credentials exist, checkout and the billing portal use
-Kent's Stripe objects, and the YouTube overlay allowlists Kent's playlist when
-`YOUTUBE_DATA_API_KEY` is set. `packages/backup-control-plane/wrangler.jsonc`
-still names the same DR account. Leave them until a change retargets billing,
-the playlist, and the backup account together. Do not set the DR deploy secrets
-until that control-plane file is retargeted.
+Origin production vars no longer name Kent's accounts. Stripe price ids
+(`price_1UKHxZLAQpAnsYszwwqZTCCT`, `price_1UKHxaLAQpAnsYszlsVHHXjK`), billing
+portal `bpc_1UBzc8LAQpAnsYszyBkO2N3F`, YouTube playlist
+`PLV5CVI1eNcJhP4nrJt85L7PxHjebFpDfY`, and the disaster-recovery exporter are
+unset. This account is `fc56d8089384bf6a7806ff0e9a9385a0`. Upstream's DR account
+is `a41d50ecaf0ae0f86dd1824ef6729cb2`, bucket `kody-production-backups`,
+manifest key `kody-dr-2026-07`. Unset means billing has no purchasable price,
+the playlist allowlist does not fetch, and export, paced backup, and restore
+drills stay off. Those lanes run only when the flag is the literal string
+`"true"` and S3 credentials exist. Deploy expands `DR_D1_PACED_SOURCES` only
+when paced backup is enabled, so Kent's D1 ids are not written.
+
+Personal-use mode also skips the homepage playlist hardcoded as `PLBPBUA8boGLA`.
+Set `rhinoPersonalUse` false to restore that fetch with the public site. Fathom
+stays off (`WKKSDJGN` is not committed). Status alerts stay at
+`csnye86@gmail.com`.
+
+The restore trust files are empty, so the drill CLI does not treat Kent's D1 or
+key `kody-dr-2026-07` as approved.
+
+The next production deploy replaces Worker vars. It does not delete Worker
+secrets. Delete these if they were copied from Kent. Unset is already safe.
+
+GitHub Actions, repository or the production environment:
+
+| Name                            | Kind     | What to do                                                                                                                                        |
+| ------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `STRIPE_SECRET_KEY`             | secret   | Delete. Optional origin and platform sync copies it when set. Kent's key plus the old price ids checks out on his Stripe account.                 |
+| `STRIPE_WEBHOOK_SECRET`         | secret   | Delete. Same sync.                                                                                                                                |
+| `YOUTUBE_DATA_API_KEY`          | secret   | Delete. Optional origin sync. The hero playlist fetch stays off in personal-use mode.                                                             |
+| `FATHOM_SITE_ID`                | variable | Leave unset. `WKKSDJGN` is Kent's site.                                                                                                           |
+| `KIT_API_KEY`                   | secret   | Delete if it is Kent's Kit key. Signup tagging uses tag id `21252175` when this secret is set. The tag id is a code default, not a GitHub secret. |
+| `OAUTH_GITHUB_CLIENT_ID`        | secret   | Delete if the GitHub OAuth app is Kent's. Create a Rhino app before setting a replacement.                                                        |
+| `OAUTH_GITHUB_CLIENT_SECRET`    | secret   | Delete with the client id.                                                                                                                        |
+| `OAUTH_GOOGLE_CLIENT_ID`        | secret   | Delete if the Google OAuth client is Kent's.                                                                                                      |
+| `OAUTH_GOOGLE_CLIENT_SECRET`    | secret   | Delete with the client id.                                                                                                                        |
+| `OAUTH_X_CLIENT_ID`             | secret   | Delete if the X app is Kent's.                                                                                                                    |
+| `OAUTH_X_CLIENT_SECRET`         | secret   | Delete with the client id.                                                                                                                        |
+| `OAUTH_DISCORD_CLIENT_ID`       | secret   | Delete if the Discord app is Kent's.                                                                                                              |
+| `OAUTH_DISCORD_CLIENT_SECRET`   | secret   | Delete with the client id.                                                                                                                        |
+| `DISCORD_BOT_TOKEN`             | secret   | Delete if it is Kent's bot.                                                                                                                       |
+| `DISCORD_GUILD_ID`              | secret   | Delete if it is Kent's guild.                                                                                                                     |
+| `DISCORD_MEMBER_ROLE_ID`        | secret   | Delete if copied.                                                                                                                                 |
+| `DISCORD_STANDARD_ROLE_ID`      | secret   | Delete if copied.                                                                                                                                 |
+| `DISCORD_PRO_ROLE_ID`           | secret   | Delete if copied.                                                                                                                                 |
+| `SENTRY_DSN`                    | secret   | Keep only a Rhino project DSN. Delete it if events still land in Kent's Sentry project.                                                           |
+| `DR_DEPLOY_TOKEN`               | secret   | Delete. Would deploy the control plane into the account below. The job no longer runs, and the token should not exist.                            |
+| `DR_BACKUP_ACCOUNT_ID`          | secret   | Delete. Upstream value is `a41d50ecaf0ae0f86dd1824ef6729cb2`.                                                                                     |
+| `DR_BACKUP_BUCKET_NAME`         | secret   | Delete.                                                                                                                                           |
+| `DR_BACKUP_ACCESS_KEY_ID`       | secret   | Delete. With the secret key, export would write to that R2 bucket once the lane is enabled.                                                       |
+| `DR_BACKUP_SECRET_ACCESS_KEY`   | secret   | Delete.                                                                                                                                           |
+| `DR_BACKUP_ADMIN_TOKEN`         | secret   | Delete.                                                                                                                                           |
+| `SECRET_ESCROW_PASSPHRASE`      | secret   | Delete. Escrow no longer runs.                                                                                                                    |
+| `DR_BACKUP_SOURCE_ACCOUNT_ID`   | variable | Leave unset. Do not set `a99ee2e72728dd52902ef288b7b1447d`.                                                                                       |
+| `DR_BACKUP_SOURCE_D1_ALLOWLIST` | variable | Leave unset. Do not set Kent's D1 uuid `8c1014d1-6b41-4695-a0a2-159071f0f919`.                                                                    |
+
+Cloudflare dashboard, account `fc56d8089384bf6a7806ff0e9a9385a0`, Workers
+`kody-production` and `kody-platform` (Settings → Variables and Secrets). Delete
+the secret if it is present. The next deploy clears the old plain-text vars
+(Stripe prices, YouTube playlist, DR account) and does not delete secrets.
+
+| Worker secret                 | Workers                                  |
+| ----------------------------- | ---------------------------------------- |
+| `STRIPE_SECRET_KEY`           | `kody-production`, `kody-platform`       |
+| `STRIPE_WEBHOOK_SECRET`       | `kody-production`, `kody-platform`       |
+| `YOUTUBE_DATA_API_KEY`        | `kody-production`                        |
+| `KIT_API_KEY`                 | `kody-production`, `kody-platform`       |
+| `DR_BACKUP_ACCESS_KEY_ID`     | `kody-production`                        |
+| `DR_BACKUP_SECRET_ACCESS_KEY` | `kody-production`                        |
+| `DR_BACKUP_ACCOUNT_ID`        | `kody-production`, if stored as a secret |
+| `DR_BACKUP_BUCKET_NAME`       | `kody-production`, if stored as a secret |
+
+`kody-production-d1-backups` is not deployed by this fork. Do not delete a
+worker of that name in Kent's account. If a copy exists in this account from an
+earlier experiment, it is unused while the deploy job stays skipped.
+
+`csnye86@gmail.com` is only the status alert destination and the DMARC forward
+target. It is not a Stripe, YouTube, or backup identity. Preview seed data still
+uses `me@kentcdodds.com` as a fixture email. That is not an alert path. Product
+copy that still names `me@kentcdodds.com` (contact mailto, discovery contact,
+testimonial mailto) stays with the other Kody copy.

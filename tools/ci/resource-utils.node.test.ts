@@ -502,10 +502,9 @@ test('writeGeneratedWranglerConfig leaves paced sources alone while the lane fla
 
 	const production = (await readConfig(outPath)).env?.production
 	expect(production?.vars?.DR_D1_PACED_BACKUP_ENABLED).toBe('false')
-	expect(String(production?.vars?.DR_D1_PACED_SOURCES)).toContain('APP_DB')
-	expect(String(production?.vars?.DR_D1_PACED_SOURCES)).not.toContain(
-		'dry-run-kody-audit',
-	)
+	// Rhino does not commit Kent's D1 ids. A disabled lane must not invent
+	// live UUIDs either.
+	expect(production?.vars?.DR_D1_PACED_SOURCES).toBeUndefined()
 })
 
 test('writeGeneratedWranglerConfig expands DR_D1_PACED_SOURCES with live D1 UUIDs including AUDIT_DB when enabled', async () => {

@@ -16,6 +16,7 @@ import {
 	youtubePlaylistItemsApiUrl,
 	youtubePlaylistUserAgent,
 } from '#universal/youtube-playlist.ts'
+import { rhinoPersonalUse } from '../../start/brand/rhino-personal.ts'
 
 const heroVideosTtlMs = 5 * 60 * 1000
 const heroVideosStaleWhileRevalidateMs = 60 * 60 * 1000
@@ -39,6 +40,9 @@ export async function loadLandingHeroVideos(input: {
 	playlistId?: string
 }): Promise<Array<LandingHeroVideo>> {
 	const playlistId = input.playlistId ?? landingHeroSourcePlaylistId
+	// Personal-use mode does not read the upstream homepage playlist
+	// (PLBPBUA8boGLA). Set rhinoPersonalUse false to restore that fetch.
+	if (rhinoPersonalUse && playlistId === landingHeroSourcePlaylistId) return []
 	try {
 		const kv = input.env.BUNDLE_ARTIFACTS_KV
 		if (!kv) {

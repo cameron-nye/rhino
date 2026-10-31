@@ -39,25 +39,29 @@
 		},
 	],
 	"vars": {
-		// Both must be exactly "true" for any schedule to run. The blocking
-		// export benchmark passed 2026-07-23: a clean production export
-		// completed in ~6s and produced a ~101 MB SQL object.
-		"ENABLE_PRODUCTION_D1_BACKUPS": "true",
-		"BACKUP_BENCHMARK_APPROVED": "true",
-		// Production Kody Cloudflare account and D1 database.
-		"SOURCE_ACCOUNT_ID": "a99ee2e72728dd52902ef288b7b1447d",
-		"SOURCE_DATABASE_ID": "8c1014d1-6b41-4695-a0a2-159071f0f919",
-		"SOURCE_DATABASE_NAME": "kody",
-		// Nightly export list. `kody-jobs` UUID is the production D1 named
-		// `kody-jobs` (JOBS_DB); deploy resolves it by name in
-		// tools/ci/jobs-worker-resources.ts (`jobs_d1_database_id`).
-		"SOURCE_DATABASES": "[{\"id\":\"8c1014d1-6b41-4695-a0a2-159071f0f919\",\"name\":\"kody\"},{\"id\":\"5410331e-4d25-47e4-a1e5-a248f7cc764c\",\"name\":\"kody-jobs\"}]",
-		"ALLOWED_SOURCE_ACCOUNT_IDS": "a99ee2e72728dd52902ef288b7b1447d",
-		"ALLOWED_SOURCE_DATABASE_IDS": "8c1014d1-6b41-4695-a0a2-159071f0f919,5410331e-4d25-47e4-a1e5-a248f7cc764c",
+		// Both must be exactly "true" for any schedule to run. Upstream sets
+		// both true after the 2026-07-23 benchmark. Rhino leaves them false
+		// so cron logs backup-disabled and returns. Worker and bucket names
+		// stay. Do not deploy this worker until a Rhino backup account exists.
+		"ENABLE_PRODUCTION_D1_BACKUPS": "false",
+		"BACKUP_BENCHMARK_APPROVED": "false",
+		// Upstream source is Kent's production account
+		// a99ee2e72728dd52902ef288b7b1447d and D1
+		// 8c1014d1-6b41-4695-a0a2-159071f0f919 (kody) plus
+		// 5410331e-4d25-47e4-a1e5-a248f7cc764c (kody-jobs). Blank so a
+		// dashboard render cannot call that account. The enable gate throws
+		// invalid-source-id before any Cloudflare request.
+		"SOURCE_ACCOUNT_ID": "",
+		"SOURCE_DATABASE_ID": "",
+		"SOURCE_DATABASE_NAME": "",
+		"SOURCE_DATABASES": "[]",
+		"ALLOWED_SOURCE_ACCOUNT_IDS": "",
+		"ALLOWED_SOURCE_DATABASE_IDS": "",
 		"BUILD_COMMIT": "REPLACE_AT_DEPLOY_TIME",
-		// Non-secret provenance. The matching PKCS#8 private key is a Worker secret.
-		"BACKUP_MANIFEST_SIGNING_KEY_ID": "kody-dr-2026-07",
-		"BACKUP_MANIFEST_VERIFYING_PUBLIC_KEY_SPKI_BASE64": "MCowBQYDK2VwAyEA3jqjPcGTzWefE5PGyRBdUQKAEj7FFGtFIz+223sbt9A=",
+		// Upstream key id is kody-dr-2026-07 with Kent's Ed25519 public key.
+		// Blank so this fork does not trust that signer.
+		"BACKUP_MANIFEST_SIGNING_KEY_ID": "",
+		"BACKUP_MANIFEST_VERIFYING_PUBLIC_KEY_SPKI_BASE64": "",
 		// SHA-256 of the JSON array of sorted migration filenames at the
 		// deployment commit; recompute when adding a migration (recipe in
 		// docs/contributing/disaster-recovery.md).
@@ -66,11 +70,17 @@
 		"BACKUP_MAX_AGE_HOURS": "26",
 		// D1 GET file_size must remain strictly below this single-object ceiling.
 		"BACKUP_MAX_SOURCE_BYTES": "4500000000",
-		"ACCESS_TEAM_DOMAIN": "kentcdodds.cloudflareaccess.com",
-		"ACCESS_APP_AUD": "769c70e393e2652f5878af99333322184a35cc3aef53376344f8753805e42a76",
-		"ACCESS_ALLOWED_EMAIL": "me@kentcdodds.com",
-		// DR (KCD) account: isolated restore drills only, never production.
-		"DRILL_ACCOUNT_ID": "a41d50ecaf0ae0f86dd1824ef6729cb2",
-		"PRIMARY_WORKER_ORIGIN": "https://kody.codes",
+		// Upstream Access team is kentcdodds.cloudflareaccess.com, aud
+		// 769c70e393e2652f5878af99333322184a35cc3aef53376344f8753805e42a76,
+		// and ACCESS_ALLOWED_EMAIL me@kentcdodds.com. Blank.
+		"ACCESS_TEAM_DOMAIN": "",
+		"ACCESS_APP_AUD": "",
+		"ACCESS_ALLOWED_EMAIL": "",
+		// Upstream DRILL_ACCOUNT_ID is the KCD account
+		// a41d50ecaf0ae0f86dd1824ef6729cb2. Blank. Drills stay off.
+		"DRILL_ACCOUNT_ID": "",
+		// Upstream origin is https://kody.codes. Blank so a restore cannot
+		// POST there.
+		"PRIMARY_WORKER_ORIGIN": "",
 	},
 }

@@ -14,17 +14,17 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
     timeout-minutes: 10
     env:
-      DR_ESCROW_CONFIGURED: >-
-        ${{ secrets.SECRET_STORE_KEY != '' && secrets.SECRET_ESCROW_PASSPHRASE
-        != '' && secrets.DR_BACKUP_ACCOUNT_ID != '' &&
-        secrets.DR_BACKUP_BUCKET_NAME != '' && secrets.DR_BACKUP_ACCESS_KEY_ID
-        != '' && secrets.DR_BACKUP_SECRET_ACCESS_KEY != '' }}
+      # Always false on this fork. Upstream sets this true when
+      # SECRET_STORE_KEY, SECRET_ESCROW_PASSPHRASE, and DR_BACKUP_* are set,
+      # then uploads the secret into Kent's backup bucket. Do not flip this
+      # until a Rhino backup account exists. See docs/contributing/rhino.md.
+      DR_ESCROW_CONFIGURED: 'false'
     steps:
       - name: Skip when DR escrow credentials are absent
         if: env.DR_ESCROW_CONFIGURED != 'true'
         run: >-
-          echo "Skipping DR secret escrow: SECRET_STORE_KEY,
-          SECRET_ESCROW_PASSPHRASE, or DR_BACKUP_* is unset."
+          echo "Skipping DR secret escrow. Rhino does not seal secrets into an
+          upstream backup bucket."
 
       - name: Checkout
         if: env.DR_ESCROW_CONFIGURED == 'true'
