@@ -115,45 +115,6 @@ function getPageHeroKind(page: PublicOgPage): PageHeroKind {
 	return 'agents'
 }
 
-function createHeroHalo(input: {
-	kind: PageHeroKind
-	theme?: OgTheme
-}): SatoriElement | null {
-	const isLight = input.theme === 'light'
-	switch (input.kind) {
-		case 'discord':
-			return {
-				type: 'div',
-				props: {
-					style: {
-						position: 'absolute',
-						// Clyde sits on the right of the pair, a bit higher than
-						// the lantern, so the blurple wash follows him instead of
-						// the empty middle of the art.
-						right: 28,
-						top: 88,
-						width: 420,
-						height: 420,
-						borderRadius: 210,
-						backgroundImage: isLight
-							? 'radial-gradient(circle at center, rgba(88, 101, 242, 0.16) 0%, rgba(88, 101, 242, 0.06) 38%, rgba(88, 101, 242, 0) 72%)'
-							: 'radial-gradient(circle at center, rgba(88, 101, 242, 0.38) 0%, rgba(88, 101, 242, 0.14) 38%, rgba(88, 101, 242, 0) 72%)',
-					},
-				},
-			}
-		case 'agents':
-			// Warm glow is composed inside `createAgentsHero` on the lantern.
-			return null
-		case 'primitives':
-			// The homepage still carries its own orb light.
-			return null
-		default: {
-			const _exhaustive: never = input.kind
-			throw new Error(`Unhandled page hero halo: ${_exhaustive}`)
-		}
-	}
-}
-
 function createPageHero(input: {
 	kind: PageHeroKind
 	theme?: OgTheme
@@ -202,7 +163,6 @@ function createPageOgMarkup(input: {
 }): SatoriElement {
 	const palette = getOgPalette(input.theme)
 	const heroKind = getPageHeroKind(input.page)
-	const halo = createHeroHalo({ kind: heroKind, theme: input.theme })
 	const title = ogTitleChildren({
 		text: input.page.imageTitle,
 		maxLength: TITLE_MAX_LENGTH,
@@ -221,7 +181,6 @@ function createPageOgMarkup(input: {
 					position: 'relative',
 				},
 				children: [
-					...(halo ? [halo] : []),
 					{
 						type: 'div',
 						props: {

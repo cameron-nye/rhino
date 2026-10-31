@@ -27,6 +27,8 @@ type OgBinaryAssetCache = {
 	kodyDiscordDataUri: string
 	kodyMarkSolidSvg: string
 	kodyMarkOutlinedSvg: string
+	kodyLogoSolidSvg: string
+	kodyLogoOutlinedSvg: string
 	agentIconSvgs: AgentIconSvgById
 }
 
@@ -86,8 +88,7 @@ function ensureCache(): OgBinaryAssetCache {
 		kodyPatternLightDataUri: bytesToPngDataUri(
 			readOgAssetFile('kody-pattern-light.png'),
 		),
-		// Upstream koala still for the agents share card. The login stage webp
-		// is the Rhino pilot and is not this file.
+		// Rhino pilot with the jet. Filename stays `kody-base.png`.
 		kodyBaseDataUri: bytesToPngDataUri(readOgAssetFile('kody-base.png')),
 		// Rest pose of the layered homepage lantern (PNG for Satori).
 		kodyPrimitivesLanternDataUri: bytesToPngDataUri(
@@ -100,6 +101,14 @@ function ensureCache(): OgBinaryAssetCache {
 		),
 		kodyMarkOutlinedSvg: readFileSync(
 			join(publicBrandDir, 'kody-mark-outlined.svg'),
+			'utf8',
+		),
+		kodyLogoSolidSvg: readFileSync(
+			join(publicBrandDir, 'kody-logo-white.svg'),
+			'utf8',
+		),
+		kodyLogoOutlinedSvg: readFileSync(
+			join(publicBrandDir, 'kody-logo-outlined.svg'),
 			'utf8',
 		),
 		agentIconSvgs: loadAgentIconSvgs(),
@@ -161,5 +170,13 @@ export function getKodyMarkDataUri(theme: OgTheme): string {
 	const loaded = ensureCache()
 	const svg =
 		theme === 'light' ? loaded.kodyMarkOutlinedSvg : loaded.kodyMarkSolidSvg
+	return svgToDataUri(svg)
+}
+
+/** Node twin of `getKodyLogoDataUri`. The lockup is not retinted. */
+export function getKodyLogoDataUri(theme: OgTheme): string {
+	const loaded = ensureCache()
+	const svg =
+		theme === 'light' ? loaded.kodyLogoOutlinedSvg : loaded.kodyLogoSolidSvg
 	return svgToDataUri(svg)
 }

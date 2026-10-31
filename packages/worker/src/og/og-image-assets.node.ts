@@ -12,6 +12,7 @@ export {
 	getKodyPrimitivesLanternDataUri,
 	getLandingAgentIconDataUri,
 	getKodyDiscordDataUri,
+	getKodyLogoDataUri,
 	getKodyMarkDataUri,
 	getKodyPatternDataUri,
 	getWixMadeforTextLatin400FontData,

@@ -18,15 +18,19 @@ const OG_ASSET_URLS = {
 		'https://assets.local/og/wix-madefor-text-latin-400.ttf',
 	kodyPatternDark: 'https://assets.local/og/kody-pattern-dark.png',
 	kodyPatternLight: 'https://assets.local/og/kody-pattern-light.png',
-	// Upstream koala still. The login stage webp is the Rhino pilot; this PNG
-	// stays so the agents share card can draw orbit chips on a centered figure.
+	// Rhino pilot with the jet. Filename stays so the agents share card can
+	// draw orbit chips around the figure.
 	kodyBase: 'https://assets.local/og/kody-base.png',
 	// PNG of the homepage lantern at the orbs' rest pose.
 	kodyPrimitivesLantern: 'https://assets.local/og/kody-primitives-lantern.png',
+	// Same pilot. The Discord card no longer composites the koala with Clyde.
 	kodyDiscord: 'https://assets.local/og/kody-discord.png',
-	// Same files as the brand guide downloads; tinted per theme at render time.
+	// Same files as the brand guide downloads. The mark is not retinted.
 	kodyMarkSolid: 'https://assets.local/images/brand/kody-mark-white.svg',
 	kodyMarkOutlined: 'https://assets.local/images/brand/kody-mark-outlined.svg',
+	// Full lockup (jet plus outlined RHINO) for the share-card header.
+	kodyLogoSolid: 'https://assets.local/images/brand/kody-logo-white.svg',
+	kodyLogoOutlined: 'https://assets.local/images/brand/kody-logo-outlined.svg',
 } as const
 
 const AGENT_ICON_IDS = landingOrbitAgents.map((agent) => agent.icon)
@@ -49,6 +53,8 @@ type OgBinaryAssetCache = {
 	kodyDiscordDataUri: string
 	kodyMarkSolidSvg: string
 	kodyMarkOutlinedSvg: string
+	kodyLogoSolidSvg: string
+	kodyLogoOutlinedSvg: string
 	agentIconSvgs: AgentIconSvgById
 }
 
@@ -123,6 +129,8 @@ async function loadOgBinaryAssets(
 		kodyDiscord,
 		kodyMarkSolid,
 		kodyMarkOutlined,
+		kodyLogoSolid,
+		kodyLogoOutlined,
 		...iconResults
 	] = await Promise.all([
 		fetchAssetBytes(assets, OG_ASSET_URLS.bricolageGrotesqueLatin700),
@@ -134,6 +142,8 @@ async function loadOgBinaryAssets(
 		fetchAssetBytes(assets, OG_ASSET_URLS.kodyDiscord),
 		fetchAssetBytes(assets, OG_ASSET_URLS.kodyMarkSolid),
 		fetchAssetBytes(assets, OG_ASSET_URLS.kodyMarkOutlined),
+		fetchAssetBytes(assets, OG_ASSET_URLS.kodyLogoSolid),
+		fetchAssetBytes(assets, OG_ASSET_URLS.kodyLogoOutlined),
 		...iconFetches,
 	])
 
@@ -152,6 +162,8 @@ async function loadOgBinaryAssets(
 		kodyDiscordDataUri: bytesToPngDataUri(kodyDiscord),
 		kodyMarkSolidSvg: bytesToUtf8(kodyMarkSolid),
 		kodyMarkOutlinedSvg: bytesToUtf8(kodyMarkOutlined),
+		kodyLogoSolidSvg: bytesToUtf8(kodyLogoSolid),
+		kodyLogoOutlinedSvg: bytesToUtf8(kodyLogoOutlined),
 		agentIconSvgs,
 	}
 }
@@ -227,6 +239,14 @@ export function getKodyDiscordDataUri(): string {
 
 export function getKodyMarkDataUri(theme: OgTheme): string {
 	return kodyMarkDataUri(requireCache(), theme)
+}
+
+/** Share-card header: jet plus the outlined RHINO wordmark. Not retinted. */
+export function getKodyLogoDataUri(theme: OgTheme): string {
+	const loaded = requireCache()
+	const svg =
+		theme === 'light' ? loaded.kodyLogoOutlinedSvg : loaded.kodyLogoSolidSvg
+	return svgToDataUri(svg)
 }
 
 /**
