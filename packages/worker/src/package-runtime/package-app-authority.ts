@@ -34,12 +34,24 @@ import {
 import { deriveRequestContext } from '#worker/request-context/request-context.ts'
 import { andLiveDeletedAtSql } from '#worker/soft-delete/live-sql.ts'
 
-/**
- * How one bridge call runs: as the runs-as person, or the legacy way (as the
- * visitor, or anonymously) after the runs-as attempt failed for an authority
- * reason.
- */
-export type PackageAppAuthorityMode = 'runs-as' | 'legacy'
+export class PackageAppCapabilityNotDeclaredError extends Error {
+	readonly capabilityName: string
+
+	constructor(capabilityName: string) {
+		super(
+			`Package app capability "${capabilityName}" is not listed in kody.app.capabilities. Apps run as their publisher and may call only the Kody capabilities they declare.`,
+		)
+		this.name = 'PackageAppCapabilityNotDeclaredError'
+		this.capabilityName = capabilityName
+	}
+}
+
+export class PackageAppCapabilityUnavailableError extends Error {
+	constructor(capabilityName: string) {
+		super(`Package app capability "${capabilityName}" is not available.`)
+		this.name = 'PackageAppCapabilityUnavailableError'
+	}
+}
 
 export type PackageAppAuthorityScope = {
 	/** The org that owns the app. */
@@ -74,13 +86,17 @@ export const packageAppRunsAsUnavailableMessages = {
 		'This app has no one to run as. An owner of its org must publish it again or choose who it runs as.',
 	'person-unavailable':
 		'This app runs as a person who can no longer act for its org. An owner of its org must choose who it runs as.',
+	'lookup-failed': 'Kody could not check who this app runs as. Try again.',
 } as const
 
+export type PackageAppRunsAsUnavailableReason =
+	keyof typeof packageAppRunsAsUnavailableMessages
+
 export class PackageAppRunsAsUnavailableError extends Error {
-	readonly reason: 'not-set' | 'person-unavailable'
+	readonly reason: PackageAppRunsAsUnavailableReason
 
 	constructor(
-		reason: 'not-set' | 'person-unavailable',
+		reason: PackageAppRunsAsUnavailableReason,
 		options?: ErrorOptions,
 	) {
 		super(packageAppRunsAsUnavailableMessages[reason], options)
@@ -273,8 +289,8 @@ export async function recordPackageAppPublisher(input: {
 
 /**
  * Someone published without a known person: forget the publisher and any
- * explicit runs-as person so the new code never runs as them. The app runs
- * the legacy way until a known person publishes or an owner picks someone.
+ * explicit runs-as person so the new code never runs as them. The app fails
+ * closed until a known person publishes or an owner picks someone.
  */
 export async function recordPackageAppPublisherUnknown(input: {
 	db: D1Database
