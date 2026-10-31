@@ -5,7 +5,7 @@ import { loadAdditionalOgAsset } from '#worker/og/og-emoji.ts'
 import {
 	ensureOgBinaryAssetsReady,
 	getBricolageGrotesqueLatin700FontData,
-	getKodyMarkDataUri,
+	getKodyLogoDataUri,
 	getKodyPatternDataUri,
 	getWixMadeforTextLatin400FontData,
 	ogYogaWasm,
@@ -24,12 +24,12 @@ export const OG_WIDTH = 1200
 export const OG_HEIGHT = 630
 
 /**
- * Header mark at the site header's mark-to-wordmark ratio (34px mark beside
- * 28px type), scaled to the 46px OG wordmark. Width follows the mark viewBox
- * aspect (807.44 by 593.24).
+ * Share-card header lockup: the jet plus the outlined RHINO wordmark.
+ * Height matches the old 56px mark. Width follows the logo viewBox
+ * (127.95 by 34).
  */
-const OG_MARK_HEIGHT = 56
-const OG_MARK_WIDTH = 76
+const OG_LOGO_HEIGHT = 56
+const OG_LOGO_WIDTH = 211
 
 export type SatoriChild = string | SatoriElement
 export type SatoriElement = {
@@ -167,8 +167,8 @@ function truncateOgLine(text: string, maxLength: number): string {
 }
 
 /**
- * Shared 1200×630 frame for all Kody OG images: the app ground with the shirt
- * pattern fanning in from the right, a header row with the Kody wordmark, then
+ * Shared 1200×630 frame for OG images: the app ground with the shirt
+ * pattern fanning in from the right, a header row with the Rhino lockup, then
  * the page-specific content filling the rest.
  *
  * `theme` picks the palette and the matching pattern asset; it defaults to
@@ -178,9 +178,9 @@ function truncateOgLine(text: string, maxLength: number): string {
  * inside its own rounded, bordered container, so drawing a second panel here
  * only reads as a card floating inside a card.
  *
- * `label` is the optional short line opposite the wordmark, for a section name
+ * `label` is the optional short line opposite the lockup, for a section name
  * ("Blog", "Public package"). Omit it rather than restating the host: the
- * wordmark already says whose page this is.
+ * lockup already says whose page this is.
  */
 export function createOgFrame(input: {
 	label?: string
@@ -249,30 +249,13 @@ export function createOgFrame(input: {
 										{
 											type: 'img',
 											props: {
-												src: getKodyMarkDataUri(theme),
-												width: OG_MARK_WIDTH,
-												height: OG_MARK_HEIGHT,
+												src: getKodyLogoDataUri(theme),
+												width: OG_LOGO_WIDTH,
+												height: OG_LOGO_HEIGHT,
 												style: {
-													width: OG_MARK_WIDTH,
-													height: OG_MARK_HEIGHT,
-													marginRight: 18,
+													width: OG_LOGO_WIDTH,
+													height: OG_LOGO_HEIGHT,
 												},
-											},
-										},
-										{
-											type: 'div',
-											props: {
-												style: {
-													fontFamily: 'Bricolage Grotesque',
-													fontSize: 46,
-													fontWeight: 700,
-													letterSpacing: '-0.01em',
-													// Matches `brandCss` in site-header.tsx: display
-													// face at text colour, not the accent. Green is
-													// reserved for one loud thing per surface.
-													color: palette.text,
-												},
-												children: 'Kody',
 											},
 										},
 									],
@@ -319,7 +302,7 @@ export function createOgFrame(input: {
 /**
  * Render a Satori markup tree to PNG bytes with the app's shared font set:
  * Wix Madefor Text 400 for body copy and Bricolage Grotesque 700/opsz 96 for
- * headings and the wordmark.
+ * headings and the lockup.
  */
 export async function renderOgImage(
 	markup: SatoriElement,
