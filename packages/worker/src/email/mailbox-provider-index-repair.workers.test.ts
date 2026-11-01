@@ -20,7 +20,12 @@ test('accepted terminal persists repair, alarm repairs D1, and replay never rese
 	const userId = uniqueUserId('provider-repair')
 	const messageId = 'provider-repair-message'
 	const providerMessageId = 'provider-repair-id'
-	const acceptedAt = '2026-08-03T00:00:00.000Z'
+	// Alarm runs provider-index repair, then retention. Retention drops delivery
+	// events older than mailboxDeliveryEventRetentionDays (90) against the wall
+	// clock. A fixed 2026-08-03 timestamp aged out on 2026-11-01, so the sent
+	// event was gone before the length assert. Keep the stamp recent enough to
+	// survive that pass and old enough that the repair retry is already due.
+	const acceptedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
 	const mailbox = rpcFor(userId)
 	await mailbox.upsertMessageGraph({
 		ownerId: userId,

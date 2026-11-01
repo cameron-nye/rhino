@@ -438,3 +438,21 @@ raised again.
   31,572 bytes. Browser Markdown chunk falls from 61,225 to 29,186 bytes.
   [Before/after measurements, raw samples, and repeatable runner](../docs/contributing/performance/markdown-migration-2026-10-28.md).
   Existing byte and CPU ceilings are unchanged.
+- Shared worker graph since the #3459 reset (Rhino #16 / #17). Those ceilings
+  stayed at platform 5_244_000 and runtime 3_793_500 after the reset measured
+  platform 5_124_654 and runtime 3_680_395. This tree's dry-run matches CI on
+  `f6673624f` and the earlier fork run that only replaced the mark: platform
+  6_745_865 and runtime 5_292_852. Origin stays 769_991, inside 7_750_000.
+  Platform is 1_621_211 over that reset measurement and runtime is 1_612_457
+  over it. The two entries moved together because they share the graph, not
+  because one Rhino asset landed in both. Login and share art stay static files.
+  Origin moved a few hundred bytes across the rebrand. `@sentry/core` plus
+  `@sentry/cloudflare` are 201_975 bytes on platform and 185_066 on runtime, and
+  `Sentry.withSentry` already wraps both entries. Largest modules on both
+  entries: MCP capabilities (835_775 platform / 835_149 runtime; dynamic
+  `import()` already defers their CPU, and esbuild keeps the bytes in this
+  entry), `@babel/parser` (295_705 / 295_640), the disposable-email domain list
+  (163_011), Sentry, and `tldts` (123_192 / 123_170). No one of those closes the
+  gap, and none is a fork-only asset. Splitting the capability graph out of the
+  entry is a separate change. Reviewed ceilings platform 6_748_000 and runtime
+  5_295_000.
