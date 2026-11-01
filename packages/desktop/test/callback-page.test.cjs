@@ -43,20 +43,22 @@ test('success and error pages say what happened and what to do next', () => {
 	assert.throws(() => renderCallbackPage('other'), /Unknown sign-in page/)
 })
 
-test('the inlined Kody mark matches the website mark', () => {
+test('the inlined Rhino mark matches the website mark', () => {
 	const source = readFileSync(
-		join(__dirname, '../../worker/start/brand/kody-mark-path.ts'),
+		join(__dirname, '../../worker/start/brand/rhino-mark.ts'),
 		'utf8',
 	)
 	const read = (name) =>
-		source.match(new RegExp(`export const ${name} =\\s*'([^']+)'`))[1]
+		source.match(new RegExp(`export const ${name} = '([^']+)'`))[1]
+	const bodyBlock = source.match(
+		/export const rhinoBodyPathDs = \[([\s\S]*?)\] as const/,
+	)[1]
 	assert.deepEqual(mark, {
-		viewBox: read('kodyMarkViewBox'),
-		transform: read('kodyMarkPathTransform'),
-		solid: read('kodyMarkPathD'),
-		ring: read('kodyMarkOutlinedRingPathD'),
-		leftEye: read('kodyMarkOutlinedLeftEyePathD'),
-		rightEye: read('kodyMarkOutlinedRightEyePathD'),
-		nose: read('kodyMarkOutlinedNosePathD'),
+		viewBox: read('rhinoMarkViewBox'),
+		bodyOnDark: read('rhinoBodyOnDark'),
+		bodyOnLight: read('rhinoBodyOnLight'),
+		horn: read('rhinoHorn'),
+		body: [...bodyBlock.matchAll(/'([^']+)'/g)].map((match) => match[1]),
+		hornPath: read('rhinoHornPathD'),
 	})
 })

@@ -87,9 +87,7 @@ body {
 	display: grid;
 	place-items: center;
 	padding: clamp(1rem, 5vw, 3rem);
-	background:
-		radial-gradient(60rem 30rem at 50% -10%, var(--lantern-glow), transparent 70%),
-		var(--background);
+	background: var(--background);
 	color: var(--text);
 	font: 400 1rem/1.62 var(--font-body);
 	-webkit-font-smoothing: antialiased;
@@ -177,10 +175,16 @@ const contentSecurityPolicy = [
 	"frame-ancestors 'none'",
 ].join('; ')
 
-const markSvg = `<svg viewBox="${mark.viewBox}" aria-hidden="true" focusable="false"><g class="mark-outlined" fill="currentColor"><path fill-rule="evenodd" transform="${mark.transform}" d="${mark.ring}"/><path transform="${mark.transform}" d="${mark.leftEye}"/><path transform="${mark.transform}" d="${mark.rightEye}"/><path transform="${mark.transform}" d="${mark.nose}"/></g><path class="mark-solid" fill="currentColor" fill-rule="evenodd" transform="${mark.transform}" d="${mark.solid}"/></svg>`
+function markShapes(body) {
+	const parts = mark.body.map((d) => `<path fill="${body}" d="${d}"/>`)
+	parts.push(`<path fill="${mark.horn}" d="${mark.hornPath}"/>`)
+	return parts.join('')
+}
+
+const markSvg = `<svg viewBox="${mark.viewBox}" aria-hidden="true" focusable="false"><g class="mark-outlined">${markShapes(mark.bodyOnLight)}</g><g class="mark-solid">${markShapes(mark.bodyOnDark)}</g></svg>`
 
 const favicon = `data:image/svg+xml,${encodeURIComponent(
-	`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${mark.viewBox}"><path fill="#2f9e4f" fill-rule="evenodd" transform="${mark.transform}" d="${mark.solid}"/></svg>`,
+	`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${mark.viewBox}">${markShapes(mark.bodyOnDark)}</svg>`,
 )}`
 
 function renderCallbackPage(kind) {
