@@ -76,7 +76,7 @@ export const adminUserMetadataSchema = z.object({
 		.nullable()
 		.describe('Raw users.email_verified_at timestamp, or null if unverified.'),
 	plan: planNameSchema.describe(
-		'Manual entitlement grant (orgs.plan on the personal org). Manage plan writes this column. Ordinary Stripe subscribers keep this as free.',
+		'Manual entitlement grant (orgs.plan on the personal org). The org admin Plan panel and adminOrgPlanSet write this column. Ordinary Stripe subscribers keep this as free.',
 	),
 	manualPlan: planNameSchema.describe(
 		'Same as plan: the admin/manual grant on orgs.plan.',
@@ -237,20 +237,23 @@ export async function auditAdminCapabilityInvocation<TResult>(
 		successReason?: (result: TResult) => string
 		/** A resolved result that reports its own failure (default: success). */
 		resultOf?: (result: TResult) => 'success' | 'failure'
+		skipSuccessAudit?: (result: TResult) => boolean
 	} = {},
 ): Promise<TResult> {
 	const actorEmail = await resolveAuditActorEmail(ctx)
 	try {
 		const result = await run()
-		await logAuditEvent({
-			db: auditDatabaseFromEnv(ctx.env),
-			category: 'admin',
-			action: capabilityName,
-			result: options.resultOf?.(result) ?? 'success',
-			email: actorEmail,
-			path: '/mcp',
-			reason: options.successReason?.(result) ?? 'mcp_admin_capability',
-		})
+		if (!options.skipSuccessAudit?.(result)) {
+			await logAuditEvent({
+				db: auditDatabaseFromEnv(ctx.env),
+				category: 'admin',
+				action: capabilityName,
+				result: options.resultOf?.(result) ?? 'success',
+				email: actorEmail,
+				path: '/mcp',
+				reason: options.successReason?.(result) ?? 'mcp_admin_capability',
+			})
+		}
 		return result
 	} catch (error) {
 		await logAuditEvent({

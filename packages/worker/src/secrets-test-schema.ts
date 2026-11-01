@@ -65,6 +65,10 @@ export async function ensureSecretBucketsTestSchema(db: D1Database) {
 				expires_at INTEGER,
 				lease_id TEXT,
 				lease_expires_at INTEGER,
+				failure_revision TEXT,
+				failure_kind TEXT,
+				failure_count INTEGER,
+				retry_after INTEGER,
 				updated_at TEXT NOT NULL
 			)`,
 		)
@@ -145,22 +149,6 @@ export async function ensureSecretBucketsTestSchema(db: D1Database) {
 				published_by_person_id TEXT,
 				publisher_unknown INTEGER NOT NULL DEFAULT 0,
 				updated_at TEXT NOT NULL
-			)`,
-		)
-		.run()
-	await db
-		.prepare(
-			`CREATE TABLE IF NOT EXISTS package_app_authority_fallbacks (
-				day TEXT NOT NULL,
-				owner_id TEXT NOT NULL,
-				package_id TEXT NOT NULL,
-				call_name TEXT NOT NULL,
-				difference_kind TEXT NOT NULL,
-				visitor_hash TEXT NOT NULL,
-				first_seen_at TEXT NOT NULL,
-				last_seen_at TEXT NOT NULL,
-				observations INTEGER NOT NULL DEFAULT 0,
-				PRIMARY KEY (day, package_id, call_name, difference_kind, visitor_hash)
 			)`,
 		)
 		.run()

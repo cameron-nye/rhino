@@ -86,7 +86,6 @@ import {
 	openSealedToken,
 	sealTokenResponse,
 } from '#worker/credentials/sealed-token.ts'
-import { type OwnerCredentialScope } from '#worker/credentials/owner-credential-for-visitors.ts'
 import {
 	pathSegmentEncodedCredentialNames,
 	withPathSegmentEncodingWarning,
@@ -98,19 +97,22 @@ import {
 	withoutCodePlacement,
 } from './credential-client-gateway.ts'
 import { createMissingIntegrationAccessTokenMessage } from '#worker/integrations/credentials.ts'
+import { CredentialClientError } from '#worker/credentials/credential-client.ts'
+import { CredentialLoginRetryLaterError } from '#worker/credentials/credential-request.ts'
+import { recordRetriedLoginSession } from '#worker/credentials/login-session-store.ts'
 import { IntegrationHostNotAllowedError } from './execute-modules/integration-host-allowlist.ts'
 import { type StorageContext } from '#mcp/storage.ts'
-import { type RequestContext } from '@kody-internal/shared/request-context.ts'
+import {
+	billedOrgIdOf,
+	type RequestContext,
+} from '@kody-internal/shared/request-context.ts'
 import {
 	createPackageAppVisitorPersonalRequest,
 	loadPackageAppRunsAs,
+	PackageAppRunsAsUnavailableError,
 	type PackageAppAuthorityScope,
 	type PackageAppVisitorGrantScope,
 } from '#worker/package-runtime/package-app-authority.ts'
-import {
-	packageAppAuthorityFallbackKindOf,
-	schedulePackageAppAuthorityFallback,
-} from '#worker/package-runtime/package-app-authority-fallback.ts'
 import {
 	consumeDailyEntitlement,
 	findCachedUserAccountByStableUserId,
@@ -167,11 +169,6 @@ type FetchGatewayProps = {
 	 * must be bound to. Without it, a client fetch is refused.
 	 */
 	credentialClientBinding?: string | null
-	/**
-	 * Package-app runs only: the app whose `ownerCredentialForVisitors`
-	 * handles resolve with its credential authority, not `request`.
-	 */
-	ownerCredentialScope?: OwnerCredentialScope | null
 	/**
 	 * Package-app runs only (ADR 0068 amendment 2026-10-24): placeholders
 	 * resolve as the app's runs-as person, and `credential()` handles carry
@@ -284,6 +281,20 @@ async function applyPackageAppVisitTicketToGateway(input: {
 	})
 	const headers = new Headers(input.request.headers)
 	headers.delete(packageAppVisitTicketHeaderName)
+	if (!claims.visitor) {
+		// An anonymous ticket names nobody: the fetch stays anonymous and only
+		// gains this request's credential-client binding.
+		return {
+			...input,
+			request: new Request(input.request, { headers }),
+			props: {
+				...input.props,
+				request: null,
+				executorVisitorRequest: null,
+				credentialClientBinding: claims.credentialClientBinding,
+			},
+		}
+	}
 	return {
 		...input,
 		request: new Request(input.request, { headers }),
@@ -347,7 +358,10 @@ async function fetchThroughGateway(
 		// this gateway, so the atomic counter here bounds cost abuse and
 		// third-party hammering from user code. Consumed before secret
 		// expansion so over-limit requests never resolve secrets.
-		if (input.props.userId) {
+		// A visit from another org to an internal app charges the visiting
+		// org's quota and meter (ADR 0095).
+		const billedUserId = billedOrgIdOf(input.props.request, input.props.userId)
+		if (billedUserId) {
 			// Plan lookup requires the account email. Callers that cannot
 			// carry one (MCP provider requests, package runtime) get it
 			// reverse-resolved from the stable userId so authenticated
@@ -355,18 +369,18 @@ async function fetchThroughGateway(
 			// failing open to `max` (whose limit is still finite for
 			// genuinely accountless synthetic contexts).
 			const email =
-				input.props.email ??
+				(billedUserId === input.props.userId ? input.props.email : null) ??
 				(
 					await findCachedUserAccountByStableUserId(
 						input.env.APP_DB,
-						input.props.userId,
+						billedUserId,
 					)
 				)?.email ??
 				null
 			await consumeDailyEntitlement({
 				db: input.env.APP_DB,
 				env: input.env,
-				userId: input.props.userId,
+				userId: billedUserId,
 				email,
 				resource: 'outbound_fetches_per_day',
 			})
@@ -441,24 +455,45 @@ async function fetchThroughGateway(
 				credentialClientToken !== null &&
 				input.request.body === null
 			) {
-				await upstream.body?.cancel()
+				// While the login's exchange cools down after a recent failure or
+				// a repeated 401, the host's 401 is returned instead.
 				const retried = await resolveCredentialClientPlacement({
 					env: input.env,
 					props: input.props,
 					token: credentialClientToken,
 					request: input.request,
 					rejectedLoginSessionId: credentialClient.login.sessionId,
+				}).catch((error: unknown) => {
+					if (isLoginRetryLater(error)) return null
+					throw error
 				})
-				substitutedValues = [...substitutedValues, ...retried.substitutedValues]
-				credentialClient = retried
-				transformed = applyCredentialClientPlacement(
-					expanded.request,
-					retried.placement,
-					codeRequest,
-				)
-				upstream = await globalFetch(
-					new Request(transformed, { signal: deadline.signal }),
-				)
+				if (retried) {
+					await upstream.body?.cancel()
+					substitutedValues = [
+						...substitutedValues,
+						...retried.substitutedValues,
+					]
+					credentialClient = retried
+					transformed = applyCredentialClientPlacement(
+						expanded.request,
+						retried.placement,
+						codeRequest,
+					)
+					upstream = await globalFetch(
+						new Request(transformed, { signal: deadline.signal }),
+					)
+					const retriedSessionId = retried.login?.sessionId
+					if (retriedSessionId) {
+						try {
+							await recordRetriedLoginSession(input.env, {
+								sessionId: retriedSessionId,
+								rejected: upstream.status === 401,
+							})
+						} catch {
+							// Backoff bookkeeping only; never fail a completed retry.
+						}
+					}
+				}
 			}
 			// Credential-bearing requests stay on redirect=manual (fail closed).
 			// Ordinary bodies that used manual only so mid-stream fills could be
@@ -506,7 +541,7 @@ async function fetchThroughGateway(
 		deadline?.fail()
 		throw asCallerFacingBodyFillError(error)
 	} finally {
-		const { userId } = input.props
+		const userId = billedOrgIdOf(input.props.request, input.props.userId)
 		if (userId) {
 			const meteredResponse = response
 			// Outcome is settled at headers; duration waits for the body so a
@@ -569,10 +604,8 @@ function readResponseContentLengthBytes(
 }
 
 /**
- * Package apps fill placeholders as their runs-as person. When that fails,
- * the visitor's fill (today's behavior) is tried before giving up, and a
- * success there leaves a would-break row. Body placeholders fill while the
- * upload streams, so they fall back one batch at a time.
+ * Package apps fill placeholders as their runs-as person. Authority
+ * failures throw. Visitor identity stays on `props.request` for usage.
  */
 async function expandAsPackageAppAuthority(input: {
 	request: Request
@@ -586,67 +619,13 @@ async function expandAsPackageAppAuthority(input: {
 		env: input.env,
 		scope: authority.scope,
 	})
-	const noteFallback = (error: unknown) =>
-		schedulePackageAppAuthorityFallback({
-			env: input.env,
-			event: {
-				ownerId: authority.scope.orgId,
-				packageId: authority.scope.packageId,
-				callName: 'fetch',
-				kind:
-					runsAs.status === 'ready'
-						? (packageAppAuthorityFallbackKindOf(error) ??
-							'credential_unavailable')
-						: 'runs_as_unavailable',
-				visitorId: input.props.request?.actor?.userId ?? null,
-			},
-			waitUntil: input.waitUntil,
-		})
 	if (runsAs.status !== 'ready') {
-		const expanded = await expandSecretPlaceholders(input)
-		if (expanded.substitutedValues.length > 0) {
-			noteFallback(null)
-		} else {
-			// Body placeholders fill while the upload streams.
-			void expanded.bodyFillDone
-				.then(() => {
-					if (expanded.substitutedValues.length > 0) noteFallback(null)
-				})
-				.catch(() => {})
-		}
-		return expanded
+		throw new PackageAppRunsAsUnavailableError(runsAs.reason)
 	}
-	const retry = input.request.clone() as Request
-	try {
-		const expanded = await expandSecretPlaceholders({
-			...input,
-			props: { ...input.props, request: runsAs.request },
-			bodyFallback: { props: input.props, onFallback: noteFallback },
-		})
-		discardUnreadBody(retry.body)
-		return expanded
-	} catch (error) {
-		if (!isPlaceholderAuthorityFailure(error)) {
-			discardUnreadBody(retry.body)
-			throw error
-		}
-		discardUnreadBody(input.request.body)
-		try {
-			const expanded = await expandSecretPlaceholders({
-				...input,
-				request: retry,
-			})
-			noteFallback(error)
-			return expanded
-		} catch {
-			throw error
-		}
-	}
-}
-
-/** A locked branch is still being read by a failed fill; cancelling it would throw. */
-function discardUnreadBody(body: ReadableStream | null) {
-	if (body && !body.locked) void body.cancel().catch(() => {})
+	return await expandSecretPlaceholders({
+		...input,
+		props: { ...input.props, request: runsAs.request },
+	})
 }
 
 /** A credential the filling person cannot resolve, as opposed to a bad request or an outage. */
@@ -654,7 +633,6 @@ export class GatewayCredentialUnavailableError extends Error {}
 
 export function isPlaceholderAuthorityFailure(error: unknown) {
 	return (
-		packageAppAuthorityFallbackKindOf(error) !== null ||
 		error instanceof GatewayCredentialUnavailableError ||
 		error instanceof SecretPlacementError ||
 		error instanceof McpCallerError
@@ -682,15 +660,6 @@ export async function expandSecretPlaceholders(input: {
 	request: Request
 	props: FetchGatewayProps
 	env: Pick<Env, 'APP_DB' | 'SECRET_STORE_KEY'>
-	/**
-	 * Body placeholders fill while the upload streams, so a whole-request
-	 * retry is impossible once a chunk is sent; a batch these props cannot
-	 * fill is retried with `props` here instead.
-	 */
-	bodyFallback?: {
-		props: FetchGatewayProps
-		onFallback: (error: unknown) => void
-	}
 }): Promise<{
 	request: Request
 	substitutedValues: Array<string>
@@ -1291,22 +1260,7 @@ export async function expandSecretPlaceholders(input: {
 					})),
 				]
 				const before = substitutedValues.length
-				const auditedBefore = new Set(auditedPlacementKeys)
-				try {
-					await resolvePlaceholderBatch(sources)
-				} catch (error) {
-					const fallback = input.bodyFallback
-					if (!fallback || !isPlaceholderAuthorityFailure(error)) throw error
-					for (const key of auditedPlacementKeys) {
-						if (!auditedBefore.has(key)) auditedPlacementKeys.delete(key)
-					}
-					try {
-						await resolvePlaceholderBatch(sources, fallback.props)
-					} catch {
-						throw error
-					}
-					fallback.onFallback(error)
-				}
+				await resolvePlaceholderBatch(sources)
 				return substitutedValues.slice(before)
 			},
 		})
@@ -1839,4 +1793,12 @@ function buildBasicAuthHeader(input: { username: string; password: string }) {
 		`${input.username}:${input.password}`,
 	)
 	return `Basic ${bytesToBase64(credentials)}`
+}
+
+function isLoginRetryLater(error: unknown) {
+	return (
+		error instanceof CredentialLoginRetryLaterError ||
+		(error instanceof CredentialClientError &&
+			error.body.code === 'login_retry_later')
+	)
 }

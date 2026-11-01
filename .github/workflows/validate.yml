@@ -19,13 +19,11 @@ on:
       runner:
         description: >
           Runner label for every heavy Validate job on this manual run. Leave as
-          "(repo default)" to use vars.CI_RUNNER (else WarpBuild), matching
-          push/PR. Choose ubuntu-latest for a GitHub-hosted comparison. The
-          final ✅ Validate gate always runs on ubuntu-latest.
+          "(repo default)" to use vars.CI_RUNNER (else ubuntu-latest), matching
+          push/PR. The final ✅ Validate gate always runs on ubuntu-latest.
         type: choice
         options:
           - (repo default)
-          - warp-ubuntu-latest-x64-4x
           - ubuntu-latest
         default: (repo default)
       no_cache:
@@ -40,8 +38,7 @@ on:
   workflow_call:
     inputs:
       runner:
-        description:
-          Runner label (e.g. ubuntu-latest or warp-ubuntu-latest-x64-4x)
+        description: Runner label (e.g. ubuntu-latest)
         type: string
         required: false
         default: ubuntu-latest
@@ -76,11 +73,11 @@ env:
   CI: '1'
   VALIDATE_NO_CACHE: ${{ inputs.no_cache == true && 'true' || 'false' }}
   # Same expression as heavy-job runs-on. Push/PR leave inputs.runner empty and
-  # use vars.CI_RUNNER (else WarpBuild); workflow_call always sets it (default
+  # use vars.CI_RUNNER (else ubuntu-latest); workflow_call always sets it (default
   # ubuntu-latest). The final gate job ignores this and stays on ubuntu-latest.
   VALIDATE_RUNNER:
     ${{ (inputs.runner != '' && inputs.runner != '(repo default)' &&
-    inputs.runner) || vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
+    inputs.runner) || vars.CI_RUNNER || 'ubuntu-latest' }}
   VALIDATE_ITERATION: ${{ inputs.iteration || 0 }}
   NX_SKIP_NX_CACHE: ${{ inputs.no_cache == true && 'true' || '' }}
   NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN: >-
@@ -98,9 +95,10 @@ env:
 # run stays in progress and GitHub replaces the pending one with the newest
 # push; deploy.yml's sha-guard can deploy any completed run that is ahead of
 # production, though its own queue may replace an older pending deploy.
-# Runner / no_cache / iteration keep bench matrix cells and ubuntu-vs-warp
+# Runner / no_cache / iteration keep bench matrix cells and per-runner
 # dispatches from cancelling each other. The runner segment is the label
-# jobs actually use (inputs.runner, or WarpBuild when that input is absent).
+# jobs actually use (inputs.runner, or vars.CI_RUNNER / ubuntu-latest when
+# that input is absent).
 # Manual / validate-bench runs (caller event is workflow_dispatch; reusable
 # workflows inherit that name, not workflow_call) also key on run_id so two
 # overlapping uncached benches on the same runner do not cancel matching
@@ -109,9 +107,9 @@ concurrency:
   group: >-
     validate-${{ github.event_name }}-${{ github.event.pull_request.number ||
     github.ref }}-${{ (inputs.runner != '' && inputs.runner != '(repo default)'
-    && inputs.runner) || vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x'
-    }}-nocache-${{ inputs.no_cache || false }}-iter-${{ inputs.iteration || 0
-    }}${{ github.event_name == 'workflow_dispatch' && format('-run-{0}',
+    && inputs.runner) || vars.CI_RUNNER || 'ubuntu-latest' }}-nocache-${{
+    inputs.no_cache || false }}-iter-${{ inputs.iteration || 0 }}${{
+    github.event_name == 'workflow_dispatch' && format('-run-{0}',
     github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
@@ -123,7 +121,7 @@ jobs:
   static:
     runs-on:
       ${{ (inputs.runner != '' && inputs.runner != '(repo default)' &&
-      inputs.runner) || vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
+      inputs.runner) || vars.CI_RUNNER || 'ubuntu-latest' }}
     name: 🧹 Static
     # Rhino: ubuntu-latest reached worker-startup-time:check with about a
     # minute left of this 10-minute cap, and GitHub cancelled the profile.
@@ -335,7 +333,7 @@ jobs:
   node:
     runs-on:
       ${{ (inputs.runner != '' && inputs.runner != '(repo default)' &&
-      inputs.runner) || vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
+      inputs.runner) || vars.CI_RUNNER || 'ubuntu-latest' }}
     name: 🧪 Node (${{ matrix.shard }}/2)
     strategy:
       fail-fast: false
@@ -412,7 +410,7 @@ jobs:
   workers:
     runs-on:
       ${{ (inputs.runner != '' && inputs.runner != '(repo default)' &&
-      inputs.runner) || vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
+      inputs.runner) || vars.CI_RUNNER || 'ubuntu-latest' }}
     name: ☁️ Workers (${{ matrix.shard }}/2)
     strategy:
       fail-fast: false
@@ -545,7 +543,7 @@ jobs:
   mcp:
     runs-on:
       ${{ (inputs.runner != '' && inputs.runner != '(repo default)' &&
-      inputs.runner) || vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
+      inputs.runner) || vars.CI_RUNNER || 'ubuntu-latest' }}
     name: 🔌 MCP
     timeout-minutes: 10
     if: >-
@@ -586,7 +584,7 @@ jobs:
   e2e:
     runs-on:
       ${{ (inputs.runner != '' && inputs.runner != '(repo default)' &&
-      inputs.runner) || vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
+      inputs.runner) || vars.CI_RUNNER || 'ubuntu-latest' }}
     name: 🎭 E2E (${{ matrix.shard }}/2)
     # Each shard owns its own runner (and D1 file), so shards never share
     # SQLITE_BUSY. Keep workers: 1 inside a shard (playwright.config.ts).
@@ -743,10 +741,53 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  host_commands:
+    # ADR 0093: real daemon, workerd, and host processes on every OS.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    name: 🖥️ Host commands (${{ matrix.os }})
+    timeout-minutes: 20
+    if: >-
+      github.event_name != 'pull_request' || github.event.pull_request.draft ==
+      false
+    env:
+      KODY_SKIP_SKILL_REFRESH: '1'
+      KODY_SKIP_GIT_HELPER_REFRESH: '1'
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: 🟢 Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: 📥 Install
+        run: npm ci
+
+      - name: 🧪 Host command process manager
+        working-directory: packages/cli
+        run: ../../node_modules/.bin/tsx --test test/host-commands.test.ts
+
+      - name: 🧪 Host commands through a real daemon and workerd
+        working-directory: packages/cli
+        run: >-
+          ../../node_modules/.bin/tsx --test --test-name-pattern="commands on
+          runs a real" test/execution-context.test.ts
+
   cli:
     runs-on:
       ${{ (inputs.runner != '' && inputs.runner != '(repo default)' &&
-      inputs.runner) || vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
+      inputs.runner) || vars.CI_RUNNER || 'ubuntu-latest' }}
     name: 🧰 CLI
     timeout-minutes: 20
     if: >-
@@ -772,6 +813,9 @@ jobs:
       - name: 🧪 CLI validate
         run: npm run cli:validate
 
+      - name: Desktop validate
+        run: npm run desktop:validate
+
       - name: ⏱️ Job wall-clock
         if: always() && !cancelled()
         run: |
@@ -786,9 +830,54 @@ jobs:
             echo "- duration_seconds: **${dur}**"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  cli_windows:
+    # Windows execution contexts (kody daemon, host folders, Task Scheduler):
+    # x64 natively and Windows on Arm running the x64 workerd under emulation.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    name: 🪟 CLI (${{ matrix.runner }})
+    timeout-minutes: 30
+    if: >-
+      github.event_name != 'pull_request' || github.event.pull_request.draft ==
+      false
+    defaults:
+      run:
+        shell: bash
+    env:
+      KODY_SKIP_SKILL_REFRESH: '1'
+      KODY_SKIP_GIT_HELPER_REFRESH: '1'
+      # Package scripts use POSIX env prefixes and globs; run them in Git Bash.
+      NPM_CONFIG_SCRIPT_SHELL: C:\Program Files\Git\bin\bash.exe
+      # TAP prints each failure (and the test still running at a timeout)
+      # inline; spec only prints details after every file finishes.
+      NODE_OPTIONS: --test-reporter=tap
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: ⎔ Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: 📥 Install deps
+        run: npm ci
+
+      - name: 🧪 CLI validate
+        run: npm run cli:validate
+
+      - name: Desktop validate
+        run: npm run desktop:validate
+
   validate:
-    # Final merge gate stays on GitHub-hosted ubuntu-latest so a green
-    # ✅ Validate check does not wait on a Warp machine (~10s) for a 3–4s job.
+    # Final merge gate stays on GitHub-hosted ubuntu-latest even when
+    # vars.CI_RUNNER points heavy jobs at a different runner.
     runs-on: ubuntu-latest
     name: ✅ Validate
     timeout-minutes: 2
@@ -800,6 +889,8 @@ jobs:
       - e2e
       - e2e_report
       - cli
+      - cli_windows
+      - host_commands
     permissions:
       contents: read
       actions: read
@@ -1065,7 +1156,8 @@ jobs:
           needs.static.result == 'success' && needs.node.result == 'success' &&
           needs.workers.result == 'success' && needs.mcp.result == 'success' &&
           needs.e2e.result == 'success' && needs.e2e_report.result == 'success'
-          && needs.cli.result == 'success'
+          && needs.cli.result == 'success' && needs.cli_windows.result ==
+          'success' && needs.host_commands.result == 'success'
         run: echo "All validate jobs passed"
 
       - name: ❌ Report failures
@@ -1073,7 +1165,8 @@ jobs:
           needs.static.result != 'success' || needs.node.result != 'success' ||
           needs.workers.result != 'success' || needs.mcp.result != 'success' ||
           needs.e2e.result != 'success' || needs.e2e_report.result != 'success'
-          || needs.cli.result != 'success'
+          || needs.cli.result != 'success' || needs.cli_windows.result !=
+          'success' || needs.host_commands.result != 'success'
         run: |
           echo "static=${{ needs.static.result }}"
           echo "node=${{ needs.node.result }}"
@@ -1082,4 +1175,6 @@ jobs:
           echo "e2e=${{ needs.e2e.result }}"
           echo "e2e_report=${{ needs.e2e_report.result }}"
           echo "cli=${{ needs.cli.result }}"
+          echo "cli_windows=${{ needs.cli_windows.result }}"
+          echo "host_commands=${{ needs.host_commands.result }}"
           exit 1

@@ -39,6 +39,11 @@ When a later record changes a decision, mark the old one `superseded by NNNN`
 rather than editing or deleting it, and list it under
 [Historical / UI / implementation](#historical--ui--implementation).
 
+Keep the [primitives map](../architecture/primitives.yaml) `adrs` lists in sync
+in the same PR: add a new record to every primitive it defines or materially
+shapes, and replace a superseded record's path with the new one.
+`npm run primitives:check` fails on missing or superseded paths.
+
 Add new steering records to the steering list, not a catch-all numbered dump.
 
 ## Steering list
@@ -248,10 +253,31 @@ Open these before proposing a new primitive, surface, or storage home.
   Public by default with a create-time choice; owners toggle it; lists only
   public packages, never members; private orgs 404 like unknown handles
 - [0089: Every package declares its capabilities; publish checks the import closure](./0089-packages-declare-capabilities.md)
-- [0090: `login` credentials are Kody-managed OAuth refresh](./0090-login-credentials-are-kody-managed-oauth-refresh.md)
   `kody.capabilities` on every package; an app's effective set is its closure;
   publish and `kody dev check` warn (then fail) on unverifiable calls; runtime
   is a backstop
+- [0090: `login` credentials are Kody-managed OAuth refresh](./0090-login-credentials-are-kody-managed-oauth-refresh.md)
+  Kody holds the refresh token, runs the exchange on the host, and keeps the
+  session encrypted; code never holds a refresh or access token
+- [0091: Agents register people with auth.md `service_auth`](./0091-auth-md-service-auth-registration.md)
+  `POST /agent/identity` takes `service_auth` only; the claim mints a user-owned
+  `kody_at_` (default `long`, amends 0056); no identity assertion or JWT-bearer
+  refresh; anonymous stays behind a flag that is off
+- [0092: Profiles are scoped agent identities, capped by their parent chain](./0092-profiles-are-scoped-agent-identities.md)
+  Person-owned profiles with snapshot grants, capped at run time by the acting
+  person and every parent; no epoch bump; behind the `profiles` flag
+- [0093: Execution-context runs can run host commands after a local opt-in](./0093-execution-context-host-commands.md)
+  Off by default; only the machine turns it on, anyone with access turns it off;
+  `execution_context:command` (operator by default, shares only when granted);
+  `kody.command.*` with daemon-held background jobs; audited without env values;
+  macOS and Linux only
+- [0094: Package-app visitors sign in from limited browsers](./0094-package-app-limited-browser-sign-in.md)
+  `/login`, `/verify`, and consent work as plain HTML; "Sign in on another
+  device" reuses the 0082 device code (amends 0082)
+- [0095: A visit from another org to an internal package app bills the visiting org](./0095-cross-org-package-app-visits-bill-the-visitor-org.md)
+  Outside collaborators on an internal app pay for their metered work from their
+  personal org; the publisher keeps the worker day; public apps stay
+  publisher-paid; the billed org rides on the request, never the worker key
 
 ## Historical / UI / implementation
 

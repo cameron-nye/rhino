@@ -97,6 +97,9 @@ test('orgUpdate changes a team org display name, keeps the handle permanent, and
 		slug: 'zeta-co',
 		display_name: 'Zeta Company',
 		profile_visibility: 'public',
+		members_can_create_packages: false,
+		members_can_create_credentials: true,
+		usage_warnings: true,
 	})
 
 	await expect(
@@ -265,4 +268,166 @@ test('orgCreate defaults to a public page and accepts private; orgUpdate toggles
 			.bind(open.org.id)
 			.first(),
 	).toEqual({ profile_visibility: 'private' })
+})
+
+test('orgUpdate lets an Owner set member permissions on a team org and audits it', async () => {
+	const db = await createDb()
+	const auditDb = createAuditTestDb()
+	const env = { APP_DB: db, AUDIT_DB: auditDb } as Env
+	const ada = testStableUserIdFromEmail('ada-member-perms@example.com')
+	const bea = testStableUserIdFromEmail('bea-member-perms@example.com')
+	await db
+		.prepare(
+			`INSERT INTO users (id, username, email, password_hash, stable_user_id)
+			 VALUES (1, 'ada', 'ada-member-perms@example.com', 'x', ?)`,
+		)
+		.bind(ada)
+		.run()
+	await provisionPersonalOrg(db, { stableUserId: ada, username: 'ada' })
+	const created = await orgCreateCapability.handler(
+		{ slug: 'member-perms' },
+		{
+			env,
+			callerContext: createMcpCallerContext({
+				source: { kind: 'mcp-oauth' },
+				baseUrl: 'https://heykody.dev',
+				user: {
+					userId: personIdFromStored(ada),
+					email: 'ada-member-perms@example.com',
+					displayName: 'Ada',
+					username: 'ada',
+				},
+			}),
+		},
+	)
+	const org = { id: created.org.id, slug: 'member-perms' }
+	const updated = await orgUpdateCapability.handler(
+		{
+			members_can_create_packages: true,
+			members_can_create_credentials: false,
+		},
+		{
+			env,
+			callerContext: context({
+				db,
+				userId: ada,
+				org: { ...org, role: 'owner' },
+			}).callerContext,
+		},
+	)
+	expect(updated.org).toMatchObject({
+		members_can_create_packages: true,
+		members_can_create_credentials: false,
+	})
+	const { results } = await auditDb
+		.prepare(
+			`SELECT details_json FROM org_audit_events
+			 WHERE action = 'org.member_creation_changed'`,
+		)
+		.all<{ details_json: string }>()
+	expect(results).toHaveLength(1)
+	expect(JSON.parse(results[0]!.details_json)).toEqual({
+		members_can_create_packages: true,
+		members_can_create_credentials: false,
+		previous_members_can_create_packages: false,
+		previous_members_can_create_credentials: true,
+	})
+
+	await db
+		.prepare(
+			`INSERT INTO org_memberships (org_id, user_id, role, created_at)
+			 VALUES (?, ?, 'member', ?)`,
+		)
+		.bind(org.id, bea, new Date().toISOString())
+		.run()
+	await expect(
+		orgUpdateCapability.handler(
+			{ members_can_create_credentials: true },
+			{
+				env,
+				callerContext: context({
+					db,
+					userId: bea,
+					org: { ...org, role: 'member' },
+				}).callerContext,
+			},
+		),
+	).rejects.toThrow(/org:write/)
+
+	await expect(
+		orgUpdateCapability.handler(
+			{ members_can_create_packages: true },
+			context({
+				db,
+				userId: ada,
+				org: { id: ada, slug: 'ada', role: 'owner' },
+			}),
+		),
+	).rejects.toBeInstanceOf(McpCallerError)
+})
+
+test('orgUpdate turns usage warnings off for team and personal orgs, with an audit event', async () => {
+	const db = await createDb()
+	const auditDb = createAuditTestDb()
+	const env = { APP_DB: db, AUDIT_DB: auditDb } as Env
+	const ada = testStableUserIdFromEmail('ada-usage-warnings@example.com')
+	await db
+		.prepare(
+			`INSERT INTO users (id, username, email, password_hash, stable_user_id)
+			 VALUES (1, 'ada', 'ada-usage-warnings@example.com', 'x', ?)`,
+		)
+		.bind(ada)
+		.run()
+	await provisionPersonalOrg(db, { stableUserId: ada, username: 'ada' })
+	const team = await orgCreateCapability.handler(
+		{ slug: 'usage-warn' },
+		{
+			env,
+			callerContext: createMcpCallerContext({
+				source: { kind: 'mcp-oauth' },
+				baseUrl: 'https://heykody.dev',
+				user: {
+					userId: personIdFromStored(ada),
+					email: 'ada-usage-warnings@example.com',
+					displayName: 'Ada',
+					username: 'ada',
+				},
+			}),
+		},
+	)
+	const call = (org: { id: string; slug: string }, enabled: boolean) =>
+		orgUpdateCapability.handler(
+			{ usage_warnings: enabled },
+			{
+				env,
+				callerContext: context({
+					db,
+					userId: ada,
+					org: { ...org, role: 'owner' },
+				}).callerContext,
+			},
+		)
+	const teamOrg = { id: team.org.id, slug: 'usage-warn' }
+	expect((await call(teamOrg, false)).org).toMatchObject({
+		slug: 'usage-warn',
+		usage_warnings: false,
+	})
+	expect((await call(teamOrg, false)).org.usage_warnings).toBe(false)
+	const personalOrg = { id: ada, slug: 'ada' }
+	expect((await call(personalOrg, false)).org).toMatchObject({
+		slug: 'ada',
+		usage_warnings: false,
+	})
+	expect((await call(personalOrg, true)).org.usage_warnings).toBe(true)
+	const { results } = await auditDb
+		.prepare(
+			`SELECT org_id, details_json FROM org_audit_events
+			 WHERE action = 'org.usage_warnings_changed' ORDER BY rowid`,
+		)
+		.all<{ org_id: string; details_json: string }>()
+	expect(results.map((row) => JSON.parse(row.details_json))).toEqual([
+		{ usage_warnings: false, previous_usage_warnings: true },
+		{ usage_warnings: false, previous_usage_warnings: true },
+		{ usage_warnings: true, previous_usage_warnings: false },
+	])
 })

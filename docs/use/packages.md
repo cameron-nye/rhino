@@ -249,6 +249,23 @@ no `kind` covers any of them. A slot declared `kind: "signing"` also fills
 Slots its imports declare count too. `credential.named()` is refused. This does
 not depend on the `credential-need-enforcement` flag.
 
+Publish (and `kody dev check`) can stamp `credential` / `credentials` only where
+code calls them with a literal key. Passing the function itself around at run
+time (`const open = credential`, `fn(credential)`, `{ credential }`,
+`return credential`, a re-export) fails with "passes credential/credentials
+around instead of calling it with a literal key". Type-only uses are fine:
+`typeof credential` inside a type alias, interface, annotation, generic, or an
+`as` / `satisfies` type, `declare` statements, and `.d.ts` files are erased
+before the code runs. A runtime `typeof credential === 'function'` check is
+allowed too. For a client type, import the one Kody already declares:
+
+```ts
+import { credential, type KodyCredentialClient } from 'kody:runtime'
+
+export type LoginClient = KodyCredentialClient
+// same type: Awaited<ReturnType<typeof credential>>
+```
+
 A package with no stamp uses the unstamped path. Your own unstamped package
 needs no declarations: a package in your personal org that is not an unadopted
 Community fork and is not internet-visible. When the
@@ -312,13 +329,13 @@ await resend.fetch('/emails', { method: 'POST', body: JSON.stringify(email) })
   See the
   [local credential runtime contract](../contributing/contracts/cli-local-credential-runtime.md).
 
-#### Let app visitors use the owner's credential
+#### Publisher-supplied credentials in apps
 
 Package apps run as their runs-as person (the publisher, unless an Owner picks
 someone else); see
 [who the app runs as](../guides/package-apps.md#who-the-app-runs-as). That
 person supplies publisher credentials through `credential(key)`. Executor needs
-and `ownerCredentialForVisitors` are documented below and in
+are documented below and in
 [Credentials](../guides/credentials.md#choose-who-supplies-a-package-credential).
 
 An internet-visible app acts as its visitor for visitor-owned data: the
@@ -330,47 +347,12 @@ outside the org) fills an executor need with a credential they pick on consent
 and the app reads it with `credential.visitor(key)`. After Allow, someone
 outside the org gets a short-lived visit pass that only opens the executor
 credentials they approved; storage, capabilities and everything else still treat
-them as an anonymous visitor plus identity. A need the app fills for every
-visitor (a shared database, an email sender) opts in per slot with
-`ownerCredentialForVisitors: true`:
+them as an anonymous visitor plus identity.
 
-```json
-{
-	"kody": {
-		"credentials": {
-			"rooms-db": {
-				"kind": "secret",
-				"provider": "rooms-db",
-				"description": "Database the room chart reads for every visitor.",
-				"ownerCredentialForVisitors": true
-			}
-		}
-	}
-}
-```
-
-- The flag takes only `true`; omit it for per-visitor resolution (default).
-  There is no package-wide switch. Package imports keep the flag from the
-  package that declares each need.
-- It changes the capability fingerprint, so adding it to an internet-visible
-  package pauses the publish and asks the owner to approve again. The approval
-  page says on that credential that visitors can use it through the app, signed
-  out or signed in as someone else, without seeing its value.
-- In the app's own run, `credential(key)` / `credentials(key)` for that need
-  resolve as the person who approved the capability set, with the role they hold
-  in the org now, like a trigger acts as its enabler. That applies only while
-  the app is internet-visible and serves the approved commit, and only to the
-  credentials the approval listed for that need. A private app, or a commit that
-  is not the approved one, opens the need as the visitor like any other. When
-  the need now resolves to a credential the approval did not list (say, after
-  remapping it), or the approver left the org or their account is suspended or
-  deleted, it fails with `credential_denied` until an owner approves again.
-- Everything else in the run still acts as the visitor: other needs,
-  placeholders (`{{secret:NAME}}`), and the app's own sign-in checks.
-- Each use by someone other than the approver is rate-limited per app credential
-  (every non-owner viewer shares one budget), and fails with
-  `credential_rate_limited` past it. Its `credential.resolve` row in the org
-  activity log names the app, the approver, and the visitor (or `anonymous`).
+`ownerCredentialForVisitors: true` still parses on a need as a legacy alias for
+`supplier: "publisher"`. Omit it on new packages. A visitor who needs their own
+credential should declare a `kody.app.visitorNeeds` entry and open it with
+`credential.visitor(need)`.
 
 To list credential references that match the detect-only scan, run
 `repoRunChecks`. Its `credentials` result lists each file with the codemod 0010
@@ -599,7 +581,8 @@ still cannot read that secret, including by passing the declaring package's id
 to `kody.packageSecretGet` / `Has`. See
 [Package approval](./secrets-and-values.md#package-approval). Publish and save
 warn when a package fills a user credential whose `allowed_packages` list is
-non-empty and does not include that package.
+non-empty and does not include that package, because Kody denies that use at
+runtime for every package, including ones you authored or adopted.
 
 ### Ambient `storage` is not a `kody:runtime` export
 
@@ -1170,6 +1153,62 @@ search, and `package:{package-name}` entity detail surface a **Fork outdated** /
 absorb next step. Full workflow:
 [Public packages → Forking a listing](./community-packages.md#forking-a-listing).
 
+## Package size limits and `.kodyignore`
+
+Publish and `kody dev check` run the same checks (including lint, bundle
+validation, and typecheck) in the same kind of throwaway isolate with the same
+limits, so a dev check result is the best predictor of a publish:
+
+| Limit                                     | Value                       |
+| ----------------------------------------- | --------------------------- |
+| Files under the source root               | 2,000                       |
+| Total bytes under the source root         | 15 MiB                      |
+| Any single file                           | 10 MiB                      |
+| Checked-out tree for `git push` publishes | 32 MiB                      |
+| JS/TS source scanned in the main isolate  | 256 KiB (more gets its own) |
+
+Each check isolate also has a fixed memory and CPU budget. When a step runs out,
+the error names the step (cloning, reading the source tree, the credential stamp
+scan, package checks, lint, bundle validation, typecheck, finalizing, or the
+artifact rebuild), what to shrink, and the largest files under the source root
+that runtime code does not import. Memory and CPU use vary a little between runs
+(garbage collection timing and other work sharing the isolate), so a tree close
+to the limit can pass one attempt and fail the next. Shrink what the checks read
+rather than retrying. A `git push` publish clones only the commit it publishes
+(plus the history it needs to confirm a fast-forward), so a long history does
+not count against the check budget.
+
+To keep fixtures, generated data, notes, or other non-runtime files in the repo
+without paying for them at publish, list them in a `.kodyignore` file at the
+package source root (next to `package.json`). It uses `.gitignore` syntax:
+
+```gitignore
+fixtures/
+docs/drafts/
+*.generated.ts
+!src/schema.generated.ts
+**/__tests__/
+!types/__tests__/
+```
+
+Matching files are never read by the publish checks (credential scan, lint,
+typecheck, bundle validation), do not count toward the source limits above, and
+are left out of the published snapshot. They are still part of the git tree, so
+they still count toward the 32 MiB checked-out tree cap for `git push`
+publishes; move very large files out of the repo instead. `package.json` and
+`.kodyignore` itself are always kept. Ignoring a file that runtime code imports
+fails bundle validation, so `.kodyignore` cannot hide code that runs. Kody does
+not read `package.json` `files`, because that field usually describes an npm
+build output that Kody does not publish.
+
+Broad patterns also match declaration files: `**/__tests__/` hides
+`types/__tests__/*.d.ts` too, and the typecheck then runs without those types.
+The typecheck result warns when `.kodyignore` hides `.d.ts` files that
+`tsconfig.json` or a `/// <reference>` may rely on. Re-include them with a
+negation after the broader pattern, as in the last line above. As in
+`.gitignore`, a file inside an excluded directory cannot be re-included on its
+own, so negate the directory (`!types/__tests__/`), not just the file.
+
 ## Author a saved package via direct git push
 
 Saved package source is backed by a Cloudflare Artifacts git repository. You can
@@ -1188,45 +1227,6 @@ into pointers for you. The Artifacts remote itself also fails pushes above
 roughly 32 MiB of pack content with a raw HTTP 413 before Kody is involved, so
 oversized files can fail at `git push` with an unhelpful error even before
 publish checks run.
-
-### Package size limits and `.kodyignore`
-
-Publish and `kody dev check` run the same checks under the same limits, so a dev
-check pass predicts the publish checks:
-
-| Limit                                     | Value                       |
-| ----------------------------------------- | --------------------------- |
-| Files under the source root               | 2,000                       |
-| Total bytes under the source root         | 15 MiB                      |
-| Any single file                           | 10 MiB                      |
-| Checked-out tree for `git push` publishes | 32 MiB                      |
-| JS/TS source scanned in the main isolate  | 256 KiB (more gets its own) |
-
-Each check isolate also has a fixed memory and CPU budget. When a step runs out,
-the error names the step (cloning, reading the source tree, the credential stamp
-scan, package checks, lint, bundle validation, typecheck, finalizing, or the
-artifact rebuild) and what to shrink.
-
-To keep fixtures, generated data, notes, or other non-runtime files in the repo
-without paying for them at publish, list them in a `.kodyignore` file at the
-package source root (next to `package.json`). It uses `.gitignore` syntax:
-
-```gitignore
-fixtures/
-docs/drafts/
-*.generated.ts
-!src/schema.generated.ts
-```
-
-Matching files are never read by the publish checks (credential scan, lint,
-typecheck, bundle validation), do not count toward the source limits above, and
-are left out of the published snapshot. They are still part of the git tree, so
-they still count toward the 32 MiB checked-out tree cap for `git push`
-publishes; move very large files out of the repo instead. `package.json` and
-`.kodyignore` itself are always kept. Ignoring a file that runtime code imports
-fails bundle validation, so `.kodyignore` cannot hide code that runs. Kody does
-not read `package.json` `files`, because that field usually describes an npm
-build output that Kody does not publish.
 
 1. Mint a short-lived remote credential:
 

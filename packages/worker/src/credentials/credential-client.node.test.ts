@@ -1,12 +1,5 @@
-import { DatabaseSync } from 'node:sqlite'
-import {
-	ownerIdFromStored,
-	personalOrgId,
-	personIdFromStored,
-	type OwnerId,
-} from '@kody-internal/shared/owner-person-ids.ts'
+import { personalOrgId } from '@kody-internal/shared/owner-person-ids.ts'
 import { type McpCallerContext } from '@kody-internal/shared/chat.ts'
-import { type OrgRole } from '@kody-internal/shared/request-context.ts'
 import { expect, test, vi } from 'vitest'
 import { executeGatewayFetch } from '#mcp/fetch-gateway.ts'
 import { credentialClientHintHeaderName } from '#mcp/credential-client-gateway.ts'
@@ -21,21 +14,8 @@ import { runWithCurrentSecretAuthority } from '#mcp/secrets/secret-authority.ts'
 import { createCapabilityProxyCredentialClientTools } from '#worker/open-api/capability-proxy.ts'
 import { type ApiInvocationContext } from '#worker/open-api/context.ts'
 import { signLocalExecutePackageBinding } from '#worker/package-runtime/local-execute-package-binding.ts'
-import { saveSecret } from '#mcp/secrets/service.ts'
-import { upsertGrant } from '#worker/orgs/access-writes.ts'
-import { createOrganization } from '#worker/orgs/create-organization.ts'
-import { provisionPersonalOrg } from '#worker/orgs/provision.ts'
-import { insertSavedPackage } from '#worker/package-registry/repo.ts'
 import { deriveRequestContext } from '#worker/request-context/request-context.ts'
-import { applyAllMigrations } from '#worker/test-support/apply-all-migrations.ts'
 import { consoleError } from '#worker/test-support/console-spies.ts'
-import {
-	createAuditTestDb,
-	createTestOrgAuditWriter,
-} from '#worker/test-support/create-audit-db.ts'
-import { createD1FromSqlite } from '#worker/test-support/create-d1-from-sqlite.ts'
-import { testStableUserIdFromEmail } from '#worker/test-support/stable-user-id.ts'
-import { createInMemoryUserMeterEnv } from '#worker/test-support/user-meter.ts'
 import * as usageModule from '#worker/usage/record-usage.ts'
 import { credentialClientHeaderName } from './credential-client-header.ts'
 import {
@@ -53,7 +33,6 @@ import {
 	openCredentialClient,
 	openCredentialClients,
 	validateCredentialCallMap,
-	type CredentialClientContext,
 } from './credential-client.ts'
 import {
 	buildWriteCredentialMappingStatement,
@@ -63,9 +42,18 @@ import {
 	runCredentialMappingWrite,
 } from './credential-mappings.ts'
 import * as needsClosure from './credential-needs-closure.ts'
-import { type CredentialNeed } from './credential-needs.ts'
-import { ownerCredentialForVisitorsRateLimitConfig } from './owner-credential-for-visitors.ts'
-import { insertPackageCapabilityApproval } from '#worker/package-capabilities/capability-approvals-repo.ts'
+import {
+	type CredentialNeed,
+	type SavedCredentialNeed,
+} from './credential-needs.ts'
+
+import {
+	createCredentialClientFixtures,
+	mockNeeds,
+	now,
+	rejection,
+	resendKey,
+} from '#worker/test-support/credential-client-fixtures.ts'
 
 // These cases cover fills the owner has opted in to; enforcement of the
 // opt-in itself is covered in fill-placement-enforcement.node.test.ts.
@@ -100,224 +88,7 @@ vi.mock(
 		),
 )
 
-const now = '2026-10-12T00:00:00.000Z'
-const resendKey = 're_live_secret_value_123'
-
-async function setup() {
-	const sqlite = new DatabaseSync(':memory:')
-	applyAllMigrations(sqlite, new URL('../../migrations/', import.meta.url))
-	const db = createD1FromSqlite(sqlite)
-	const auditDb = createAuditTestDb()
-	const env = {
-		APP_DB: db,
-		AUDIT_DB: auditDb,
-		...createInMemoryUserMeterEnv().env,
-		COOKIE_SECRET: 'test-cookie-secret',
-		SECRET_STORE_KEY: 'test-secret-store-key-32-chars-minimum',
-	} as unknown as Env
-	const people = Object.fromEntries(
-		(['ann', 'bea'] as const).map((username) => {
-			const stableUserId = testStableUserIdFromEmail(`${username}@example.com`)
-			return [
-				username,
-				{ stableUserId, personId: personIdFromStored(stableUserId) },
-			]
-		}),
-	) as Record<
-		'ann' | 'bea',
-		{ stableUserId: string; personId: ReturnType<typeof personIdFromStored> }
-	>
-	for (const [username, person] of Object.entries(people)) {
-		await provisionPersonalOrg(db, {
-			stableUserId: person.stableUserId,
-			username,
-			createdAt: now,
-		})
-	}
-	// Bea owns Acme; Ann is a member.
-	const created = await createOrganization(
-		db,
-		{} as Pick<Env, 'BUNDLE_ARTIFACTS_KV'>,
-		{
-			personId: people.bea.personId,
-			audit: createTestOrgAuditWriter(),
-			slug: 'acme-clients',
-			displayName: 'Acme',
-		},
-	)
-	if (!created.ok) throw new Error(created.error)
-	const acme = await db
-		.prepare(`SELECT id FROM orgs WHERE slug = 'acme-clients'`)
-		.first<{ id: string }>()
-	const acmeId = ownerIdFromStored(acme!.id)
-	await db
-		.prepare(
-			`INSERT INTO org_memberships (org_id, user_id, role, created_at)
-			 VALUES (?, ?, 'member', ?)`,
-		)
-		.bind(acmeId, people.ann.stableUserId, now)
-		.run()
-	const storeKey = async (input: {
-		ownerId?: OwnerId
-		name: string
-		value?: string
-		provider?: string | null
-		hosts?: Array<string>
-		inject?: unknown
-		placement?: unknown
-	}) => {
-		const ownerId = input.ownerId ?? acmeId
-		await saveSecret({
-			env,
-			userId: ownerId,
-			scope: 'user',
-			name: input.name,
-			value: input.value ?? resendKey,
-			audit: null,
-		})
-		const row = await db
-			.prepare(
-				`UPDATE secret_entries
-				SET kind = 'secret', provider = ?, allowed_hosts = ?, inject_json = ?
-				WHERE name = ? AND bucket_id IN (
-					SELECT id FROM secret_buckets WHERE user_id = ? AND scope = 'user'
-				)
-				RETURNING id`,
-			)
-			.bind(
-				input.provider === undefined ? 'resend' : input.provider,
-				JSON.stringify(input.hosts ?? ['api.resend.com']),
-				JSON.stringify(
-					input.inject ?? {
-						kind: 'header',
-						name: 'Authorization',
-						format: 'Bearer {value}',
-					},
-				),
-				input.name,
-				ownerId,
-			)
-			.first<{ id: string }>()
-		if (input.placement !== undefined) {
-			await db
-				.prepare(`UPDATE secret_entries SET placement_json = ? WHERE id = ?`)
-				.bind(JSON.stringify(input.placement), row!.id)
-				.run()
-		}
-		return row!.id
-	}
-	const savePackage = async (input: { ownerId: OwnerId; name: string }) => {
-		const packageId = crypto.randomUUID()
-		await insertSavedPackage(
-			db,
-			{
-				id: packageId,
-				user_id: input.ownerId,
-				name: input.name,
-				kody_id: input.name.split('/')[1]!,
-				description: 'test package',
-				tags_json: '[]',
-				search_text: null,
-				source_id: `source-${packageId}`,
-				has_app: 0,
-				has_skills: 0,
-				hidden: 0,
-				is_private: 1,
-				created_at: now,
-				updated_at: now,
-			},
-			null,
-			{ stamp: false },
-		)
-		return packageId
-	}
-	const requestAs = (
-		person: keyof typeof people,
-		role: OrgRole | null,
-		orgId: OwnerId = acmeId,
-	) =>
-		deriveRequestContext({
-			user: { userId: people[person].personId, username: person },
-			source: { kind: 'mcp-oauth' },
-			orgBinding: { org: { id: orgId, slug: 'acme-clients' }, role },
-		})
-	const contextFor = (input: {
-		request: ReturnType<typeof requestAs>
-		packageId?: string | null
-		binding?: string
-		credentials?: CredentialCallMapInput
-	}): CredentialClientContext => ({
-		env,
-		callerContext: {
-			baseUrl: 'https://example.com',
-			request: input.request,
-			user: null,
-		} as unknown as McpCallerContext,
-		binding: input.binding ?? 'run:test',
-		packageId: input.packageId ?? null,
-		callMap: normalizeCredentialCallMap(input.credentials),
-	})
-	const grantUse = (credentialId: string, person: keyof typeof people) =>
-		upsertGrant({
-			db,
-			orgId: acmeId,
-			resourceType: 'credential',
-			resourceId: credentialId,
-			family: 'secret',
-			subject: { type: 'user', id: people[person].stableUserId },
-			preset: 'use',
-			permissions: null,
-			createdByUserId: people.bea.stableUserId,
-			audit: createTestOrgAuditWriter(),
-		})
-	const audits = async () => {
-		await Promise.all(scheduledAudits.splice(0))
-		const { results } = await auditDb
-			.prepare(
-				`SELECT result, details_json FROM org_audit_events
-				 WHERE action = 'credential.resolve' ORDER BY rowid`,
-			)
-			.all<{ result: string; details_json: string }>()
-		return results
-	}
-	scheduledAudits.length = 0
-	return {
-		db,
-		auditDb,
-		env,
-		people,
-		acmeId,
-		storeKey,
-		savePackage,
-		requestAs,
-		contextFor,
-		grantUse,
-		audits,
-	}
-}
-
-function mockNeeds(needs: Array<Partial<CredentialNeed> & { key: string }>) {
-	return vi
-		.spyOn(needsClosure, 'loadPublishedCredentialNeeds')
-		.mockResolvedValue(
-			needs.map((need) => ({
-				kind: 'secret',
-				provider: need.key,
-				description: '',
-				multiple: false,
-				...need,
-			})),
-		)
-}
-
-async function rejection(promise: Promise<unknown>) {
-	return await promise.then(
-		() => {
-			throw new Error('Expected a rejection.')
-		},
-		(error: unknown) => error as Error & { body?: unknown },
-	)
-}
+const { setup } = createCredentialClientFixtures(scheduledAudits)
 
 test('a client opens by key with no value, and the gateway places the key by its inject on its hosts only', async () => {
 	const t = await setup()
@@ -1604,354 +1375,53 @@ test('local CapabilityProxy reads the entry mapping from the signed binding, nev
 	}
 })
 
-async function setupVisitorApp(input?: {
-	internetVisible?: boolean
-	approvedCommit?: string
-	approvedBy?: string
-	approvedCredentialIds?: (ids: { database: string }) => Array<string>
-}) {
+test('ownerCredentialForVisitors on a need grants no owner authority; the caller still resolves the credential', async () => {
 	const t = await setup()
-	let userRowId = 1
-	for (const [username, person] of Object.entries(t.people)) {
-		await t.db
-			.prepare(
-				`INSERT INTO users (id, username, email, password_hash, stable_user_id)
-				 VALUES (?, ?, ?, 'x', ?)`,
-			)
-			.bind(
-				userRowId++,
-				username,
-				`${username}@example.com`,
-				person.stableUserId,
-			)
-			.run()
-	}
-	const databaseId = await t.storeKey({
+	await t.storeKey({
 		name: 'rooms-db',
 		provider: 'database',
 		hosts: ['db.example.com'],
 	})
-	await t.storeKey({ name: 'resend-prod' })
+	const request = t.requestAs('bea', 'owner')
 	const packageId = await t.savePackage({
 		ownerId: t.acmeId,
 		name: '@acme-clients/rooms',
 	})
-	await t.db
-		.prepare(
-			`UPDATE saved_packages SET has_app = 1, is_internet_visible = ? WHERE id = ?`,
-		)
-		.bind(input?.internetVisible === false ? 0 : 1, packageId)
-		.run()
-	mockNeeds([
-		{ key: 'database', provider: 'database', ownerCredentialForVisitors: true },
-		{ key: 'resend' },
-	])
-	const approvedIds = input?.approvedCredentialIds?.({
-		database: databaseId,
-	}) ?? [databaseId]
-	await insertPackageCapabilityApproval(t.db, {
-		id: crypto.randomUUID(),
-		package_id: packageId,
-		owner_user_id: t.acmeId,
-		published_commit: input?.approvedCommit ?? 'commit-1',
-		fingerprint: 'fingerprint-1',
-		capability_set_json: JSON.stringify(
-			approvedIds.map((credentialId) => ({
-				kind: 'credential',
-				credentialId,
-				source: 'need',
-				needKey: 'database',
-				ownerCredentialForVisitors: true,
-				hosts: ['db.example.com'],
-				via: ['rooms'],
-			})),
-		),
-		dependency_snapshot_json: '{}',
-		approved_by_user_id: input?.approvedBy ?? t.people.bea.stableUserId,
-		approved_at: now,
-	})
-	const scope = { orgId: t.acmeId, packageId, publishedCommit: 'commit-1' }
-	const runNeeds = loadRunCredentialNeeds({
-		env: t.env,
-		orgId: t.acmeId,
-		packageIds: [packageId],
-	})
-	const appContext = (
-		request: ReturnType<typeof t.requestAs> | null,
-	): CredentialClientContext => ({
-		env: t.env,
+	const runNeeds = Promise.resolve(
+		new Map<string, SavedCredentialNeed>([
+			[
+				'database',
+				{
+					key: 'database',
+					kind: 'secret',
+					provider: 'database',
+					description: 'Rooms.',
+					multiple: false,
+					ownerCredentialForVisitors: true,
+				},
+			],
+		]),
+	)
+	const asOwner = {
+		...t.contextFor({ request, packageId }),
+		runNeeds: () => runNeeds,
+	}
+	await expect(
+		openCredentialClient(asOwner, { key: 'database' }),
+	).resolves.toMatchObject({ key: 'database', name: 'rooms-db' })
+	const anonymous = {
+		...t.contextFor({ request, packageId }),
 		callerContext: {
 			baseUrl: 'https://example.com',
-			request,
+			request: null,
 			user: null,
-		} as unknown as McpCallerContext,
-		binding: 'run:app',
-		packageId,
+		} as unknown as (typeof asOwner)['callerContext'],
 		runNeeds: () => runNeeds,
-		ownerCredentialScope: scope,
-	})
-	const fetchAs = (
-		request: ReturnType<typeof t.requestAs> | null,
-		token: string,
-		ownerCredentialScope: typeof scope | null = scope,
-	) =>
-		applyCredentialClient({
-			env: t.env,
-			request,
-			baseUrl: 'https://example.com',
-			packageId,
-			binding: 'run:app',
-			ownerCredentialScope,
-			token,
-			requestUrl: new URL('https://db.example.com/v1/rooms'),
-		})
-	const auditRows = async () => {
-		await Promise.all(scheduledAudits.splice(0))
-		const { results } = await t.auditDb
-			.prepare(
-				`SELECT result, actor_user_id, details_json FROM org_audit_events
-				 WHERE action = 'credential.resolve' ORDER BY rowid`,
-			)
-			.all<{
-				result: string
-				actor_user_id: string | null
-				details_json: string
-			}>()
-		return results.map((row) => ({
-			result: row.result,
-			actorUserId: row.actor_user_id,
-			details: JSON.parse(row.details_json) as Record<string, unknown>,
-		}))
 	}
-	return {
-		...t,
-		databaseId,
-		packageId,
-		scope,
-		appContext,
-		fetchAs,
-		auditRows,
-	}
-}
-
-test('an opted-in need on an approved internet-visible app resolves as its approving owner for anyone, and the viewer stays the viewer', async () => {
-	const t = await setupVisitorApp()
-	const anonymous = t.appContext(null)
-	const opened = await openCredentialClient(anonymous, { key: 'database' })
-	expect(opened).toMatchObject({
-		key: 'database',
-		name: 'rooms-db',
-		hosts: ['db.example.com'],
-	})
-	expect(JSON.stringify(opened)).not.toContain(resendKey)
-	const placed = await t.fetchAs(null, opened.handle)
-	expect(placed.placement).toMatchObject({
-		kind: 'header',
-		value: `Bearer ${resendKey}`,
-	})
-
-	// Needs without the opt-in still resolve only for the viewer.
 	await expect(
-		rejection(openCredentialClient(anonymous, { key: 'resend' })),
+		rejection(openCredentialClient(anonymous, { key: 'database' })),
 	).resolves.toMatchObject({
 		body: { code: 'credential_denied' },
 		message: expect.stringContaining('no acting person'),
 	})
-	await expect(
-		rejection(openCredentialClients(anonymous, { key: 'resend' })),
-	).resolves.toMatchObject({ body: { code: 'credential_denied' } })
-	// The handle works only where the run shares owner credentials.
-	await expect(t.fetchAs(null, opened.handle, null)).rejects.toMatchObject({
-		body: { code: 'invalid_request' },
-	})
-
-	// Ann is a member with no Use on rooms-db; Bea is the approving owner.
-	const ann = t.requestAs('ann', 'member')
-	const annOpened = await openCredentialClient(t.appContext(ann), {
-		key: 'database',
-	})
-	await t.fetchAs(ann, annOpened.handle)
-	await expect(
-		openCredentialClients(t.appContext(ann), { key: 'database' }),
-	).resolves.toMatchObject([{ name: 'rooms-db' }])
-	const bea = t.requestAs('bea', 'owner')
-	const beaOpened = await openCredentialClient(t.appContext(bea), {
-		key: 'database',
-	})
-	await t.fetchAs(bea, beaOpened.handle)
-
-	const rows = await t.auditRows()
-	expect(rows.map((row) => row.result)).toEqual([
-		'success',
-		'success',
-		'success',
-	])
-	const [anonymousRow, annRow, beaRow] = rows
-	expect(anonymousRow).toMatchObject({
-		actorUserId: t.people.bea.stableUserId,
-		details: {
-			appPackageId: t.packageId,
-			ownerCredentialForVisitors: 'true',
-			credentialAuthorityUserId: t.people.bea.stableUserId,
-			viewerUserId: null,
-			viewerKind: 'anonymous',
-		},
-	})
-	expect(annRow).toMatchObject({
-		actorUserId: t.people.bea.stableUserId,
-		details: {
-			ownerCredentialForVisitors: 'true',
-			credentialAuthorityUserId: t.people.bea.stableUserId,
-			viewerUserId: t.people.ann.stableUserId,
-			viewerKind: 'person',
-		},
-	})
-	expect(beaRow?.actorUserId).toBe(t.people.bea.stableUserId)
-	expect(beaRow?.details).not.toHaveProperty('ownerCredentialForVisitors')
-	expect(beaRow?.details).not.toHaveProperty('viewerKind')
-	expect(JSON.stringify(rows)).not.toContain(resendKey)
-})
-
-test('a private app or an unapproved commit ignores the opt-in, and visitors use only what the owner approved', async () => {
-	const privateApp = await setupVisitorApp({ internetVisible: false })
-	await expect(
-		rejection(
-			openCredentialClient(privateApp.appContext(null), { key: 'database' }),
-		),
-	).resolves.toMatchObject({
-		body: { code: 'credential_denied' },
-		message: expect.stringContaining('no acting person'),
-	})
-	// Ann opens as herself, and she has no Use on rooms-db.
-	await expect(
-		rejection(
-			openCredentialClient(
-				privateApp.appContext(privateApp.requestAs('ann', 'member')),
-				{ key: 'database' },
-			),
-		),
-	).resolves.toMatchObject({ body: { code: 'credential_unbound' } })
-
-	const unapproved = await setupVisitorApp({ approvedCommit: 'commit-0' })
-	await expect(
-		rejection(
-			openCredentialClient(unapproved.appContext(null), { key: 'database' }),
-		),
-	).resolves.toMatchObject({ body: { code: 'credential_denied' } })
-
-	const unlisted = await setupVisitorApp({
-		approvedCredentialIds: () => ['some-other-credential'],
-	})
-	await expect(
-		rejection(
-			openCredentialClient(unlisted.appContext(null), { key: 'database' }),
-		),
-	).resolves.toMatchObject({
-		body: { code: 'credential_denied' },
-		message: expect.stringContaining(
-			'has not approved for this app’s visitors',
-		),
-	})
-
-	const goneApprover = await setupVisitorApp({
-		approvedBy: testStableUserIdFromEmail('gone@example.com'),
-	})
-	await expect(
-		rejection(
-			openCredentialClient(goneApprover.appContext(null), { key: 'database' }),
-		),
-	).resolves.toMatchObject({
-		body: { code: 'credential_denied' },
-		message: expect.stringContaining('can no longer use its org’s credentials'),
-	})
-})
-
-test('a suspended approver stops visitor credential use even when authority was cached', async () => {
-	const t = await setupVisitorApp()
-	const opened = await openCredentialClient(t.appContext(null), {
-		key: 'database',
-	})
-	await t.fetchAs(null, opened.handle)
-	await t.db
-		.prepare(`UPDATE users SET suspended_at = ? WHERE stable_user_id = ?`)
-		.bind(new Date().toISOString(), t.people.bea.stableUserId)
-		.run()
-	await expect(
-		rejection(t.fetchAs(null, opened.handle)),
-	).resolves.toMatchObject({
-		body: { code: 'invalid_request' },
-	})
-	await expect(
-		rejection(openCredentialClient(t.appContext(null), { key: 'database' })),
-	).resolves.toMatchObject({
-		body: { code: 'credential_denied' },
-		message: expect.stringContaining('can no longer use its org’s credentials'),
-	})
-})
-
-test('a visitor handle fails once the approval no longer lists that credential', async () => {
-	const t = await setupVisitorApp()
-	const opened = await openCredentialClient(t.appContext(null), {
-		key: 'database',
-	})
-	await t.fetchAs(null, opened.handle)
-	await t.db
-		.prepare(
-			`UPDATE package_capability_approvals
-			 SET capability_set_json = ?
-			 WHERE package_id = ? AND owner_user_id = ?`,
-		)
-		.bind(
-			JSON.stringify([
-				{
-					kind: 'credential',
-					credentialId: 'some-other-credential',
-					source: 'need',
-					needKey: 'database',
-					ownerCredentialForVisitors: true,
-					hosts: ['db.example.com'],
-					via: ['rooms'],
-				},
-			]),
-			t.packageId,
-			t.acmeId,
-		)
-		.run()
-	await expect(t.fetchAs(null, opened.handle)).rejects.toMatchObject({
-		body: { code: 'invalid_request' },
-	})
-})
-
-test('visitor use of an owner credential is rate-limited across viewers; the owner is not', async () => {
-	const t = await setupVisitorApp()
-	const original = ownerCredentialForVisitorsRateLimitConfig.maxRequests
-	ownerCredentialForVisitorsRateLimitConfig.maxRequests = 1
-	try {
-		const opened = await openCredentialClient(t.appContext(null), {
-			key: 'database',
-		})
-		await t.fetchAs(null, opened.handle)
-		await expect(
-			rejection(t.fetchAs(null, opened.handle)),
-		).resolves.toMatchObject({
-			body: { code: 'credential_rate_limited' },
-			message: expect.stringMatching(/^\[credential_rate_limited\] /),
-		})
-		// Ann shares the same visitor budget as anonymous.
-		const ann = t.requestAs('ann', 'member')
-		const annOpened = await openCredentialClient(t.appContext(ann), {
-			key: 'database',
-		})
-		await expect(
-			rejection(t.fetchAs(ann, annOpened.handle)),
-		).resolves.toMatchObject({ body: { code: 'credential_rate_limited' } })
-		const bea = t.requestAs('bea', 'owner')
-		const beaOpened = await openCredentialClient(t.appContext(bea), {
-			key: 'database',
-		})
-		await t.fetchAs(bea, beaOpened.handle)
-		await t.fetchAs(bea, beaOpened.handle)
-	} finally {
-		ownerCredentialForVisitorsRateLimitConfig.maxRequests = original
-	}
 })

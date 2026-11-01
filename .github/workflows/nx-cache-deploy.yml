@@ -31,7 +31,7 @@ jobs:
     # secrets, so a missing write token skips every step instead. Production
     # deploy also withholds this workflow when that secret is unset.
     if: github.event_name != 'workflow_dispatch' || github.ref_name == 'main'
-    runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     name: 🧊 Deploy Nx cache worker
     timeout-minutes: 8
     environment:

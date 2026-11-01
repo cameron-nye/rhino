@@ -524,6 +524,7 @@ function railLinkGroups(
 			href: item.href,
 			label: item.label,
 			icon: item.icon,
+			...(item.badge ? { badge: item.badge } : {}),
 			active: isAccountNavItemSelected(item, itemId),
 		})),
 	}))
@@ -596,6 +597,7 @@ function pageRail(input: {
 			role,
 			profileUsername: session?.username,
 			executionContexts: isFeatureFlagEnabled(session, 'execution-contexts'),
+			profiles: isFeatureFlagEnabled(session, 'profiles'),
 		}),
 	}
 }

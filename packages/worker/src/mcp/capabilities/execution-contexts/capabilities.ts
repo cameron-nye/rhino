@@ -8,8 +8,10 @@ import {
 } from '#mcp/capabilities/access/shared.ts'
 import {
 	attachContext,
+	cancelContextRun,
 	chainResponse,
 	detachContext,
+	deleteContext,
 	getContextDetail,
 	getSharing,
 	listAudit,
@@ -79,7 +81,7 @@ export const executionContextGetCapability = defineDomainCapability(domain, {
 	},
 })
 
-const grantPatchSchema = z
+export const grantPatchSchema = z
 	.object({
 		fs: z
 			.array(z.object({ path: z.string().min(1), mode: z.enum(['ro', 'rw']) }))
@@ -91,15 +93,6 @@ const grantPatchSchema = z
 				hosts: z.array(z.string().min(1)).max(64).optional(),
 				ports: z.array(z.number().int().min(1).max(65535)).max(32).optional(),
 			})
-			.optional(),
-		credentials: z
-			.union([
-				z.object({ mode: z.literal('none') }),
-				z.object({
-					mode: z.literal('list'),
-					ids: z.array(z.string().min(1)).max(64),
-				}),
-			])
 			.optional(),
 		runtime: z
 			.union([
@@ -122,9 +115,20 @@ const grantPatchSchema = z
 				maxConcurrent: z.number().int().min(1).max(16).optional(),
 			})
 			.optional(),
+		commands: z
+			.object({ enabled: z.boolean() })
+			.optional()
+			.describe(
+				'Host commands (kody.command.*). Only `{ "enabled": false }` is accepted here: it turns commands off at once. Turning them on is a local action on the machine (`kody context commands on` or the desktop app), never an API call.',
+			),
+	})
+	.loose()
+	.refine((grant) => !('credentials' in grant), {
+		message:
+			"grant.credentials was removed: every run on a context uses its requester's credentials as it would in Kody cloud. Drop the credentials field.",
 	})
 	.describe(
-		'Server-side grant. The daemon intersects it with the machine local policy, so it can only narrow what the machine allows.',
+		'Server-side grant. The daemon intersects it with the machine local policy (`kody context policy` on that machine), so it can only narrow what the machine allows. fs entries are absolute host folders with mode ro or rw; a folder is mounted at its real path only where both layers allow it, with the narrower mode, and the context offers `requires: ["fs"]` only while at least one folder is mounted.',
 	)
 
 export const executionContextUpdateCapability = defineDomainCapability(domain, {
@@ -132,7 +136,7 @@ export const executionContextUpdateCapability = defineDomainCapability(domain, {
 	contextRuns: 'deny',
 	orgPermission: 'execution_context:write',
 	description:
-		'Rename an execution context or change its grant (files, egress, credential allowlist, Kody API runtime allowlist, limits). Needs Contribute or Manage on it.',
+		"Rename an execution context or change its grant (files, egress, Kody API runtime allowlist, limits), or turn host commands off (`grant.commands.enabled: false`; turning them on happens only on the machine). Every run on a context uses its requester's credentials exactly as in Kody cloud (requests leave from Kody cloud, so values never reach the machine). Needs Contribute or Manage on it.",
 	keywords: ['execution context', 'grant', 'rename'],
 	readOnly: false,
 	idempotent: true,
@@ -169,12 +173,34 @@ export const executionContextRevokeCapability = defineDomainCapability(domain, {
 	},
 })
 
+export const executionContextDeleteCapability = defineDomainCapability(domain, {
+	name: 'executionContextDelete',
+	contextRuns: 'deny',
+	orgPermission: 'execution_context:delete',
+	description:
+		'Permanently delete a revoked execution context so it no longer appears in executionContextList. Only works after executionContextRevoke; a context that is not revoked is refused. Removes its shares, opt-ins, org attachments and chain entries. Past runs keep the machine name in their run history. Pass the ec_ id, or the name when one revoked context has it.',
+	keywords: [
+		'execution context',
+		'delete',
+		'remove',
+		'permanently delete',
+		'clean up revoked machine',
+	],
+	readOnly: false,
+	idempotent: false,
+	destructive: true,
+	inputSchema: z.object({ id: idSchema }),
+	async handler(args, ctx) {
+		return await deleteContext(await caller(ctx), args.id)
+	},
+})
+
 export const executionContextOptInCapability = defineDomainCapability(domain, {
 	name: 'executionContextOptIn',
 	contextRuns: 'deny',
 	orgPermission: 'execution_context:execute',
 	description:
-		'Opt into an execution context shared with you so your runs may execute on it. Read the returned notice: the operator can see the code, inputs, logs and results of your runs. Opting in does not add it to your chain.',
+		"Join an execution context someone shared with you (to turn the execution contexts experiment on for your account, use experimentSet instead). Opting in is consent: the operator can see the code, inputs, logs and results of your runs, and while a run is active their machine can use your credentials (GitHub, email and others you've connected) and read the responses. Credential values stay in Kody cloud. Read the returned notice. Opting in does not add it to your chain.",
 	keywords: ['execution context', 'opt in', 'join'],
 	readOnly: false,
 	idempotent: true,
@@ -227,7 +253,7 @@ export const executionContextShareSetCapability = defineDomainCapability(
 		contextRuns: 'deny',
 		orgPermission: 'execution_context:manage_access',
 		description:
-			'Share an execution context with a person (username or user_id, including outside collaborators), a team, or everyone in the org (all_members). People you share with run code on this machine after they opt in, and the operator sees their code, inputs, logs and results. Only the operator or a Manage holder may add.',
+			'Share an execution context with a person (username or user_id, including outside collaborators), a team, or everyone in the org (all_members). People you share with run code on this machine after they opt in, with their own credentials; the operator sees their code, inputs, logs and results, including responses to their credentialed requests. Only the operator or a Manage holder may add.',
 		keywords: ['execution context', 'share', 'grant'],
 		readOnly: false,
 		idempotent: true,
@@ -239,6 +265,12 @@ export const executionContextShareSetCapability = defineDomainCapability(
 			team_slug: z.string().min(1).optional(),
 			team_id: z.string().min(1).optional(),
 			preset: z.enum(['use', 'contribute', 'manage']).default('use'),
+			commands: z
+				.boolean()
+				.optional()
+				.describe(
+					"Also grant execution_context:command: this person or team may run host commands (kody.command.*) on the machine as the operator's OS user. Off by default; no preset includes it. The machine must also have commands turned on locally.",
+				),
 			all_members: z.boolean().optional(),
 		}),
 		async handler(args, ctx) {
@@ -246,6 +278,7 @@ export const executionContextShareSetCapability = defineDomainCapability(
 			const add: Array<{
 				subject: { type: 'user' | 'team'; id: string }
 				preset: 'use' | 'contribute' | 'manage'
+				commands?: boolean
 			}> = []
 			if (args.team_slug || args.team_id) {
 				add.push({
@@ -257,6 +290,7 @@ export const executionContextShareSetCapability = defineDomainCapability(
 						}),
 					},
 					preset: args.preset,
+					...(args.commands ? { commands: true } : {}),
 				})
 			} else if (args.username || args.user_id) {
 				add.push({
@@ -268,6 +302,7 @@ export const executionContextShareSetCapability = defineDomainCapability(
 						}),
 					},
 					preset: args.preset,
+					...(args.commands ? { commands: true } : {}),
 				})
 			}
 			return await setSharing(resolved, args.id, {
@@ -338,7 +373,7 @@ export const executionContextRunListCapability = defineDomainCapability(
 		contextRuns: 'allow',
 		orgPermission: 'execution_context:read',
 		description:
-			'Run history of an execution context (who, when, duration, outcome, fallback), never results. Runs that started there and failed, were lost, or were cancelled keep failureReason (a code) and errorSummary (short error text). Managers see every requester in this org; others see their own runs. Kept 30 days.',
+			'Run history of an execution context (who, when, duration, outcome, fallback, ranOn: { kind, id, name } where it ran, matching execute ranOn), never results. Runs that started there and failed, were lost, or were cancelled keep failureReason (a code) and errorSummary (short error text). Managers see every requester in this org; others see their own runs. Kept 30 days.',
 		keywords: ['execution context', 'runs', 'history'],
 		readOnly: true,
 		idempotent: true,
@@ -354,6 +389,40 @@ export const executionContextRunListCapability = defineDomainCapability(
 		async handler(args, ctx) {
 			const { id, ...rest } = args
 			return await listRuns(await caller(ctx), id, rest)
+		},
+	},
+)
+
+export const executionContextRunCancelCapability = defineDomainCapability(
+	domain,
+	{
+		name: 'executionContextRunCancel',
+		contextRuns: 'deny',
+		orgPermission: 'execution_context:execute',
+		description:
+			'Cancel a run on an execution context (a machine): a running run is stopped there and a queued one is dropped before it runs. The run ends cancelled with cancelReason "user_cancelled" in executionContextRunList and runGet. Pass the context (ec_ id or name) and the runId from execute or executionContextRunList. You can cancel your own runs; people who manage the context can cancel any run on it. A run that already ended returns cancelled: false with its state, so retrying is safe. Cloud runs cannot be cancelled. Ending the CLI or MCP call does not cancel a context run; use this.',
+		keywords: [
+			'execution context',
+			'cancel run',
+			'stop run',
+			'kill run',
+			'abort',
+		],
+		readOnly: false,
+		idempotent: true,
+		destructive: true,
+		inputSchema: z.object({
+			id: idSchema,
+			run_id: z
+				.string()
+				.min(1)
+				.max(200)
+				.describe(
+					'The runId to cancel (from execute or executionContextRunList).',
+				),
+		}),
+		async handler(args, ctx) {
+			return await cancelContextRun(await caller(ctx), args.id, args.run_id)
 		},
 	},
 )

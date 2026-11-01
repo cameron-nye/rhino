@@ -1,3 +1,4 @@
+import { type RequestContext } from '@kody-internal/shared/request-context.ts'
 import {
 	type OwnerId,
 	personIdFromStored,
@@ -24,6 +25,7 @@ import {
 import { isExternalPublishSnapshotTooLargeMessage } from '#worker/repo/external-publish-clone.ts'
 import {
 	externalPublishResourceLimitMessage,
+	isPublishComputeLimitMessage,
 	type RepoCheckStep,
 } from '#worker/repo/isolated-runner-limit-message.ts'
 import { getPackageAppBaseUrl } from '#worker/app-base-url.ts'
@@ -34,6 +36,11 @@ import {
 	packageNameLookupDescription,
 } from '#worker/package-registry/package-name.ts'
 import { authorizePackageWrite } from '#worker/authorization/authorize.ts'
+import {
+	knownUnmappableCredentials,
+	loadOnePackageUnmappableCredentials,
+	unmappableCredentialOwnerNotice,
+} from '#worker/credentials/package-unmappable-credentials.ts'
 import { resolvePublicUsername } from '#worker/identity/user-lookup.ts'
 import {
 	requireMcpRequest,
@@ -140,7 +147,13 @@ function throwIfExternalPublishResourceLimit(
 		})
 	}
 	const message = getErrorMessage(error)
-	if (isExternalPublishSnapshotTooLargeMessage(message)) {
+	// A publish step that hit the limit in its own throwaway isolate: the
+	// message already names the step and what to do, and a retry of the
+	// same tree would hit it again.
+	if (
+		isExternalPublishSnapshotTooLargeMessage(message) ||
+		isPublishComputeLimitMessage(message)
+	) {
 		throw new McpCallerError(message, { cause: error })
 	}
 }
@@ -414,7 +427,7 @@ const allowedPackagesPublishNoticeSchema = z
 	.nullable()
 	.optional()
 	.describe(
-		'Warning when this package fills a user credential whose allowed-packages list excludes it. Uses through another package or a one-off execute run are already denied; a self-authored or adopted package that runs on its own still uses the credential. Null/omitted when there is nothing to warn about. Does not block publish.',
+		'Warning when this package fills a user credential whose allowed-packages list excludes it. Kody denies those uses at runtime for every package, including self-authored and adopted ones. Null/omitted when there is nothing to warn about. Does not block publish.',
 	)
 
 const artifactsRebuiltSchema = z
@@ -453,6 +466,13 @@ export function publishTipMovedRelativeToBaseline(input: {
 const outputSchema = z.discriminatedUnion('status', [
 	z.object({
 		status: z.literal('already_published'),
+		unmappable_credentials_notice: z
+			.string()
+			.nullable()
+			.optional()
+			.describe(
+				'Set when the package has unmappable credentials: explains that changes and publishes are owner-only unless a grant allows them, and how to allow one collaborator.',
+			),
 		published_commit: z.string().nullable(),
 		artifacts_rebuilt: artifactsRebuiltSchema,
 		checks_rerun: checksRerunSchema,
@@ -517,6 +537,13 @@ const outputSchema = z.discriminatedUnion('status', [
 	}),
 	z.object({
 		status: z.literal('published'),
+		unmappable_credentials_notice: z
+			.string()
+			.nullable()
+			.optional()
+			.describe(
+				'Set when the package has unmappable credentials: explains that changes and publishes are owner-only unless a grant allows them, and how to allow one collaborator.',
+			),
 		previous_commit: z.string().nullable(),
 		published_commit: z.string(),
 		manifest: z.unknown(),
@@ -897,6 +924,7 @@ async function runExternalPublishAttempt(input: {
 	allowForce: boolean
 	destructiveOverwriteConfirmed: boolean
 	requestedByUserId: string | null
+	publisherRequest?: RequestContext | null
 	approvalViewer: ApprovalViewer | null
 	signal?: AbortSignal
 	reportProgress?: McpReportProgress
@@ -935,6 +963,7 @@ async function runExternalPublishAttempt(input: {
 				rebuildPackageArtifacts: false,
 				expectedPackageScope: input.expectedPackageScope,
 				requestedByUserId: input.requestedByUserId,
+				publisherRequest: input.publisherRequest ?? null,
 				deferBundleCheckToRebuild: true,
 			})
 			const publishMs = Date.now() - publishStartedAt
@@ -1429,6 +1458,28 @@ export const publishExternalPushCapability = defineDomainCapability(
 				{ env: ctx.env, request: ctx.callerContext.request },
 				{ id: packageId, userId, label: name },
 			)
+			const unmappable = knownUnmappableCredentials(
+				await loadOnePackageUnmappableCredentials({
+					env: ctx.env,
+					orgId: userId,
+					packageId,
+					request: ctx.callerContext.request,
+				}),
+			)
+			const unmappableNotice =
+				unmappable.length > 0
+					? unmappableCredentialOwnerNotice({
+							packageLabel: `Package "${name}"`,
+							credentials: unmappable,
+						})
+					: null
+			const withUnmappableNotice = <T extends PublishExternalPushResult>(
+				result: T,
+			): T =>
+				unmappableNotice &&
+				(result.status === 'published' || result.status === 'already_published')
+					? { ...result, unmappable_credentials_notice: unmappableNotice }
+					: result
 			const head = await resolveArtifactSourceHead(ctx.env, source.repo_id)
 			const newCommit = head.commit
 			if (!newCommit) {
@@ -1468,12 +1519,15 @@ export const publishExternalPushCapability = defineDomainCapability(
 				allowForce: args.allow_force,
 				destructiveOverwriteConfirmed: args.confirm_destructive_overwrite,
 				requestedByUserId: user.userId,
+				publisherRequest: ctx.callerContext.request ?? null,
 				approvalViewer: optionalApprovalViewerForCaller(ctx),
 				reportProgress: ctx.reportProgress,
 			}
 
 			if (!shouldEscalateExternalPublish(ctx.callerContext.executionOrigin)) {
-				return await runExternalPublishAttempt(publishInput)
+				return withUnmappableNotice(
+					await runExternalPublishAttempt(publishInput),
+				)
 			}
 
 			const semanticInput = {
@@ -1522,7 +1576,7 @@ export const publishExternalPushCapability = defineDomainCapability(
 
 			switch (outcome.kind) {
 				case 'completed':
-					return outcome.value
+					return withUnmappableNotice(outcome.value)
 				case 'dispatched':
 					return {
 						...outcome.handle,

@@ -13,6 +13,9 @@ import {
 } from '@kody-internal/shared/execution-context-protocol/index.ts'
 import testKeys from '@kody-internal/shared/execution-context-protocol/vectors/test-keys.json'
 import { consoleError } from '#worker/test-support/console-spies.ts'
+import { ownerIdFromStored } from '@kody-internal/shared/owner-person-ids.ts'
+import { beginRunRecord, getRunRecord } from '#worker/run-records/service.ts'
+import { type RunRecordHandle } from '#worker/run-records/types.ts'
 import {
 	ExecutionContextSessionV1,
 	type ExecutionContextLease,
@@ -62,16 +65,23 @@ async function connect(ecid: string, hello: Record<string, unknown> = {}) {
 			inbox.push(decodeEnvelopePayload(envelope.p) as EcpFramePayload)
 		for (const wake of waiters.splice(0)) wake()
 	})
+	// 100 × 50ms (~5s) timed out under full validate / CI workerd load while
+	// isolation stayed green (#4469, #4477, #4484). Stay under the workers-unit
+	// 40s test budget so a slow first `run.request` is not a false flake.
+	const frameWaitMs = 30_000
 	const next = async (type: string) => {
-		for (let i = 0; i < 100; i++) {
+		const deadline = Date.now() + frameWaitMs
+		for (;;) {
 			const found = inbox.findIndex((frame) => frame.t === type)
 			if (found >= 0) return inbox.splice(found, 1)[0]!
+			if (Date.now() >= deadline) {
+				throw new Error(`no ${type} frame`)
+			}
 			await new Promise<void>((resolve) => {
 				waiters.push(resolve)
 				setTimeout(resolve, 50)
 			})
 		}
-		throw new Error(`no ${type} frame`)
 	}
 	const welcome = await next('welcome')
 	const key = await importEd25519PrivateKey(contextJwk)
@@ -107,7 +117,7 @@ async function connect(ecid: string, hello: Record<string, unknown> = {}) {
 	// Sending a WebSocket frame does not wait for its async signature check.
 	// Dispatch only after the session has processed hello and accepts runs.
 	await expect
-		.poll(() => stub.getStatus())
+		.poll(() => stub.getStatus(), { timeout: frameWaitMs })
 		.toMatchObject({
 			online: true,
 			acceptingRuns: true,
@@ -122,7 +132,6 @@ function lease(ecid: string, runId: string): ExecutionContextLease {
 		requester: { userId: 'user_requester', handle: 'requester' },
 		orgId: 'org_test',
 		callerScopes: null,
-		credentialIds: [],
 		runtime: { mode: 'all' },
 		deadline: Date.now() + 60_000,
 		sharedRun: true,
@@ -275,7 +284,7 @@ test('two-phase dispatch: accept, commit, result, then per-hop authorization end
 		outcome: 'succeeded',
 	})
 	expect(JSON.stringify(history)).not.toContain('export default')
-})
+}, 60_000)
 
 test('API-token and MCP runs carry the API origin the daemon connected through, not the app origin', async () => {
 	const ecid = 'ec_api_origin'
@@ -325,7 +334,7 @@ test('a reject falls through, and cancel and revocation end leases', async () =>
 		{ runId: 'run_r', code: 'busy' },
 		{ re: request.seq },
 	)
-	expect(await rejected).toEqual({ outcome: 'rejected', code: 'busy' })
+	expect(await rejected).toEqual({ outcome: 'busy' })
 
 	const committed = stub.dispatch({
 		request: runRequest('run_c'),
@@ -379,6 +388,35 @@ test('a reject falls through, and cancel and revocation end leases', async () =>
 		).ok,
 	).toBe(false)
 	ws.close()
+}, 60_000)
+
+test('runs awaiting the daemon hold a slot, so a third concurrent dispatch at maxConcurrent 2 is busy', async () => {
+	const ecid = 'ec_slots'
+	const { stub, next, send } = await connect(ecid)
+	const dispatch = (runId: string) =>
+		stub.dispatch({
+			request: runRequest(runId),
+			lease: lease(ecid, runId),
+			runRecord: null,
+			position: 1,
+		})
+	const first = dispatch('run_1')
+	const second = dispatch('run_2')
+	const firstRequest = await next('run.request')
+	const secondRequest = await next('run.request')
+	expect(await dispatch('run_3')).toEqual({ outcome: 'busy' })
+	await send(
+		'run.reject',
+		{ runId: 'run_1', code: 'busy' },
+		{ re: firstRequest.seq },
+	)
+	await send(
+		'run.reject',
+		{ runId: 'run_2', code: 'busy' },
+		{ re: secondRequest.seq },
+	)
+	expect(await first).toEqual({ outcome: 'busy' })
+	expect(await second).toEqual({ outcome: 'busy' })
 })
 
 test('a replayed or out-of-order frame closes the socket, and an unsigned ping with a payload is refused', async () => {
@@ -396,7 +434,10 @@ test('history purges a requester and keeps nothing but metadata', async () => {
 	const stub = env.EXECUTION_CONTEXT_SESSION.get(
 		env.EXECUTION_CONTEXT_SESSION.idFromName('ec_purge'),
 	)
-	await stub.issueConnectTicket({ snapshot: snapshot('ec_purge'), nonce: 'p1' })
+	await stub.issueConnectTicket({
+		snapshot: snapshot('ec_purge'),
+		nonce: 'p1',
+	})
 	await stub.dispatch({
 		request: runRequest('run_p'),
 		lease: lease('ec_purge', 'run_p'),
@@ -555,6 +596,9 @@ test('history keeps a failure reason and error summary for failed, cancelled and
 	await commit('run_cancelled')
 	await stub.cancel({ runId: 'run_cancelled', reason: 'caller_cancelled' })
 	await commit('run_lost')
+	// With the daemon still connected a late alarm cancels; gone, it is lost.
+	ws.close()
+	await expect.poll(() => stub.getStatus()).toMatchObject({ online: false })
 	await runInDurableObject(stub, async (instance, state) => {
 		state.storage.sql.exec(
 			`UPDATE runs SET deadline = ? WHERE run_id = 'run_lost'`,
@@ -603,7 +647,6 @@ test('history keeps a failure reason and error summary for failed, cancelled and
 			orgId: 'org_test',
 		}),
 	).toBeNull()
-	ws.close()
 }, 60_000)
 
 test('a run that never started here is not returned as a started run', async () => {
@@ -628,6 +671,110 @@ test('a run that never started here is not returned as a started run', async () 
 		}),
 	).toBeNull()
 })
+
+test('a deadline stop is a cancel with cancelReason deadline and completes the main run record', async () => {
+	const ecid = 'ec_deadline'
+	const { stub, next, send } = await connect(ecid)
+	const userId = 'user_requester'
+	const pending: Array<Promise<unknown>> = []
+	const handleFor = () =>
+		beginRunRecord({
+			env,
+			userId: ownerIdFromStored(userId),
+			context: {
+				surface: 'execute',
+				name: null,
+				idempotencyKey: `key-${crypto.randomUUID()}`,
+				startedBy: {
+					userId,
+					username: 'requester',
+					client: 'cli',
+					label: 'example-token',
+				},
+			},
+			waitUntil: (promise) => {
+				pending.push(promise)
+			},
+		})
+	const commit = async (runId: string, handle: RunRecordHandle | null) => {
+		const dispatching = stub.dispatch({
+			request: runRequest(runId),
+			lease: lease(ecid, runId),
+			runRecord: handle,
+			position: 1,
+		})
+		const request = await next('run.request')
+		await send('run.accept', { runId }, { re: request.seq })
+		expect((await dispatching).outcome).toBe('committed')
+		await next('run.commit')
+	}
+
+	const local = handleFor()
+	await commit('run_local_deadline', local)
+	await send('run.result', {
+		runId: 'run_local_deadline',
+		isError: true,
+		content: [
+			{ type: 'text', text: 'Local execute was cancelled before it finished.' },
+		],
+		structuredContent: {
+			error: 'Local execute was cancelled before it finished.',
+		},
+		cancelReason: 'deadline',
+	})
+	await next('run.result.ack')
+
+	const server = handleFor()
+	await commit('run_server_deadline', server)
+	await runInDurableObject(stub, async (instance, state) => {
+		state.storage.sql.exec(
+			`UPDATE runs SET deadline = ? WHERE run_id = 'run_server_deadline'`,
+			Date.now() - 10_000,
+		)
+		await instance.alarm()
+	})
+	expect((await next('run.cancel')).body).toMatchObject({
+		runId: 'run_server_deadline',
+		reason: 'deadline',
+	})
+	await drainWaitUntil(pending)
+
+	const rows = new Map(
+		(await stub.listHistory({})).rows.map((row) => [row.runId, row]),
+	)
+	for (const runId of ['run_local_deadline', 'run_server_deadline']) {
+		expect(rows.get(runId)).toMatchObject({
+			outcome: 'cancelled',
+			cancelReason: 'deadline',
+			failureReason: 'deadline',
+			errorSummary: 'The run was cancelled (deadline).',
+		})
+	}
+	expect(
+		await stub.awaitResult({ runId: 'run_local_deadline', waitMs: 0 }),
+	).toEqual({ state: 'cancelled', reason: 'deadline' })
+
+	for (const handle of [local, server]) {
+		if (!handle) throw new Error('run record handle')
+		const record = await getRunRecord({
+			env,
+			userId: ownerIdFromStored(userId),
+			runId: handle.id,
+		})
+		expect(record?.run).toMatchObject({
+			id: handle.id,
+			status: 'error',
+			idempotencyKey: handle.context.idempotencyKey,
+			startedBy: { userId, username: 'requester', client: 'cli' },
+			errorMessage: 'The run was cancelled (deadline).',
+		})
+		expect(record?.run.finishedAt).toEqual(expect.any(String))
+	}
+})
+
+async function drainWaitUntil(pending: Array<Promise<unknown>>) {
+	while (pending.length > 0) await pending.shift()
+}
 
 test('a live session reports when it last heard from the daemon', async () => {
 	const before = Date.now()
@@ -730,3 +877,249 @@ test('an older daemon that omits heldRuns leaves committed runs to the alarm', a
 	).toEqual({ state: 'pending' })
 	second.ws.close()
 }, 60_000)
+
+test('an overdue run with no daemon connected is rechecked before it would be lost', async () => {
+	const ecid = 'ec_overdue_recheck'
+	const { stub, next, send, ws } = await connect(ecid)
+	const dispatching = stub.dispatch({
+		request: runRequest('run_overdue'),
+		lease: lease(ecid, 'run_overdue'),
+		runRecord: null,
+		position: 1,
+	})
+	const request = await next('run.request')
+	await send('run.accept', { runId: 'run_overdue' }, { re: request.seq })
+	expect((await dispatching).outcome).toBe('committed')
+	await next('run.commit')
+	ws.close()
+	await expect.poll(() => stub.getStatus()).toMatchObject({ online: false })
+
+	await runInDurableObject(stub, async (instance, state) => {
+		state.storage.sql.exec(
+			`UPDATE runs SET deadline = ? WHERE run_id = 'run_overdue'`,
+			Date.now() - 10_000,
+		)
+		const before = Date.now()
+		await instance.alarm()
+		const row = state.storage.sql
+			.exec<{
+				state: string
+			}>(`SELECT state FROM runs WHERE run_id = 'run_overdue'`)
+			.one()
+		expect(row.state).toBe('committed')
+		const alarm = await state.storage.getAlarm()
+		expect(alarm).not.toBeNull()
+		expect(alarm ?? 0).toBeLessThanOrEqual(before + 6_000)
+	})
+})
+
+test('dispatching a run that is already committed leaves the live run alone', async () => {
+	const ecid = 'ec_redispatch_committed'
+	// One slot, so the live run fills the context.
+	const { stub, next, send } = await connect(ecid, {
+		status: { acceptingRuns: true, running: 0, maxConcurrent: 1 },
+	})
+	const first = stub.dispatch({
+		request: runRequest('run_dup'),
+		lease: lease(ecid, 'run_dup'),
+		runRecord: null,
+		position: 1,
+	})
+	const request = await next('run.request')
+	await send('run.accept', { runId: 'run_dup' }, { re: request.seq })
+	expect(await first).toEqual({ outcome: 'committed' })
+	await next('run.commit')
+
+	// A queue drain that restarts before deleting its row dispatches the same
+	// run again. It must not re-offer, abort, or overwrite the committed run.
+	expect(
+		await stub.dispatch({
+			request: runRequest('run_dup'),
+			lease: lease(ecid, 'run_dup'),
+			runRecord: null,
+			position: 1,
+		}),
+	).toEqual({ outcome: 'committed' })
+
+	await send('run.result', {
+		runId: 'run_dup',
+		isError: false,
+		content: [{ type: 'text', text: '1' }],
+		structuredContent: { result: 1 },
+	})
+	await next('run.result.ack')
+	expect(
+		await stub.awaitResult({ runId: 'run_dup', waitMs: 1000 }),
+	).toMatchObject({ state: 'succeeded' })
+}, 60_000)
+
+test('a person cancels their own running run with user_cancelled, and only theirs', async () => {
+	const ecid = 'ec_user_cancel'
+	const { stub, next, send } = await connect(ecid)
+	const userId = 'user_requester'
+	const pending: Array<Promise<unknown>> = []
+	const handle = beginRunRecord({
+		env,
+		userId: ownerIdFromStored(userId),
+		context: {
+			surface: 'execute',
+			name: null,
+			idempotencyKey: `key-${crypto.randomUUID()}`,
+			startedBy: {
+				userId,
+				username: 'requester',
+				client: 'cli',
+				label: 'example-token',
+			},
+		},
+		waitUntil: (promise) => {
+			pending.push(promise)
+		},
+	})
+	const dispatching = stub.dispatch({
+		request: runRequest('run_user_cancel'),
+		lease: lease(ecid, 'run_user_cancel'),
+		runRecord: handle,
+		position: 1,
+	})
+	const request = await next('run.request')
+	await send('run.accept', { runId: 'run_user_cancel' }, { re: request.seq })
+	expect((await dispatching).outcome).toBe('committed')
+	await next('run.commit')
+
+	expect(
+		await stub.cancelRunFor({
+			runId: 'run_user_cancel',
+			orgId: 'org_test',
+			requesterUserId: 'user_someone_else',
+		}),
+	).toEqual({ status: 'not_found' })
+	expect(
+		await stub.cancelRunFor({
+			runId: 'run_user_cancel',
+			orgId: 'org_other',
+		}),
+	).toEqual({ status: 'not_found' })
+
+	expect(
+		await stub.cancelRunFor({
+			runId: 'run_user_cancel',
+			orgId: 'org_test',
+			requesterUserId: userId,
+		}),
+	).toEqual({ status: 'cancelled', queued: false, requesterUserId: userId })
+	expect((await next('run.cancel')).body).toMatchObject({
+		runId: 'run_user_cancel',
+		reason: 'user_cancelled',
+	})
+	expect(
+		await stub.cancelRunFor({ runId: 'run_user_cancel', orgId: 'org_test' }),
+	).toEqual({ status: 'finished', state: 'cancelled' })
+	await drainWaitUntil(pending)
+
+	const row = (await stub.listHistory({})).rows.find(
+		(entry) => entry.runId === 'run_user_cancel',
+	)
+	expect(row).toMatchObject({
+		outcome: 'cancelled',
+		cancelReason: 'user_cancelled',
+		failureReason: 'user_cancelled',
+		errorSummary: 'The run was cancelled (user_cancelled).',
+	})
+	if (!handle) throw new Error('run record handle')
+	const record = await getRunRecord({
+		env,
+		userId: ownerIdFromStored(userId),
+		runId: handle.id,
+	})
+	expect(record?.run).toMatchObject({
+		status: 'error',
+		errorMessage: 'The run was cancelled (user_cancelled).',
+	})
+})
+
+test('cancelling a queued run drops it before it runs', async () => {
+	const ecid = 'ec_user_cancel_queued'
+	const stub = env.EXECUTION_CONTEXT_SESSION.get(
+		env.EXECUTION_CONTEXT_SESSION.idFromName(ecid),
+	)
+	await stub.issueConnectTicket({
+		snapshot: snapshot(ecid),
+		nonce: crypto.randomUUID(),
+	})
+	await stub.enqueue({
+		request: runRequest('run_queued_cancel'),
+		lease: lease(ecid, 'run_queued_cancel'),
+		runRecord: null,
+		requires: [],
+		position: 1,
+		expiresAt: Date.now() + 60_000,
+	})
+	expect(
+		await stub.cancelRunFor({
+			runId: 'run_queued_cancel',
+			orgId: 'org_test',
+			requesterUserId: 'user_someone_else',
+		}),
+	).toEqual({ status: 'not_found' })
+	expect(await stub.listQueued()).toHaveLength(1)
+	expect(
+		await stub.cancelRunFor({
+			runId: 'run_queued_cancel',
+			orgId: 'org_test',
+			requesterUserId: 'user_requester',
+		}),
+	).toEqual({
+		status: 'cancelled',
+		queued: true,
+		requesterUserId: 'user_requester',
+	})
+	expect(await stub.listQueued()).toEqual([])
+	expect(
+		await stub.cancelRunFor({ runId: 'run_queued_cancel', orgId: 'org_test' }),
+	).toEqual({ status: 'not_found' })
+})
+
+test('a queued run whose earlier attempt was refused can still be cancelled', async () => {
+	const ecid = 'ec_user_cancel_retry'
+	const stub = env.EXECUTION_CONTEXT_SESSION.get(
+		env.EXECUTION_CONTEXT_SESSION.idFromName(ecid),
+	)
+	await stub.issueConnectTicket({
+		snapshot: snapshot(ecid),
+		nonce: crypto.randomUUID(),
+	})
+	await stub.enqueue({
+		request: runRequest('run_queued_retry'),
+		lease: lease(ecid, 'run_queued_retry'),
+		runRecord: null,
+		requires: [],
+		position: 1,
+		expiresAt: Date.now() + 60_000,
+	})
+	await runInDurableObject(stub, async (_instance, state) => {
+		state.storage.sql.exec(
+			`INSERT INTO runs (run_id, state, lease_json, deadline, accept_by, created_at)
+			 VALUES ('run_queued_retry', 'rejected', ?, ?, ?, ?)`,
+			JSON.stringify(lease(ecid, 'run_queued_retry')),
+			Date.now() + 60_000,
+			Date.now(),
+			Date.now(),
+		)
+	})
+	expect(
+		await stub.cancelRunFor({
+			runId: 'run_queued_retry',
+			orgId: 'org_test',
+			requesterUserId: 'user_requester',
+		}),
+	).toEqual({
+		status: 'cancelled',
+		queued: true,
+		requesterUserId: 'user_requester',
+	})
+	expect(await stub.listQueued()).toEqual([])
+	expect(
+		await stub.cancelRunFor({ runId: 'run_queued_retry', orgId: 'org_test' }),
+	).toEqual({ status: 'finished', state: 'rejected' })
+})

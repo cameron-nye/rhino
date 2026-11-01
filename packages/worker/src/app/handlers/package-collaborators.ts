@@ -10,6 +10,7 @@ import {
 } from '#mcp/capabilities/access/package-collaborators.ts'
 import { type CapabilityContext } from '#mcp/capabilities/types.ts'
 import { createMcpCallerContext } from '#mcp/context.ts'
+import { describeCollaboratorUnmappableCredentials } from '#mcp/capabilities/access/unmappable-credential-warnings.ts'
 import { getAppBaseUrl } from '#worker/app-base-url.ts'
 import {
 	AuthorizationError,
@@ -20,6 +21,8 @@ import {
 import { operationResult } from '../operation-result.ts'
 import { getInviteById } from '#worker/orgs/access-writes.ts'
 import { isPersonalOrg } from '#worker/orgs/is-personal-org.ts'
+import { isProfilesEnabledFor } from '#worker/profiles/flag.ts'
+import { listGrantableProfiles } from '#worker/profiles/package-grants.ts'
 import {
 	listPackageCollaborators,
 	listPendingPackageInvites,
@@ -32,6 +35,7 @@ import {
 	type PackageCollaboratorInviteCreated,
 	readPackageCollaboratorInvitee,
 	packageCollaboratorInviteeLabel,
+	type PackageCollaboratorPermission,
 	type PackageCollaboratorPreset,
 	type PackageCollaboratorSubjectType,
 } from '#universal/package-collaborators.ts'
@@ -43,7 +47,13 @@ export type CollaboratorsScope = {
 	org: OrgBinding['org']
 	orgSlug: string
 	personal: boolean
-	savedPackage: { id: string; kodyId: string; name: string }
+	savedPackage: {
+		id: string
+		kodyId: string
+		name: string
+		hasApp: boolean
+		internetVisible: boolean
+	}
 }
 
 /**
@@ -109,6 +119,8 @@ export async function loadCollaboratorsScope(input: {
 				id: savedPackage.id,
 				kodyId: savedPackage.kodyId,
 				name: savedPackage.name,
+				hasApp: savedPackage.hasApp,
+				internetVisible: savedPackage.isInternetVisible,
 			},
 		},
 	}
@@ -119,17 +131,42 @@ async function buildCollaboratorsView(
 ): Promise<PackageCollaboratorsView> {
 	const db = scope.ctx.env.APP_DB
 	const target = { db, orgId: scope.org.id, packageId: scope.savedPackage.id }
-	const [listed, invites] = await Promise.all([
+	const viewerId = scope.ctx.callerContext.request?.actor?.userId ?? null
+	const [listed, invites, profileOptions] = await Promise.all([
 		listPackageCollaborators(target),
 		scope.personal ? listPendingPackageInvites(target) : Promise.resolve([]),
+		viewerId && (await isProfilesEnabledFor(db, viewerId, scope.org.id))
+			? listGrantableProfiles({
+					db,
+					orgId: scope.org.id,
+					actingUserId: viewerId,
+				})
+			: Promise.resolve(null),
 	])
+	const request = scope.ctx.callerContext.request
+	const access = request
+		? await computeEffectivePermissions({ env: scope.ctx.env, request })
+		: null
+	const described = await describeCollaboratorUnmappableCredentials({
+		env: scope.ctx.env,
+		orgId: scope.org.id,
+		packageId: scope.savedPackage.id,
+		packageName: scope.savedPackage.name,
+		collaborators: listed.collaborators,
+		viewerIsOwner: access?.isOwner ?? false,
+		request,
+	})
 	return {
 		ok: true,
 		package: scope.savedPackage,
 		org: { slug: scope.orgSlug, personal: scope.personal },
-		collaborators: listed.collaborators,
+		collaborators: described.collaborators,
+		unmappableCredentials: described.unmappableCredentials,
 		invites,
-		options: listed.options,
+		options: {
+			...listed.options,
+			...(profileOptions ? { profiles: profileOptions } : {}),
+		},
 	}
 }
 
@@ -171,20 +208,37 @@ export function grantPackageCollaborator(
 	input: CollaboratorsInput & {
 		subjectType: PackageCollaboratorSubjectType
 		subjectId: string
-		preset: PackageCollaboratorPreset
+		preset?: PackageCollaboratorPreset | null
+		permissions?: Array<PackageCollaboratorPermission>
+		allowUnmappableCredentialChanges?: boolean
 	},
 ) {
 	return changeCollaborator(input, async (scope) => {
 		const { ctx, savedPackage } = scope
-		await setPackageCollaboratorAccess(
+		const { warnings } = await setPackageCollaboratorAccess(
 			{
 				package_id: savedPackage.id,
 				...subjectSelector(scope, input.subjectType, input.subjectId),
-				preset: input.preset,
+				...presetOrPermissionsArgs(input),
+				...(input.allowUnmappableCredentialChanges === undefined
+					? {}
+					: {
+							allow_changes_despite_unmappable_credentials:
+								input.allowUnmappableCredentialChanges,
+						}),
 			},
 			ctx,
 		)
+		return { warnings }
 	})
+}
+function presetOrPermissionsArgs(input: {
+	preset?: PackageCollaboratorPreset | null
+	permissions?: Array<PackageCollaboratorPermission>
+}) {
+	return input.preset
+		? { preset: input.preset }
+		: { permissions: [...(input.permissions ?? [])] }
 }
 function subjectSelector(
 	scope: CollaboratorsScope,
@@ -196,6 +250,8 @@ function subjectSelector(
 			return { team_id: subjectId }
 		case 'user':
 			return { user_id: subjectId }
+		case 'profile':
+			return { profile_id: subjectId }
 		case 'org':
 			if (scope.personal || subjectId !== scope.org.id) {
 				throw new CollaboratorChangeRefused(
@@ -238,7 +294,8 @@ function requirePersonalOrg(scope: CollaboratorsScope) {
 export function createPackageCollaboratorInvite(
 	input: CollaboratorsInput & {
 		invitee: string
-		preset: PackageCollaboratorPreset
+		preset?: PackageCollaboratorPreset | null
+		permissions?: Array<PackageCollaboratorPermission>
 	},
 ) {
 	return changeCollaborator(input, async (scope) => {
@@ -249,19 +306,22 @@ export function createPackageCollaboratorInvite(
 				...readPackageCollaboratorInvitee(input.invitee),
 				resource_type: 'package',
 				resource_id: scope.savedPackage.id,
-				preset: input.preset,
+				...presetOrPermissionsArgs(input),
 			},
 			scope.ctx,
 		)
 		return {
-			id: created.invite.id,
-			expiresAt: created.invite.expires_at,
-			inviteeLabel: packageCollaboratorInviteeLabel({
-				inviteeEmail: created.invite.invitee_email,
-				inviteeUsername: created.invite.invitee_username,
-			}),
-			preset: input.preset,
-			prompt: created.prompt,
+			invite: {
+				id: created.invite.id,
+				expiresAt: created.invite.expires_at,
+				inviteeLabel: packageCollaboratorInviteeLabel({
+					inviteeEmail: created.invite.invitee_email,
+					inviteeUsername: created.invite.invitee_username,
+				}),
+				preset: input.preset ?? null,
+				prompt: created.prompt,
+			},
+			warnings: created.warnings,
 		}
 	})
 }
@@ -294,15 +354,19 @@ export function revokePackageCollaboratorInvite(
 
 async function changeCollaborator(
 	input: CollaboratorsInput,
-	apply: (
-		scope: CollaboratorsScope,
-	) => Promise<PackageCollaboratorInviteCreated | void>,
+	apply: (scope: CollaboratorsScope) => Promise<{
+		invite?: PackageCollaboratorInviteCreated
+		warnings?: Array<string>
+	} | void>,
 ) {
 	const loaded = await authorizedScope(input)
 	if (loaded.error) return loaded.error
-	let invite: PackageCollaboratorInviteCreated | void
+	let applied: {
+		invite?: PackageCollaboratorInviteCreated
+		warnings?: Array<string>
+	} | void
 	try {
-		invite = await apply(loaded.scope)
+		applied = await apply(loaded.scope)
 	} catch (error) {
 		if (error instanceof CollaboratorChangeRefused)
 			return operationResult(
@@ -315,8 +379,10 @@ async function changeCollaborator(
 			return operationResult({ ok: false as const, error: error.message }, 400)
 		throw error
 	}
-	const result: PackageCollaboratorsWriteResult = invite
-		? { ok: true, invite }
-		: { ok: true }
+	const result: PackageCollaboratorsWriteResult = {
+		ok: true,
+		...(applied?.invite ? { invite: applied.invite } : {}),
+		...(applied?.warnings?.length ? { warnings: applied.warnings } : {}),
+	}
 	return operationResult(result)
 }

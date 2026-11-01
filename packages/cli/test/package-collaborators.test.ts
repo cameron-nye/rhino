@@ -238,6 +238,8 @@ test('kody package grant and revoke call the package-scoped routes with --org', 
 				'kody_at_test',
 				'--api-url',
 				'https://api.kody.codes',
+				'--mcp-url',
+				'https://package-collaborators.test/mcp',
 			],
 			{
 				stdout: (text) => {
@@ -277,4 +279,204 @@ test('kody package grant and revoke call the package-scoped routes with --org', 
 		globalThis.fetch = previousFetch
 		clearOpenApiRouteCache()
 	}
+})
+
+test('kody package grant --user adds an outside collaborator with Read', async () => {
+	clearOpenApiRouteCache()
+	const previousFetch = globalThis.fetch
+	const calls: Array<string> = []
+	const outside = collaborator({
+		grant_id: 'grant-outside',
+		kind: 'outside',
+		username: 'dana',
+		display_name: null,
+		preset: 'read',
+		permissions: ['package:read'],
+	})
+	globalThis.fetch = (async (
+		input: Parameters<typeof fetch>[0],
+		init?: RequestInit,
+	) => {
+		const url = new URL(String(input))
+		const method = (init?.method ?? 'GET').toUpperCase()
+		const json = (body: unknown) =>
+			new Response(JSON.stringify(body), {
+				status: 200,
+				headers: { 'content-type': 'application/json' },
+			})
+		if (url.pathname === '/openapi.json') {
+			return json({
+				paths: {
+					'/v1/packages/{package_id}/collaborators': {
+						post: { operationId: 'packageCollaboratorSet' },
+					},
+				},
+			})
+		}
+		calls.push(
+			`${method} ${url.pathname}${url.search} ${typeof init?.body === 'string' ? init.body : ''}`.trim(),
+		)
+		return json({ package: pkg, collaborator: outside })
+	}) as typeof fetch
+	try {
+		let stdout = ''
+		let stderr = ''
+		const code = await runCli(
+			[
+				'package',
+				'grant',
+				'@acme/release-notes',
+				'--user',
+				'@dana',
+				'--preset',
+				'read',
+				'--token',
+				'kody_at_test',
+				'--api-url',
+				'https://api.kody.codes',
+				'--mcp-url',
+				'https://package-collaborators.test/mcp',
+			],
+			{
+				stdout: (text) => {
+					stdout += text
+				},
+				stderr: (text) => {
+					stderr += text
+				},
+			},
+		)
+		assert.equal(code, 0, stderr)
+		assert.match(stdout, /@dana now has read on @acme\/release-notes/)
+		assert.deepEqual(calls, [
+			'POST /v1/packages/%40acme%2Frelease-notes/collaborators {"username":"dana","preset":"read"}',
+		])
+	} finally {
+		globalThis.fetch = previousFetch
+		clearOpenApiRouteCache()
+	}
+})
+
+test('grant parses the unmappable-credential allow flags; revoke rejects them', () => {
+	assert.deepEqual(
+		parsePackageCollaboratorCommand({
+			action: 'grant',
+			positionals: ['release-notes'],
+			values: {
+				user: 'bob',
+				preset: 'contribute',
+				'allow-changes-despite-unmappable-credentials': true,
+			},
+		}),
+		{
+			action: 'grant',
+			packageId: 'release-notes',
+			subject: { kind: 'user', username: 'bob' },
+			preset: 'contribute',
+			allowUnmappableCredentialChanges: true,
+		},
+	)
+	assert.equal(
+		(
+			parsePackageCollaboratorCommand({
+				action: 'grant',
+				positionals: ['release-notes'],
+				values: {
+					team: 'writers',
+					'disallow-changes-despite-unmappable-credentials': true,
+				},
+			}) as { allowUnmappableCredentialChanges?: boolean }
+		).allowUnmappableCredentialChanges,
+		false,
+	)
+	assert.throws(
+		() =>
+			parsePackageCollaboratorCommand({
+				action: 'grant',
+				positionals: ['release-notes'],
+				values: {
+					user: 'bob',
+					'allow-changes-despite-unmappable-credentials': true,
+					'disallow-changes-despite-unmappable-credentials': true,
+				},
+			}),
+		/only one of/,
+	)
+	assert.throws(
+		() =>
+			parsePackageCollaboratorCommand({
+				action: 'revoke',
+				positionals: ['release-notes'],
+				values: {
+					user: 'bob',
+					'allow-changes-despite-unmappable-credentials': true,
+				},
+			}),
+		/only for grant/,
+	)
+})
+
+test('grant sends the allow option and prints share-time warnings; the list prints the owner notice', async () => {
+	const sent: Array<Record<string, unknown>> = []
+	const warning =
+		'Package "@acme/release-notes" has unmappable credentials: "Prod DB" (need "rooms-db"). Anyone who can change or publish its code could make the package\'s code use them however they like.'
+	const call = async (operationId: string, params: Record<string, unknown>) => {
+		sent.push({ operationId, ...params })
+		if (operationId === 'packageCollaboratorSet') {
+			return {
+				package: pkg,
+				collaborator: collaborator({ preset: 'contribute' }),
+				warnings: [warning],
+			}
+		}
+		return {
+			package: pkg,
+			collaborators: [
+				collaborator({
+					preset: 'contribute',
+					unmappable_credential_warning: warning,
+				}),
+			],
+			unmappable_credentials: {
+				notice:
+					'This package has unmappable credentials. Changes are owner-only.',
+			},
+		}
+	}
+	const text = await runPackageCollaboratorPlan({
+		plan: {
+			action: 'grant',
+			packageId: 'pkg-1',
+			subject: { kind: 'user', username: 'bob' },
+			preset: 'contribute',
+			allowUnmappableCredentialChanges: true,
+		},
+		call,
+		json: false,
+	})
+	assert.equal(sent[0]?.allow_changes_despite_unmappable_credentials, true)
+	assert.match(text, /now has contribute/)
+	assert.match(text, /Warning: .*"Prod DB"/)
+	const list = await runPackageCollaboratorPlan({
+		plan: { action: 'collaborators', packageId: 'pkg-1' },
+		call,
+		json: false,
+	})
+	assert.match(list, /Notice: This package has unmappable credentials/)
+	assert.match(list, /changes locked: unmappable credentials/)
+	const json = await runPackageCollaboratorPlan({
+		plan: {
+			action: 'grant',
+			packageId: 'pkg-1',
+			subject: { kind: 'user', username: 'bob' },
+			preset: 'contribute',
+		},
+		call,
+		json: true,
+	})
+	assert.deepEqual(JSON.parse(json).warnings, [warning])
+	assert.equal(
+		'allow_changes_despite_unmappable_credentials' in sent[2]!,
+		false,
+	)
 })

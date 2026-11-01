@@ -241,6 +241,20 @@ inspect the relevant saved package with **`entity: "package:{package-name}"`**.
 Capability detail includes a complete **execute** module snippet; the runtime
 call itself is always through the imported `kody` object.
 
+## Execution contexts
+
+By default execute runs on Kody cloud. With the execution contexts experiment
+on, it can run on your own machine instead: pass `context` (with optional
+`fallback: "chain"`), a per-run `chain`, or `requires: ["fs" | "lan"]`, or let
+your default chain decide. Every routed result carries `ranOn`. `workerUnits` is
+0 on a context and, on Kody cloud, 1 only the first time that worker runs that
+UTC day. An in-progress cloud response omits `workerUnits`. `runGet`
+`metadata.ranOn` does not include it. Credentials stay in Kody cloud. See the
+[Execution contexts guide](../guides/execution-contexts.md) and the
+[field reference](./execution-contexts.md); turn the experiment on at
+[`/account/experiments`](https://kody.codes/account/experiments) or with
+`experimentSet`.
+
 ## Saved packages
 
 Saved packages, package jobs, and one-off **execute** code share the same
@@ -342,11 +356,11 @@ For dedicated inspection, use:
 
 - **`storageExport`** — export one storage bucket as JSON (`page_size` max 1000)
 - **`storageQuery`** — run SQL against one storage bucket (read-only by default,
-  opt into writes explicitly). Package-bucket ids still require `package:write`
-  (connection-profile write), including for SELECT inspection. Returns at most
-  1000 rows and sets `truncated: true` when more matched — same cap as
-  `sql(...)`. `warning` is set when the scan examines at least 1,000,000 rows.
-  The read is allowed and metered until 1,000,000,000 rows, then it stops.
+  opt into writes explicitly). Package-bucket ids still require `package:write`,
+  including for SELECT inspection. Returns at most 1000 rows and sets
+  `truncated: true` when more matched — same cap as `sql(...)`. `warning` is set
+  when the scan examines at least 1,000,000 rows. The read is allowed and
+  metered until 1,000,000,000 rows, then it stops.
 
 Both are scoped to the caller. Code running as a saved package (invocations,
 jobs, and package apps) may name only buckets that package owns — its own
@@ -375,7 +389,9 @@ limit, current usage, upgrade hint). Daily quota denials add compact `used` and
 
 Dynamic Worker identity for an execute run follows the acting user and that
 module graph. The same user and graph reuse one isolate for the UTC day when
-only `params` or `packageContext` change. The cost model is documented once in
+only `params` or `packageContext` change. Billing counts your code and modules
+only, so a Kody deploy never bills unchanged code a second time the same day.
+The cost model is documented once in
 [Platform efficiency](../guides/platform-efficiency.md).
 
 For memory mutations, the workflow is explicit and strict:

@@ -25,6 +25,12 @@ import { type readAuthenticatedAppUser } from '#app/authenticated-user.ts'
 import { buildConnectOauthNextSteps } from '#worker/integrations/connect-oauth-next-steps.ts'
 import { operationResult } from '#app/operation-result.ts'
 import {
+	authorizeSecret,
+	authorizeSecretSet,
+	type SecretAuthorizationContext,
+} from '#mcp/capabilities/secrets/authorize-secret.ts'
+import { AuthorizationError } from '#worker/authorization/authorize.ts'
+import {
 	canonicalIntegrationName,
 	integrationConfigSchema,
 	normalizeIntegrationConfig,
@@ -117,6 +123,7 @@ import {
 import { listSavedPackagesByUserId } from '#worker/package-registry/repo.ts'
 import { ownerIdFromCaller } from '#worker/request-context/owner-id.ts'
 import {
+	requireWebsitePermission,
 	requireWebsiteIntegrationPermission,
 	requireWebsiteOauthAppConnectAccess,
 } from '#app/handlers/website-integration-access.ts'
@@ -1244,6 +1251,77 @@ function readTokenField(
 	return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
+type WebsiteUser = NonNullable<
+	Awaited<ReturnType<typeof readAuthenticatedAppUser>>
+>
+
+function websiteSecretAuthorization(input: {
+	env: Env
+	user: WebsiteUser
+}): SecretAuthorizationContext {
+	return {
+		env: input.env,
+		callerContext: { request: input.user.request, user: input.user.mcpUser },
+	}
+}
+
+/** Runs the shared credential checks; a denial becomes a 403 result. */
+async function refuseUnauthorized(check: () => Promise<void>) {
+	try {
+		await check()
+		return null
+	} catch (error) {
+		if (!(error instanceof AuthorizationError)) throw error
+		return operationResult({ ok: false, error: credentialDenial(error) }, 403)
+	}
+}
+
+function credentialDenial(error: AuthorizationError) {
+	const access = error.permission === 'secret:delete' ? 'Delete' : 'Write'
+	return `You need ${access} on this credential to do that. Ask an org Owner for ${access} on it. Nothing was changed.`
+}
+
+/**
+ * Approving hosts or packages widens where a credential's value can go, so it
+ * needs Write on every credential it changes, checked by the same
+ * `authorizeSecret` the capabilities use. A bulk approval with any credential
+ * lacking Write is refused whole. Personal-org owners hold Write on their own.
+ */
+async function refuseApprovalWithoutWrite(input: {
+	env: Env
+	user: NonNullable<Awaited<ReturnType<typeof readAuthenticatedAppUser>>>
+	names: ReadonlyArray<string>
+	scope: SecretScope
+	storageContext: StorageContext | null
+}) {
+	const ctx = websiteSecretAuthorization(input)
+	const denied: Array<string> = []
+	for (const name of input.names) {
+		try {
+			await authorizeSecret(ctx, 'secret:write', {
+				name,
+				scope: input.scope,
+				storageContext: input.storageContext,
+			})
+		} catch (error) {
+			if (!(error instanceof AuthorizationError)) throw error
+			denied.push(name)
+		}
+	}
+	if (denied.length === 0) return null
+	const list = denied.map((name) => `"${name}"`).join(', ')
+	return operationResult(
+		{
+			ok: false,
+			error:
+				input.names.length === 1
+					? `You need Write on the credential ${list} to approve this. Ask an org Owner for Write on it. Nothing was changed.`
+					: `You need Write on every listed credential to approve this, and you don't have it on ${list}. Ask an org Owner for Write on ${denied.length === 1 ? 'it' : 'them'}. Nothing was changed.`,
+		},
+		403,
+	)
+}
+
 async function handleApprovalAction(input: {
 	request: Request
 	refresh: SecretRefresh
@@ -1334,6 +1412,14 @@ async function handleApprovalAction(input: {
 						404,
 					)
 				}
+				const refused = await refuseApprovalWithoutWrite({
+					env: input.env,
+					user: input.user,
+					names: updates.map((update) => update.name),
+					scope: 'user',
+					storageContext: null,
+				})
+				if (refused) return refused
 				if (updates.length > 0) {
 					await setSecretsAllowedPackages({
 						env: input.env,
@@ -1388,6 +1474,14 @@ async function handleApprovalAction(input: {
 				if (!secret) {
 					return operationResult({ ok: false, error: 'Secret not found.' }, 404)
 				}
+				const refused = await refuseApprovalWithoutWrite({
+					env: input.env,
+					user: input.user,
+					names: [approval.name],
+					scope: approval.scope,
+					storageContext: approval.storageContext,
+				})
+				if (refused) return refused
 				await setSecretAllowedPackages({
 					env: input.env,
 					audit: orgAuditWriterFromRequest(input.env, input.user.request),
@@ -1439,6 +1533,14 @@ async function handleApprovalAction(input: {
 				if (!secret) {
 					return operationResult({ ok: false, error: 'Secret not found.' }, 404)
 				}
+				const refused = await refuseApprovalWithoutWrite({
+					env: input.env,
+					user: input.user,
+					names: [approval.name],
+					scope: approval.scope,
+					storageContext: approval.storageContext,
+				})
+				if (refused) return refused
 				await setSecretAllowedHosts({
 					env: input.env,
 					audit: orgAuditWriterFromRequest(input.env, input.user.request),
@@ -1515,6 +1617,14 @@ async function handleApprovalAction(input: {
 						404,
 					)
 				}
+				const refused = await refuseApprovalWithoutWrite({
+					env: input.env,
+					user: input.user,
+					names: updates.map((update) => update.name),
+					scope: approval.scope,
+					storageContext: approval.storageContext,
+				})
+				if (refused) return refused
 				if (updates.length > 0) {
 					await setSecretsAllowedHosts({
 						env: input.env,
@@ -1744,6 +1854,38 @@ export async function saveAccountSecret(input: {
 		currentSecret != null &&
 		currentSecret.scope === scope &&
 		(currentSecret.packageId ?? null) === (packageId ?? null)
+	const refused = await refuseUnauthorized(async () => {
+		const ctx = websiteSecretAuthorization(input)
+		if (currentSecret) {
+			const current = {
+				name: currentSecret.name,
+				scope: currentSecret.scope,
+				storageContext: getSecretContextForAccountSecret(currentSecret),
+			}
+			await authorizeSecret(ctx, 'secret:write', current)
+			if (!samePlacement) await authorizeSecret(ctx, 'secret:delete', current)
+		}
+	})
+	if (refused) return refused
+	// A same-placement rename keeps the credential id, so Write is enough.
+	// A new credential or a move lands at a free name, which needs Create.
+	if (!currentSecret || !samePlacement) {
+		await requireWebsitePermission({
+			user: input.user,
+			permission: 'secret:create',
+			action: 'add credentials',
+			check: () =>
+				authorizeSecretSet(websiteSecretAuthorization(input), {
+					name,
+					scope,
+					storageContext: getSecretContextForAccountSecret({
+						scope,
+						packageId,
+					}),
+				}),
+		})
+	}
+
 	const nameChanged = currentSecret != null && currentSecret.name !== name
 	// Same-scope renames (including Henry → henry) update the row in place so
 	// the credential id and opt-in kind stay put. Scope/package moves still use
@@ -2182,9 +2324,23 @@ export async function deleteAccountSecret(input: {
 	}
 
 	const secret = parseAccountSecretId(currentId)
-	if (!secret || secret.scope === 'session') {
+	// Authorization trims names, so a padded id must not reach the exact-name write.
+	if (
+		!secret ||
+		secret.scope === 'session' ||
+		secret.name !== secret.name.trim()
+	) {
 		return operationResult({ ok: false, error: 'Invalid secret id.' }, 400)
 	}
+
+	const refused = await refuseUnauthorized(() =>
+		authorizeSecret(websiteSecretAuthorization(input), 'secret:delete', {
+			name: secret.name,
+			scope: secret.scope,
+			storageContext: getSecretContextForAccountSecret(secret),
+		}),
+	)
+	if (refused) return refused
 
 	const deleted = await deleteSecret({
 		env: input.env,
@@ -2216,9 +2372,23 @@ export async function disconnectAccountSecret(input: {
 	}
 
 	const secret = parseAccountSecretId(currentId)
-	if (!secret || secret.scope === 'session') {
+	// Authorization trims names, so a padded id must not reach the exact-name write.
+	if (
+		!secret ||
+		secret.scope === 'session' ||
+		secret.name !== secret.name.trim()
+	) {
 		return operationResult({ ok: false, error: 'Invalid secret id.' }, 400)
 	}
+
+	const refused = await refuseUnauthorized(() =>
+		authorizeSecret(websiteSecretAuthorization(input), 'secret:write', {
+			name: secret.name,
+			scope: secret.scope,
+			storageContext: getSecretContextForAccountSecret(secret),
+		}),
+	)
+	if (refused) return refused
 
 	const disconnected = await disconnectSecret({
 		env: input.env,

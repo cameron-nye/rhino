@@ -113,22 +113,15 @@ credential-need enforcement does not limit (`secretJwtSign`,
 later, and whether or not credential-need enforcement is on, until the owner
 approves going public again (turn internet-visible off, then on).
 
-## Owner credentials for visitors
+## Publisher-supplied credentials in apps
 
-A visitor's run has no org access, so a `kody.credentials` need that sets
-`ownerCredentialForVisitors: true` resolves its `credential(key)` clients with a
-credential authority instead
-(`packages/worker/src/credentials/owner-credential-for-visitors.ts`): the person
-who approved the latest capability set, with their live role in the org. It
-needs the app to be internet-visible and the run to serve that approval's
-commit, and it uses only the credential ids the approval lists for that need
-(`visitorCredentialIdsByNeedKey`). Opted-in candidates are separate entries in
-the capability set and enter the fingerprint, so opting in requires a new
-approval. The bridge passes `ownerCredentialScope` (org, app package, commit) to
-the credential client tools and the fetch gateway; the viewer stays the run's
-identity for everything else. Non-owner use is rate-limited and audited with the
-viewer. See the
-[ADR 0068 amendment](./decisions/0068-credentials-own-placement-scoped-clients.md#amendment-2026-10-16-owner-credentials-for-app-visitors).
+Package apps resolve publisher-supplied `kody.credentials` needs as the
+publisher (ADR 0068). In a package-app visitor run, executor-supplied needs use
+the visitor's pick via `credential.visitor`; direct and trigger runs keep their
+existing resolution order. `ownerCredentialForVisitors: true` still parses as a
+leftover alias for `supplier: "publisher"` and stays in the capability
+fingerprint so existing approvals stay stable. Omit it on new packages. See
+[Packages](../use/packages.md#publisher-supplied-credentials-in-apps).
 
 ## ADR 0001 exception
 

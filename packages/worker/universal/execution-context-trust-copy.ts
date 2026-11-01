@@ -70,12 +70,12 @@ export function optInCopy(input: {
 	return {
 		title: `Opt into ${input.name}?`,
 		paragraphs: [
-			`Your runs will execute on ${input.name}, a machine operated by ${op}. ${op} can see the code, inputs, logs and results of your runs and the responses of credentialed requests they make. Your credential values stay on Kody.`,
+			`Your runs will execute on ${input.name}, a machine operated by ${op}. ${op} can see the code, inputs, logs and results of your runs.`,
 			`Your runs get this machine's network position and access: ${accessLine(input.grant)}.`,
-			`While your run is active, ${op}'s machine can make Kody API calls as you, within that Kody API access, and can change the results your run returns.`,
+			`While your run is active, ${op}'s machine can make Kody API calls as you (within that Kody API access), can use your credentials (GitHub, email and any others you've connected) and read the responses, and can change the results your run returns. Your credential values stay in Kody cloud and never reach the machine. Opting in is your consent to this.`,
 		],
 		lan: lanEnabled(input.grant)
-			? `Local network access is on: your runs can reach devices and services on ${op}'s local network. Requests that use your credentials still leave from Kody cloud, so ${op}'s machine never sees your credential values.`
+			? `Local network access is on: your runs can reach devices and services on ${op}'s local network.`
 			: null,
 		managersNote:
 			"Context managers see run metadata in the context's run history (who, when, duration, outcome), never results.",
@@ -141,12 +141,12 @@ export function shareCopy(input: {
 	return {
 		title: `Share ${input.name}`,
 		paragraphs: [
-			`Anyone you share with can run code on this machine (operated by ${op}) after they opt in. ${who} be able to see their code, inputs, logs, results and the responses of credentialed requests their runs make; their credential values stay on Kody.`,
+			`Anyone you share with can run code on this machine (operated by ${op}) after they opt in. ${who} be able to see their code, inputs, logs and results.`,
 			`Their runs get: ${accessLine(input.grant)}.`,
-			'While their run is active, this machine can make Kody API calls as them (within that Kody API access) and can change their results.',
+			"While their run is active, this machine can make Kody API calls as them (within that Kody API access), can use their credentials (GitHub, email and any others they've connected) and read the responses, and can change their results. Credential values stay in Kody cloud and never reach this machine.",
 		],
 		lan: lanEnabled(input.grant)
-			? "Local network access is on: their runs can reach devices and services on this machine's local network. Requests that use their credentials still leave from Kody cloud."
+			? "Local network access is on: their runs can reach devices and services on this machine's local network."
 			: null,
 		firstShareRuntimeNote:
 			"Others' runs can call no Kody APIs until you allow some.",
@@ -175,17 +175,16 @@ export function registerCopy(input: { orgSlug: string | null }): RegisterCopy {
 			'npm install -g @kodycodes/cli',
 			'kody login',
 			input.orgSlug
-				? `kody context register --name my-machine --org ${input.orgSlug}`
-				: 'kody context register --name my-machine',
-			'kody daemon',
+				? `kody connect --name my-machine --org ${input.orgSlug}`
+				: 'kody connect --name my-machine',
 		],
 		trust: [
 			'Code sent to this context runs on that machine, under the account that runs kody daemon.',
-			'It starts as Only me. If you share it, the people you share it with run code on that machine, and you can see their code, inputs, logs, results and the responses of credentialed requests their runs make. Their credential values stay on Kody.',
+			'It starts as Only me. Your runs on it use your credentials as in Kody cloud: those requests leave from Kody cloud, so the values never reach that machine. Its Kody API allowlist can narrow what runs there may call. If you share it, the people who opt in run code on that machine with their own credentials, and you can see their code, inputs, logs and results, including responses to their credentialed requests. Their runs cannot start workflows there, and Kody APIs kept for Kody cloud refuse them.',
 			'What it exposes (files, local network, internet) is set on the machine; the CLI prints it.',
 		],
 		after:
-			'It appears here within a few seconds, marked Not in any chain. Add it to your chain to start using it, or share it.',
+			'kody connect registers the machine and offers to install kody daemon as a background service (Linux, macOS, and Windows), so it keeps running after reboots and crashes. Check it with kody daemon status. If you skip that, run kody daemon in a terminal or kody daemon install later. It appears here within a few seconds, marked Not in any chain. Add it to your chain to start using it, or share it.',
 		login:
 			'If your Kody login predates execution context permissions, registering fails and tells you to run `kody login` again first. Other logins keep working as they are.',
 	}

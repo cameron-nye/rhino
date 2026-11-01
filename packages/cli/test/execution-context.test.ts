@@ -1,4 +1,13 @@
 import assert from 'node:assert/strict'
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import {
 	ecpPingFrame,
@@ -20,12 +29,16 @@ import {
 	registerContext,
 } from '../src/execution-context/client.js'
 import { runExecutionContextCommand } from '../src/execution-context/commands.js'
+import { effectiveFs } from '../src/execution-context/fs-access.js'
+import { HostCommands } from '../src/execution-context/host-commands.js'
+import { runContextRun } from '../src/execution-context/run-executor.js'
 import {
 	abortableDelay,
 	frameRejectedCloseCode,
 	heartbeatTimeoutCloseCode,
 	runDaemon,
 	runDaemonConnection,
+	type ContextRunExecutor,
 	runRequestRefusal,
 	runScopedFetch,
 	welcomeTimeoutCloseCode,
@@ -593,6 +606,74 @@ test('a socket that answers pings stays connected until shutdown', async () => {
 	ServerSocket.answerPings = false
 })
 
+test('a run the local deadline stops reports cancelReason deadline, not a code error', async () => {
+	SilentSocket.instances = []
+	const runId = 'run_deadline'
+	const { signed, serverKeys } = await serverFrames([
+		welcome,
+		{
+			t: 'run.request',
+			body: {
+				runId,
+				deadline: Date.now() + 50,
+				acceptBy: Date.now() + 5_000,
+				requestedBy: { userId: 'user_requester', handle: 'requester' },
+				source: { kind: 'code', code: 'export default () => 1', sha256: 'x' },
+				params: {},
+				credentialPicks: {},
+				limits: { timeoutMs: 50, maxResultBytes: 102_400, memoryMb: 512 },
+				grantVersion: 1,
+				apiUrl: 'https://api.kody.test',
+			},
+		},
+		{ t: 'run.commit', body: { runId } },
+	])
+	ServerSocket.frames = signed
+	const abort = new AbortController()
+	const { input } = await daemonInput({
+		serverKeys,
+		signal: abort.signal,
+		WebSocketImpl: ServerSocket as unknown as typeof WebSocket,
+		execute: ({ signal }: { signal: AbortSignal }) =>
+			new Promise((resolve) =>
+				signal.addEventListener('abort', () =>
+					resolve({
+						isError: true,
+						content: [{ type: 'text', text: 'Local execute was cancelled.' }],
+					}),
+				),
+			),
+	})
+	const sentResult = () =>
+		(SilentSocket.instances[0] as unknown as ServerSocket | undefined)?.sent
+			.filter((data) => data !== ecpPingFrame)
+			.some(
+				(data) =>
+					(
+						decodeEnvelopePayload(
+							parseEnvelope(JSON.parse(data))!.p,
+						) as EcpFramePayload
+					).t === 'run.result',
+			)
+	const poll = setInterval(() => {
+		if (sentResult()) abort.abort()
+	}, 10)
+	const giveUp = setTimeout(() => abort.abort(), 10_000)
+	await runDaemonConnection(input)
+	clearInterval(poll)
+	clearTimeout(giveUp)
+	const result = (SilentSocket.instances[0] as unknown as ServerSocket).sent
+		.filter((data) => data !== ecpPingFrame)
+		.map((data) => {
+			const envelope = parseEnvelope(JSON.parse(data))
+			return decodeEnvelopePayload(envelope!.p) as EcpFramePayload
+		})
+		.find((frame) => frame.t === 'run.result')
+	assert.equal(result?.body.runId, runId)
+	assert.equal(result?.body.isError, true)
+	assert.equal(result?.body.cancelReason, 'deadline')
+})
+
 test('hello tells Kody which runs this daemon still holds after a reconnect', async () => {
 	SilentSocket.instances = []
 	const { signed, serverKeys } = await serverFrames([welcome])
@@ -614,6 +695,32 @@ test('hello tells Kody which runs this daemon still holds after a reconnect', as
 		.find((frame) => frame.t === 'hello')
 	assert.deepEqual(hello?.body.heldRuns, [])
 	assert.deepEqual(hello?.body.pendingResults, [])
+})
+
+test('a failed send ends the connection instead of leaving a sequence gap', async () => {
+	SilentSocket.instances = []
+	const { signed, serverKeys } = await serverFrames([welcome])
+	ServerSocket.frames = signed
+	class FailingSocket extends ServerSocket {
+		override send(data = '') {
+			if (data !== ecpPingFrame) throw new Error('socket write failed')
+			super.send(data)
+		}
+	}
+	const abort = new AbortController()
+	const { input } = await daemonInput({
+		serverKeys,
+		signal: abort.signal,
+		WebSocketImpl: FailingSocket as unknown as typeof WebSocket,
+	})
+	const timeout = setTimeout(() => abort.abort(), 5_000)
+	const closed = await runDaemonConnection(input)
+	clearTimeout(timeout)
+	assert.equal(closed.code, 4000)
+	assert.deepEqual(SilentSocket.instances[0]?.closed, {
+		code: 4000,
+		reason: 'send failed',
+	})
 })
 
 test('frames that arrive back to back are verified in order, not raced', async () => {
@@ -661,4 +768,610 @@ test('a frame that fails verification closes with a valid code instead of throwi
 	})
 	assert.match(lines.join('\n'), /failed verification \(unknown_server_key\)/)
 	assert.ok(!lines.some((line) => line.startsWith('Frame error')))
+})
+
+test('runs get the grant egress from welcome, re-applied on grant.update', async () => {
+	SilentSocket.instances = []
+	const now = Date.now()
+	const runRequest = (runId: string) => ({
+		t: 'run.request',
+		body: {
+			runId,
+			deadline: now + 60_000,
+			acceptBy: now + 60_000,
+			requestedBy: { userId: 'u', handle: null, orgId: 'o', orgSlug: null },
+			source: { kind: 'code', code: 'export default () => 1', sha256: '' },
+			params: {},
+			credentialPicks: {},
+			limits: { timeoutMs: 60_000, maxResultBytes: 1_000_000, memoryMb: 128 },
+			grantVersion: 1,
+			apiUrl: 'https://api.kody.test',
+		},
+	})
+	const { signed, serverKeys } = await serverFrames([
+		{
+			t: 'welcome',
+			body: {
+				sid: 'sid_test',
+				grantVersion: 1,
+				grant: { egress: { mode: 'public' } },
+			},
+		},
+		runRequest('run_1'),
+		{ t: 'run.commit', body: { runId: 'run_1' } },
+		{
+			t: 'grant.update',
+			body: {
+				grantVersion: 2,
+				grant: { egress: { mode: 'allowlist', hosts: ['api.example.com'] } },
+			},
+		},
+		runRequest('run_2'),
+		{ t: 'run.commit', body: { runId: 'run_2' } },
+	])
+	ServerSocket.frames = signed
+	const abort = new AbortController()
+	const seen: Array<unknown> = []
+	const { input } = await daemonInput({
+		serverKeys,
+		signal: abort.signal,
+		WebSocketImpl: ServerSocket as unknown as typeof WebSocket,
+		maxConcurrent: 2,
+		execute: async (run: Parameters<ContextRunExecutor>[0]) => {
+			seen.push(run.egress)
+			if (seen.length === 2) setTimeout(() => abort.abort(), 20)
+			return { isError: false }
+		},
+	})
+	const timeout = setTimeout(() => abort.abort(), 5_000)
+	await runDaemonConnection(input)
+	clearTimeout(timeout)
+	assert.deepEqual(seen, [
+		{ mode: 'public' },
+		{ mode: 'allowlist', hosts: ['api.example.com'] },
+	])
+})
+
+test('grant.update re-applies host folders: capabilities follow the effective mounts and a run writes inside them only', async () => {
+	SilentSocket.instances = []
+	const root = realpathSync.native(
+		mkdtempSync(join(tmpdir(), 'kody-daemon-fs-')),
+	)
+	const granted = join(root, 'granted')
+	const outside = join(root, 'outside')
+	mkdirSync(granted)
+	mkdirSync(outside)
+	const code = `import { writeFile } from 'node:fs/promises'
+export default async function main(p) {
+	await writeFile(p.granted + '/hello.txt', 'from the daemon')
+	try { await writeFile(p.outside + '/nope.txt', 'x'); return 'escaped' } catch (error) { return error.code }
+}`
+	const now = Date.now()
+	const { signed, serverKeys } = await serverFrames([
+		{
+			t: 'welcome',
+			body: { sid: 'sid_test', grantVersion: 1, grant: { fs: [] } },
+		},
+		{
+			t: 'grant.update',
+			body: { grantVersion: 2, grant: { fs: [{ path: granted, mode: 'rw' }] } },
+		},
+		{
+			t: 'run.request',
+			body: {
+				runId: 'run_fs',
+				deadline: now + 120_000,
+				acceptBy: now + 120_000,
+				requestedBy: { userId: 'u', handle: null, orgId: 'o', orgSlug: null },
+				source: { kind: 'code', code, sha256: '' },
+				params: { granted, outside },
+				credentialPicks: {},
+				limits: { timeoutMs: 60_000, maxResultBytes: 1_000_000, memoryMb: 128 },
+				grantVersion: 2,
+				apiUrl: 'https://api.kody.test',
+			},
+		},
+		{ t: 'run.commit', body: { runId: 'run_fs' } },
+	])
+	ServerSocket.frames = signed
+	const abort = new AbortController()
+	const { input } = await daemonInput({
+		serverKeys,
+		signal: abort.signal,
+		WebSocketImpl: ServerSocket as unknown as typeof WebSocket,
+		fs: {
+			effective: async (grantFs: Array<{ path: string; mode: string }>) =>
+				await effectiveFs(grantFs, [
+					{ path: granted, mode: 'rw' },
+					{ path: outside, mode: 'rw' },
+				]),
+		},
+		fetchFn: (async (url: string | URL | Request) =>
+			String(url).includes('package-graph')
+				? Response.json({ modules: [] })
+				: Response.json({
+						ticket: 'ticket_1',
+						expiresAt: '2099-01-01T00:00:00.000Z',
+					})) as typeof fetch,
+		execute: (run: Parameters<ContextRunExecutor>[0]) =>
+			runContextRun({ ...run, apiUrl: 'https://api.kody.test' }),
+	})
+	const decoded = () =>
+		(SilentSocket.instances[0] as unknown as ServerSocket | undefined)?.sent
+			.filter((data) => data !== ecpPingFrame)
+			.map((data) => {
+				const envelope = parseEnvelope(JSON.parse(data))
+				return decodeEnvelopePayload(envelope!.p) as EcpFramePayload
+			}) ?? []
+	const watcher = setInterval(() => {
+		if (decoded().some((frame) => frame.t === 'run.result')) abort.abort()
+	}, 50)
+	const timeout = setTimeout(() => abort.abort(), 120_000)
+	await runDaemonConnection(input)
+	clearInterval(watcher)
+	clearTimeout(timeout)
+	const frames = decoded()
+	const hello = frames.find((frame) => frame.t === 'hello')
+	assert.deepEqual(
+		(hello?.body.capabilities as { features?: unknown }).features,
+		[],
+	)
+	const update = frames.find((frame) => frame.t === 'capabilities.update')
+	assert.deepEqual(
+		(update?.body.capabilities as { features?: unknown }).features,
+		['fs'],
+	)
+	const result = frames.find((frame) => frame.t === 'run.result')
+	assert.equal(result?.body.isError, false, JSON.stringify(result?.body))
+	// Outside the mounts the host is unreachable: EACCES from the bridge, or
+	// ENOENT when the path falls in workerd's own virtual /tmp (Linux tmpdir).
+	assert.match(
+		String((result?.body.structuredContent as { result?: unknown }).result),
+		/^(EACCES|ENOENT)$/,
+	)
+	assert.equal(
+		readFileSync(join(granted, 'hello.txt'), 'utf8'),
+		'from the daemon',
+	)
+	assert.equal(existsSync(join(outside, 'nope.txt')), false)
+})
+
+test('runs up to the grant-capped concurrency at once and report a timing breakdown', async () => {
+	SilentSocket.instances = []
+	const now = Date.now()
+	const runRequest = (runId: string) => ({
+		t: 'run.request',
+		body: {
+			runId,
+			deadline: now + 60_000,
+			acceptBy: now + 60_000,
+			requestedBy: { userId: 'u', handle: null, orgId: 'o', orgSlug: null },
+			source: { kind: 'code', code: 'export default () => 1', sha256: '' },
+			params: {},
+			credentialPicks: {},
+			limits: { timeoutMs: 60_000, maxResultBytes: 1_000_000, memoryMb: 128 },
+			grantVersion: 1,
+			apiUrl: 'https://api.kody.test',
+		},
+	})
+	const { signed, serverKeys } = await serverFrames([
+		{
+			t: 'welcome',
+			body: {
+				sid: 'sid_test',
+				grantVersion: 1,
+				grant: { limits: { maxConcurrent: 2 } },
+			},
+		},
+		runRequest('run_1'),
+		{ t: 'run.commit', body: { runId: 'run_1' } },
+		runRequest('run_2'),
+		{ t: 'run.commit', body: { runId: 'run_2' } },
+		runRequest('run_3'),
+	])
+	ServerSocket.frames = signed
+	const abort = new AbortController()
+	let inFlight = 0
+	let peak = 0
+	let releaseBoth = () => {}
+	const bothRunning = new Promise<void>((resolve) => {
+		releaseBoth = resolve
+	})
+	const { input } = await daemonInput({
+		serverKeys,
+		signal: abort.signal,
+		WebSocketImpl: ServerSocket as unknown as typeof WebSocket,
+		maxConcurrent: 4,
+		execute: async (_run: Parameters<ContextRunExecutor>[0]) => {
+			inFlight += 1
+			peak = Math.max(peak, inFlight)
+			if (inFlight === 2) releaseBoth()
+			await bothRunning
+			// Still holding both slots while run_3 arrives.
+			await new Promise((resolve) => setTimeout(resolve, 50))
+			inFlight -= 1
+			if (inFlight === 0) setTimeout(() => abort.abort(), 20)
+			return {
+				isError: false,
+				timing: {
+					setupMs: 12,
+					packageGraphMs: 0,
+					packageGraphCached: true,
+					executeMs: 3,
+				},
+			}
+		},
+	})
+	const timeout = setTimeout(() => abort.abort(), 5_000)
+	await runDaemonConnection(input)
+	clearTimeout(timeout)
+	const frames = (SilentSocket.instances[0] as unknown as ServerSocket).sent
+		.filter((data) => data !== ecpPingFrame)
+		.map((data) => {
+			const envelope = parseEnvelope(JSON.parse(data))
+			return decodeEnvelopePayload(envelope!.p) as EcpFramePayload
+		})
+	assert.equal(peak, 2)
+	assert.deepEqual(
+		frames.map((frame) => frame.seq),
+		frames.map((_frame, index) => index + 1),
+	)
+	assert.equal(
+		(
+			frames.find((frame) => frame.t === 'hello')?.body.capabilities as {
+				maxConcurrent?: unknown
+			}
+		).maxConcurrent,
+		2,
+	)
+	assert.deepEqual(frames.find((frame) => frame.t === 'hello')?.body.status, {
+		running: 0,
+		maxConcurrent: 2,
+		acceptingRuns: true,
+	})
+	assert.deepEqual(
+		frames
+			.filter((frame) => frame.t === 'run.reject')
+			.map((frame) => frame.body),
+		[{ runId: 'run_3', code: 'busy' }],
+	)
+	const results = frames.filter((frame) => frame.t === 'run.result')
+	assert.equal(results.length, 2)
+	for (const result of results) {
+		const timing = result.body.timing as Record<string, unknown>
+		assert.equal(timing.setupMs, 12)
+		assert.equal(timing.executeMs, 3)
+		assert.equal(timing.packageGraphCached, true)
+		assert.equal(typeof timing.queueMs, 'number')
+		assert.ok((timing.daemonMs as number) >= (timing.queueMs as number))
+		assert.equal(
+			(result.body.structuredContent as Record<string, unknown> | undefined)
+				?.timing,
+			undefined,
+		)
+	}
+})
+
+test('a flag-off account gets the opt-in link instead of a bare 403', async () => {
+	const fetchFn = (async () =>
+		Response.json(
+			{
+				error: {
+					code: 'feature_disabled',
+					message: 'Execution contexts are an experiment that is off.',
+				},
+			},
+			{ status: 403 },
+		)) as typeof fetch
+	await assert.rejects(
+		runExecutionContextCommand({
+			command: 'chain',
+			positionals: ['show'],
+			values: {},
+			apiUrl: 'https://kody.test/',
+			token: async () => 'kody_at_test',
+			clientVersion: '0.0.0',
+			write: () => {},
+			fetchFn,
+		}),
+		(error: Error) => {
+			assert.match(error.message, /experiment that is off for this account/)
+			assert.match(error.message, /https:\/\/kody\.test\/account\/experiments/)
+			assert.match(error.message, /experimentSet/)
+			assert.match(
+				error.message,
+				/https:\/\/kody\.test\/docs\/execution-contexts/,
+			)
+			return true
+		},
+	)
+})
+
+test('kody context revoke and delete call the revoke and delete routes', async () => {
+	const calls: Array<string> = []
+	const fetchFn = (async (url: URL | string, init?: RequestInit) => {
+		calls.push(`${init?.method} ${new URL(url).pathname}`)
+		return Response.json({ ok: true })
+	}) as typeof fetch
+	const run = async (positionals: Array<string>) => {
+		let text = ''
+		await runExecutionContextCommand({
+			command: 'context',
+			positionals,
+			values: {},
+			apiUrl: 'https://api.kody.test',
+			token: async () => 'kody_at_test',
+			clientVersion: '0.0.0',
+			write: (chunk) => {
+				text += chunk
+			},
+			fetchFn,
+		})
+		return text
+	}
+	assert.equal(
+		await run(['revoke', 'box']),
+		'Revoked box. Delete it for good with: kody context delete box\n',
+	)
+	assert.equal(await run(['delete', 'box']), 'Deleted box.\n')
+	assert.deepEqual(calls, [
+		'DELETE /v1/execution-contexts/box',
+		'POST /v1/execution-contexts/box/delete',
+	])
+	await assert.rejects(run(['delete']), /Usage: kody context delete/)
+})
+
+test('kody context cancel-run posts to the run cancel route', async () => {
+	const calls: Array<string> = []
+	const replies = [
+		{ cancelled: true, runId: 'run_1', state: 'cancelled' },
+		{ cancelled: false, runId: 'run_1', state: 'succeeded' },
+	]
+	const fetchFn = (async (url: URL | string, init?: RequestInit) => {
+		calls.push(`${init?.method} ${new URL(url).pathname}`)
+		return Response.json(replies.shift())
+	}) as typeof fetch
+	const run = async (positionals: Array<string>) => {
+		let text = ''
+		await runExecutionContextCommand({
+			command: 'context',
+			positionals,
+			values: {},
+			apiUrl: 'https://api.kody.test',
+			token: async () => 'kody_at_test',
+			clientVersion: '0.0.0',
+			write: (chunk) => {
+				text += chunk
+			},
+			fetchFn,
+		})
+		return text
+	}
+	assert.equal(
+		await run(['cancel-run', 'build box', 'run_1']),
+		'Cancelled run run_1 on build box.\n',
+	)
+	assert.equal(
+		await run(['cancel-run', 'build box', 'run_1']),
+		'Run run_1 already ended (succeeded).\n',
+	)
+	assert.deepEqual(calls, [
+		'POST /v1/execution-contexts/build%20box/runs/run_1/cancel',
+		'POST /v1/execution-contexts/build%20box/runs/run_1/cancel',
+	])
+	await assert.rejects(
+		run(['cancel-run', 'build box']),
+		/Usage: kody context cancel-run/,
+	)
+})
+
+test('a context run with commands on runs a real command and a background job, authorized and reported to Kody', async () => {
+	SilentSocket.instances = []
+	const cwd = realpathSync.native(
+		mkdtempSync(join(tmpdir(), 'kody-daemon-cmd-')),
+	)
+	// Windows runs PowerShell by default.
+	const [fgCommand, bgCommand] =
+		process.platform === 'win32'
+			? [
+					"'hello-from-host'; (Get-Location).Path; [Console]::Error.WriteLine('warn'); exit 2",
+					"'bg-start'; Start-Sleep -Seconds 30",
+				]
+			: [
+					'echo hello-from-host; pwd; echo warn >&2; exit 2',
+					'echo bg-start; sleep 30',
+				]
+	const code = `import { kody } from 'kody:runtime'
+export default async function main(p) {
+	const fg = await kody.command.run({ command: ${JSON.stringify(fgCommand)}, cwd: p.cwd, env: { KODY_E2E_SECRET: 'do-not-log' } })
+	const bg = await kody.command.start({ command: ${JSON.stringify(bgCommand)} })
+	let out
+	for (let i = 0; i < 200; i++) {
+		out = await kody.command.output({ commandId: bg.commandId })
+		if (out.stdout.includes('bg-start')) break
+		await new Promise((resolve) => setTimeout(resolve, 25))
+	}
+	const status = await kody.command.status({ commandId: bg.commandId })
+	await kody.command.kill({ commandId: bg.commandId })
+	return { fg, bgOut: out.stdout, bgState: status.state }
+}`
+	const now = Date.now()
+	const { signed, serverKeys } = await serverFrames([
+		{
+			t: 'welcome',
+			body: {
+				sid: 'sid_test',
+				grantVersion: 1,
+				grant: { fs: [], commands: { enabled: true } },
+			},
+		},
+		{
+			t: 'run.request',
+			body: {
+				runId: 'run_cmd',
+				deadline: now + 120_000,
+				acceptBy: now + 120_000,
+				requestedBy: { userId: 'u', handle: null, orgId: 'o', orgSlug: null },
+				source: { kind: 'code', code, sha256: '' },
+				params: { cwd },
+				credentialPicks: {},
+				limits: { timeoutMs: 60_000, maxResultBytes: 1_000_000, memoryMb: 128 },
+				grantVersion: 1,
+				apiUrl: 'https://api.kody.test',
+			},
+		},
+		{ t: 'run.commit', body: { runId: 'run_cmd' } },
+	])
+	ServerSocket.frames = signed
+	const abort = new AbortController()
+	const authorized: Array<{ path: unknown; args: unknown }> = []
+	const hostCommands = new HostCommands({ localEnabled: true })
+	const { input } = await daemonInput({
+		serverKeys,
+		signal: abort.signal,
+		hostCommands,
+		WebSocketImpl: ServerSocket as unknown as typeof WebSocket,
+		fetchFn: (async (url: string | URL | Request, init?: RequestInit) => {
+			if (String(url).includes('package-graph')) {
+				return Response.json({ modules: [] })
+			}
+			if (String(url).includes('capability-proxy/call')) {
+				const body = JSON.parse(String(init?.body)) as {
+					path: unknown
+					args: Array<unknown>
+				}
+				authorized.push({ path: body.path, args: body.args[0] })
+				return Response.json({ result: { ok: true } })
+			}
+			return Response.json({
+				ticket: 'ticket_1',
+				expiresAt: '2099-01-01T00:00:00.000Z',
+			})
+		}) as typeof fetch,
+		execute: (run: Parameters<ContextRunExecutor>[0]) =>
+			runContextRun({ ...run, apiUrl: 'https://api.kody.test' }),
+	})
+	const decoded = () =>
+		(SilentSocket.instances[0] as unknown as ServerSocket | undefined)?.sent
+			.filter((data) => data !== ecpPingFrame)
+			.map((data) => {
+				const envelope = parseEnvelope(JSON.parse(data))
+				return decodeEnvelopePayload(envelope!.p) as EcpFramePayload
+			}) ?? []
+	const watcher = setInterval(() => {
+		const frames = decoded()
+		if (
+			frames.some((frame) => frame.t === 'run.result') &&
+			frames.filter((frame) => frame.t === 'command.finished').length >= 2
+		) {
+			abort.abort()
+		}
+	}, 50)
+	const timeout = setTimeout(() => abort.abort(), 120_000)
+	await runDaemonConnection(input)
+	clearInterval(watcher)
+	clearTimeout(timeout)
+	hostCommands.killAll('shutdown')
+	const frames = decoded()
+	const result = frames.find((frame) => frame.t === 'run.result')
+	assert.equal(result?.body.isError, false, JSON.stringify(result?.body))
+	const value = (result?.body.structuredContent as { result: any }).result
+	assert.equal(value.fg.exitCode, 2)
+	assert.equal(
+		value.fg.stdout.replaceAll('\r\n', '\n'),
+		`hello-from-host\n${cwd}\n`,
+	)
+	assert.equal(value.fg.stderr.replaceAll('\r\n', '\n'), 'warn\n')
+	assert.match(value.bgOut, /^bg-start/)
+	assert.equal(value.bgState, 'running')
+	assert.ok(
+		authorized.some(
+			(call) => (call.args as { lifecycle?: string }).lifecycle === 'output',
+		),
+	)
+	const starts = authorized.filter(
+		(call) => !(call.args as { lifecycle?: string }).lifecycle,
+	)
+	assert.deepEqual(
+		starts.map((call) => [
+			call.path,
+			(call.args as { background: boolean }).background,
+		]),
+		[
+			[['kody', 'command', 'authorize'], false],
+			[['kody', 'command', 'authorize'], true],
+		],
+	)
+	assert.deepEqual((starts[0]?.args as { envKeys: unknown }).envKeys, [
+		'KODY_E2E_SECRET',
+	])
+	const finished = frames.filter((frame) => frame.t === 'command.finished')
+	assert.deepEqual(
+		finished.map((frame) => [
+			frame.body.exitCode ?? null,
+			frame.body.background,
+			frame.body.reason,
+		]),
+		[
+			[2, false, 'exited'],
+			[null, true, 'killed'],
+		],
+	)
+	assert.equal(finished[0]?.body.runId, 'run_cmd')
+	assert.equal(JSON.stringify(frames).includes('do-not-log'), false)
+	assert.equal(JSON.stringify(authorized).includes('do-not-log'), false)
+})
+
+test('a daemon another daemon replaced stands down instead of flapping', async () => {
+	SilentSocket.instances = []
+	const { signed, serverKeys } = await serverFrames([welcome])
+	class ReplacedSocket extends ServerSocket {
+		constructor(url: string) {
+			super(url)
+			setTimeout(
+				() => SilentSocket.prototype.close.call(this, 1012, 'replaced'),
+				20,
+			)
+		}
+	}
+	ServerSocket.frames = signed
+	let tickets = 0
+	const { input } = await daemonInput({
+		serverKeys,
+		closeSettleMs: 20,
+		WebSocketImpl: ReplacedSocket as unknown as typeof WebSocket,
+		fetchFn: (async () => {
+			tickets += 1
+			return Response.json({
+				ticket: 'ticket_1',
+				expiresAt: '2099-01-01T00:00:00.000Z',
+			})
+		}) as typeof fetch,
+	})
+	assert.equal(await runDaemon(input), 'replaced')
+	assert.equal(tickets, 1, 'no reconnect loop')
+})
+
+test('an update drain holds the connection while background commands run', async () => {
+	SilentSocket.instances = []
+	const { signed, serverKeys } = await serverFrames([welcome])
+	ServerSocket.frames = signed
+	const drain = new AbortController()
+	let holding = true
+	setTimeout(() => drain.abort(), 30)
+	setTimeout(() => {
+		holding = false
+	}, 250)
+	const { input } = await daemonInput({
+		serverKeys,
+		closeSettleMs: 20,
+		drainSignal: drain.signal,
+		drainHold: () => holding,
+		drainHoldPollMs: 20,
+		WebSocketImpl: ServerSocket as unknown as typeof WebSocket,
+	})
+	const started = Date.now()
+	const closed = await runDaemonConnection(input)
+	assert.deepEqual(closed, { code: 1000, reason: 'shutdown' })
+	assert.ok(Date.now() - started >= 240, 'waited for the hold to clear')
 })

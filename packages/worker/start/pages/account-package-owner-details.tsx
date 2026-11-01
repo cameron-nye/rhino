@@ -38,7 +38,9 @@ import { RecordChips, recordBodyCss } from './record-table.tsx'
 import { AccountPackageDeleteDialog } from './account-package-delete-dialog.tsx'
 import { PackagePublishingPanel } from './account-package-publishing-panel.tsx'
 import { AccountPackageForkAdoption } from './account-package-fork-adoption.tsx'
+import { PackageCapabilityAllowanceCallout } from './package-capability-allowance-callout.tsx'
 import { PackageCookieWarningsCallout } from './package-cookie-warnings-callout.tsx'
+import { PackageUnmappableCredentialsCallout } from './package-unmappable-credentials-callout.tsx'
 import { type AccountPackageDetail } from '#universal/loader-data.ts'
 
 function PackageAppLinks(props: { openHref: string | null }) {
@@ -99,6 +101,10 @@ export function AccountPackageOwnerDetails(props: {
 	const [visibilityMessage, setVisibilityMessage] = useState<string | null>(
 		null,
 	)
+	const collaboratorsHref = routes.communityPackageCollaborators.href({
+		username: props.ownerUsername,
+		kodyId: props.packageDetail.kodyId,
+	})
 
 	async function submitVisibility(
 		packageDetail: AccountPackageDetail,
@@ -286,6 +292,15 @@ export function AccountPackageOwnerDetails(props: {
 					}
 				/>
 			) : null}
+			<PackageUnmappableCredentialsCallout
+				notice={packageDetail.unmappableCredentialsNotice}
+				collaboratorsHref={collaboratorsHref}
+			/>
+			{props.viewerCanPublish ? (
+				<PackageCapabilityAllowanceCallout
+					capabilities={packageDetail.capabilityAllowance ?? []}
+				/>
+			) : null}
 			{props.viewerCanPublish ? (
 				<PackageCookieWarningsCallout
 					warnings={packageDetail.cookieWarnings ?? []}
@@ -321,11 +336,24 @@ export function AccountPackageOwnerDetails(props: {
 						</p>
 					</div>
 					<div css={{ display: 'grid', gap: spacing.xs }}>
-						<p css={{ margin: 0, color: colors.textMuted }}>
-							{packageDetail.isPrivate
-								? 'Make it public on the community so anyone can read and fork the source. This does not host your app.'
-								: 'Turn off public community listing. Public source URLs will 404; existing forks keep their copies. Does not change whether the app is internet-visible.'}
-						</p>
+						{packageDetail.isPrivate ? (
+							<p
+								css={{ margin: 0, color: colors.textMuted }}
+								data-testid="package-make-public-warning"
+							>
+								Public makes the default branch readable and forkable by anyone
+								on the internet, signed in or not. To share with specific
+								people, use{' '}
+								<SiteLink href={collaboratorsHref}>Collaborators</SiteLink>{' '}
+								instead.
+							</p>
+						) : (
+							<p css={{ margin: 0, color: colors.textMuted }}>
+								Turn off public community listing. Public source URLs will 404;
+								existing forks keep their copies. Does not change whether the
+								app is internet-visible.
+							</p>
+						)}
 						<label css={{ display: 'grid', gap: spacing.xs }}>
 							<span css={visuallyHiddenCss}>
 								Type {packageDetail.kodyId} to change who can see the source
@@ -361,7 +389,7 @@ export function AccountPackageOwnerDetails(props: {
 									? 'package-make-public'
 									: 'package-make-private'
 							}
-							css={getGhostButtonCss()}
+							css={getGhostButtonCss({ size: 'sm' })}
 							onClick={() =>
 								void submitVisibility(
 									packageDetail,
@@ -438,7 +466,7 @@ export function AccountPackageOwnerDetails(props: {
 										? 'package-internet-visible-off'
 										: 'package-internet-visible-on'
 								}
-								css={getGhostButtonCss()}
+								css={getGhostButtonCss({ size: 'sm' })}
 								onClick={() =>
 									void submitInternetVisible(
 										packageDetail,

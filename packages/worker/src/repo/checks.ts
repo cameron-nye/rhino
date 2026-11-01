@@ -86,12 +86,22 @@ import {
 	resolveSecretProviderSlots,
 	type ResolvedSecretProviderSlots,
 } from '#worker/credentials/secret-provider-slots.ts'
-import { type RepoCheckStep } from './isolated-runner-limit-message.ts'
+import {
+	isRepoCheckResourceLimitMessage,
+	type RepoCheckStep,
+} from './isolated-runner-limit-message.ts'
 import { credentialNeedKeyNotes } from '#worker/credentials/credential-needs.ts'
 import { computeCredentialNeedsClosure } from '#worker/credentials/credential-needs-closure.ts'
 import { republishedNeedsNote } from '#worker/enablements/republish-needs-note.ts'
 import { createSavedPackageClosureLoader } from '#worker/package-codemods/package-app-capability-closure.ts'
-import { buildCapabilityDeclarationCheck } from './capability-declaration-check.ts'
+import {
+	buildCapabilityAllowanceCheck,
+	loadPublishedCapabilityAllowance,
+} from '#worker/package-runtime/package-app-capability-allowances.ts'
+import {
+	buildCapabilityDeclarationCheck,
+	declaredPackageCapabilities,
+} from './capability-declaration-check.ts'
 
 export const repoCheckKinds = [
 	'manifest',
@@ -332,6 +342,8 @@ async function* workspaceFilesForSnapshot(input: {
 	}
 	root: string
 	applyKodyIgnore?: boolean
+	/** Called with each source-root-relative path `.kodyignore` skips. */
+	onKodyIgnored?: (relativePath: string) => void
 }) {
 	const encoder = new TextEncoder()
 	const normalizedRoot = normalizeRepoWorkspacePath(input.root).replace(
@@ -360,7 +372,10 @@ async function* workspaceFilesForSnapshot(input: {
 				: normalizedPath
 		// Skipped before reading or counting, so ignored files never reach a
 		// check and never count toward the publish check caps.
-		if (isKodyIgnored?.(relativePath)) continue
+		if (isKodyIgnored?.(relativePath)) {
+			input.onKodyIgnored?.(relativePath)
+			continue
+		}
 		const content = await input.workspace.readFile(file.path)
 		if (content == null) continue
 		// Prefer the filesystem's byte size: readFile UTF-8-decodes binary
@@ -588,6 +603,14 @@ declare module "kody:runtime" {
         }>;
       }>;
     }>;
+    appPublisherGet: (input?: Record<string, never>) => Promise<{
+      user_id: string;
+      username: string;
+      email: string;
+      display_name: string;
+      org: { slug: string };
+      source: "explicit" | "publisher" | "personal-org";
+    }>;
   };
   export function hasScope(request: Request, scope: string): boolean;
   export function hasVisitorCredential(request: Request, key: string): boolean;
@@ -619,6 +642,12 @@ declare module "kody:runtime" {
    */
   export type KodyCredentialClient = {
     readonly name: string;
+    /**
+     * Owner, seen from the run's org: \`org\` for anything stored in the run's
+     * org (including \`secretSet({ scope: 'user' })\` and package-scope Keys),
+     * \`personal\` for the caller's own personal credential granted to it.
+     * Not the \`secretList\` storage scope.
+     */
     readonly scope: "org" | "personal";
     readonly kind: "secret" | "oauth" | "url" | "login" | "mcp" | "signing";
     readonly hosts: ReadonlyArray<string>;
@@ -1165,7 +1194,8 @@ function formatBundleCheckMessage(input: {
 const deferredBundleCheckMessage =
 	'Bundle validation deferred to published artifact rebuild.'
 
-const lintPlaceholderPassedMessage = 'Lint placeholder passed for this phase.'
+const lintPassedMessage =
+	'Lint passed: no removed invocation forms and no ambient `storage` imports from `kody:runtime`.'
 const scannableModuleFilePattern = /\.(?:[cm]?[jt]s|[jt]sx)$/
 const maxAmbientStorageReportedFiles = 5
 
@@ -1231,6 +1261,48 @@ export function collectAmbientStorageImportFiles(
  * This permanent publish guard keeps package code portable across every
  * package surface and points authors at the canonical package bucket.
  */
+const maxReportedIgnoredDeclarationFiles = 5
+
+/**
+ * Warn when `.kodyignore` hides `.d.ts` files that a kept `tsconfig.json` or
+ * a triple-slash reference may rely on. A broad `__tests__` directory
+ * pattern also matches `types/__tests__/`, and the typecheck then runs
+ * without those declarations.
+ */
+function formatKodyIgnoredDeclarationNote(input: {
+	ignored: Array<string>
+	sourceFiles: Record<string, string>
+}) {
+	if (input.ignored.length === 0) return null
+	const hasTsconfig = Object.keys(input.sourceFiles).some((path) =>
+		/(?:^|\/)tsconfig(?:\.[^/]*)?\.json$/.test(path),
+	)
+	const referenced = input.ignored.filter((path) => {
+		if (hasTsconfig) return true
+		const fileName = path.split('/').pop() ?? path
+		return Object.entries(input.sourceFiles).some(
+			([sourcePath, source]) =>
+				scannableModuleFilePattern.test(sourcePath) &&
+				source.includes('/// <reference') &&
+				source.includes(fileName),
+		)
+	})
+	if (referenced.length === 0) return null
+	const shown = referenced
+		.slice(0, maxReportedIgnoredDeclarationFiles)
+		.map((path) => `\`${path}\``)
+		.join(', ')
+	const hidden = referenced.length - maxReportedIgnoredDeclarationFiles
+	return (
+		`Warning: \`.kodyignore\` excludes declaration file(s) ${shown}` +
+		(hidden > 0 ? ` and ${hidden} more` : '') +
+		', which tsconfig.json or a `/// <reference>` may rely on, so the ' +
+		'typecheck runs without them. To keep one, add a negation after the ' +
+		'pattern that matched it, for example `!types/__tests__/` after ' +
+		'`**/__tests__/`.'
+	)
+}
+
 function buildLintCheck(sourceFiles: Record<string, string>): {
 	ok: boolean
 	message: string
@@ -1246,7 +1318,7 @@ function buildLintCheck(sourceFiles: Record<string, string>): {
 	}
 	const ambientStorageFiles = collectAmbientStorageImportFiles(sourceFiles)
 	if (ambientStorageFiles.length === 0) {
-		return { ok: true, message: lintPlaceholderPassedMessage }
+		return { ok: true, message: lintPassedMessage }
 	}
 	const shownFiles = ambientStorageFiles.slice(
 		0,
@@ -1537,6 +1609,40 @@ async function runCredentialPatternCheck(input: {
 	}
 }
 
+/**
+ * Warns when the published version of this app runs on a capability
+ * allowance the source being checked does not declare (ADR 0089).
+ */
+async function loadCapabilityAllowanceCheck(input: {
+	env?: Env
+	userId?: string
+	sourceId?: string
+	manifest: AuthoredPackageJson
+}) {
+	if (
+		!input.manifest.kody.app ||
+		typeof input.env?.APP_DB?.prepare !== 'function'
+	) {
+		return null
+	}
+	try {
+		const allowance = await loadPublishedCapabilityAllowance(input.env.APP_DB, {
+			sourceId: input.sourceId ?? null,
+			ownerId: input.userId ?? null,
+			packageName: input.manifest.name,
+		})
+		return buildCapabilityAllowanceCheck({
+			allowance,
+			declared: declaredPackageCapabilities(input.manifest),
+		})
+	} catch (error) {
+		if (!/no such table/i.test(String(error))) {
+			console.warn('capability-allowance-check-failed', error)
+		}
+		return null
+	}
+}
+
 export async function runRepoChecks(input: {
 	workspace: {
 		readFile(path: string): Promise<string | null>
@@ -1582,6 +1688,12 @@ export async function runRepoChecks(input: {
 	 * name the step if the isolate hits its memory or CPU limit.
 	 */
 	onStep?: (step: RepoCheckStep) => Promise<void>
+	/**
+	 * When false, the warn-only capability check reads only this package's
+	 * modules. Platform codemods pass false: they compute the closure once
+	 * themselves, and its findings never fail a check.
+	 */
+	followCapabilityImports?: boolean
 }): Promise<RepoCheckRunResult> {
 	const manifestContent = await input.workspace.readFile(input.manifestPath)
 	if (manifestContent == null) {
@@ -1639,6 +1751,7 @@ export async function runRepoChecks(input: {
 		'',
 	)
 	await input.onStep?.('source-walk')
+	const kodyIgnoredDeclarationFiles: Array<string> = []
 	const sourceWalk = await (async () => {
 		const collected: Record<string, string> = {}
 		let fileCount = 0
@@ -1646,6 +1759,11 @@ export async function runRepoChecks(input: {
 		for await (const [path, content, fileBytes] of workspaceFilesForSnapshot({
 			workspace: input.workspace,
 			root: sourceRoot,
+			onKodyIgnored: (path) => {
+				if (isTypeDeclarationFilePath(path)) {
+					kodyIgnoredDeclarationFiles.push(path)
+				}
+			},
 		})) {
 			fileCount += 1
 			if (fileCount > repoChecksSourceMaxFiles) {
@@ -1712,9 +1830,12 @@ export async function runRepoChecks(input: {
 	})
 	sourceFiles = credentialPatternCheck.sourceFiles
 	const enforceCredentialStamp = input.enforceCredentialStamp !== false
-	const credentialCheckOk = enforceCredentialStamp
-		? credentialPatternCheck.ok
-		: true
+	// A scan that hit the runner limit stays failed either way: it is
+	// incomplete, and codemod gates must see that.
+	const credentialCheckOk =
+		credentialPatternCheck.ok ||
+		(!enforceCredentialStamp &&
+			!isRepoCheckResourceLimitMessage(credentialPatternCheck.message))
 	const credentialCheckMessage =
 		!enforceCredentialStamp && !credentialPatternCheck.ok
 			? credentialPatternCheck.message
@@ -1757,7 +1878,10 @@ export async function runRepoChecks(input: {
 	const capabilityDeclarationCheck = await buildCapabilityDeclarationCheck({
 		manifest,
 		sourceFiles,
-		...(input.env && input.baseUrl && input.userId
+		...(input.followCapabilityImports !== false &&
+		input.env &&
+		input.baseUrl &&
+		input.userId
 			? {
 					loadPackage: createSavedPackageClosureLoader({
 						env: input.env,
@@ -1768,6 +1892,13 @@ export async function runRepoChecks(input: {
 			: {}),
 	})
 	if (capabilityDeclarationCheck) results.push(capabilityDeclarationCheck)
+	const capabilityAllowanceCheck = await loadCapabilityAllowanceCheck({
+		env: input.env,
+		userId: input.userId,
+		sourceId: input.sourceId,
+		manifest,
+	})
+	if (capabilityAllowanceCheck) results.push(capabilityAllowanceCheck)
 	// Cheap static gates for the package-app browser surface run before the
 	// heavy phases so a misconfigured manifest fails fast with one message.
 	const packageAppSurfaceChecks = [
@@ -2110,7 +2241,18 @@ export async function runRepoChecks(input: {
 		ok: bundleCheckResult.ok,
 		message: bundleCheckResult.message,
 	})
-	results.push(typecheckResult)
+	const ignoredDeclarationNote = formatKodyIgnoredDeclarationNote({
+		ignored: kodyIgnoredDeclarationFiles,
+		sourceFiles,
+	})
+	results.push(
+		ignoredDeclarationNote
+			? {
+					...typecheckResult,
+					message: `${typecheckResult.message}\n\n${ignoredDeclarationNote}`,
+				}
+			: typecheckResult,
+	)
 	results.push({
 		kind: 'lint',
 		ok: lintCheck.ok,

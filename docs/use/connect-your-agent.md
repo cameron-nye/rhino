@@ -20,9 +20,9 @@ block and MCP URL, and `/.well-known/mcp/server-card.json` for the server card.
 3. Follow that host's steps (plugin, vendor CLI, or the MCP URL). Preview and
    local origins use that deployment's MCP URL (`https://<this-host>/mcp`). On
    [kody.codes](https://kody.codes) the MCP URL is `https://kody.codes/mcp`.
-4. Complete the OAuth flow when the host opens it. Sign in to Kody if needed,
-   then approve access. Approving gives that agent full access to this Kody
-   account — not a limited permission set.
+4. Complete the OAuth flow when the host opens it. Sign in or create an account
+   if needed, then approve access. Approving gives that agent full access to
+   this Kody account — not a limited permission set.
 
 Once signed in, Account → Agents (`/@<slug>/-/agents`) is the durable home for
 this: it lists every agent that has authorized (with revoke and **View connect
@@ -87,7 +87,10 @@ you only have the MCP URL.
   an
   [eligible paid plan (Plus, Pro, Business, Enterprise, or Education)](https://developers.openai.com/api/docs/guides/developer-mode).
   In a managed workspace, ask an admin to enable plugins if the directory is
-  missing. ChatGPT desktop is Codex — use that entry instead.
+  missing. ChatGPT desktop is Codex — use that entry instead. If ChatGPT shows
+  only `search` and `execute` (no `api`), add Kody manually as a developer-mode
+  app (below), or use the Kody CLI (`npx @kodycodes/cli api tokenList` /
+  `tokenRevoke`).
 
   <details>
   <summary>Or create a developer-mode app</summary>
