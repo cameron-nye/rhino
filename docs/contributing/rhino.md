@@ -25,10 +25,19 @@ purpose.
 | File                                                                      | Why                                                                                                                                                                                                                                                                                                     |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `docs/contributing/rhino.md`                                              | Additive fork rules (this page).                                                                                                                                                                                                                                                                        |
-| `.github/workflows/rhino-automerge.yml`                                   | Squash-merge green same-repo `cursor/` pull requests only when `user.login` is `cameron-nye`, then dispatch production deploy and preview cleanup.                                                                                                                                                      |
-| `tools/ci/rhino-automerge-workflow.node.test.ts`                          | Pins that automerge dispatches preview cleanup and that a failed dispatch does not fail the merge.                                                                                                                                                                                                      |
+| `.github/workflows/rhino-automerge.yml`                                   | Squash-merge same-repo `cursor/` pull requests only when `user.login` is `cameron-nye`, Validate succeeded, and Cursor Bugbot is success or neutral with no unresolved Bugbot threads, unless `RHINO_REQUIRE_BUGBOT` is off. Then dispatch production deploy and preview cleanup.                       |
+| `tools/ci/rhino-automerge-workflow.node.test.ts`                          | Pins automerge gates: Validate, Cursor Bugbot unless `RHINO_REQUIRE_BUGBOT` is off, unresolved Bugbot threads, and preview cleanup that does not fail the merge.                                                                                                                                        |
 | `AGENTS.md`                                                               | Opening pointer to this page. Stays inside the 23-line `agents-md` budget.                                                                                                                                                                                                                              |
-| `docs/contributing/index.md`                                              | Link to this page from the contributing map.                                                                                                                                                                                                                                                            |
+| `docs/contributing/index.md`                                              | Link to this page from the contributing map, including the fork friction route.                                                                                                                                                                                                                         |
+| `.agents/skills/rhino-friction/SKILL.md`                                  | Additive. Agents file friction on `cameron-nye/rhino` with `gh`, labeled `friction`, `friction-skipped`, or `improvement`.                                                                                                                                                                              |
+| `.agents/skills/rhino-ship-pr/SKILL.md`                                   | Additive. Agents wait for Cursor Bugbot, fix or answer it, and do not call Kent's ship-pr package or Discord.                                                                                                                                                                                           |
+| `.agents/skills/file-friction/SKILL.md`                                   | Guard sends this fork to rhino-friction. Upstream friction-log steps stay below the guard.                                                                                                                                                                                                              |
+| `.agents/skills/ship-pr/SKILL.md`                                         | Guard sends this fork to rhino-ship-pr. Upstream tick stays below the guard.                                                                                                                                                                                                                            |
+| `skills-lock.json`                                                        | ship-pr folder hash after the Rhino guard.                                                                                                                                                                                                                                                              |
+| `packages/cli/.agents/skills/ship-pr/SKILL.md`                            | Guard so the CLI copy of ship-pr does not post to Kent's Discord or repositories.                                                                                                                                                                                                                       |
+| `packages/cli/AGENTS.md`                                                  | Points CLI work at rhino-ship-pr before the upstream ship-pr skill.                                                                                                                                                                                                                                     |
+| `docs/contributing/friction-log.md`                                       | Guard: this fork files friction on `cameron-nye/rhino` and does not call Kent's package.                                                                                                                                                                                                                |
+| `docs/contributing/cloud-agents.md`                                       | Guard: do not use the kody-bot GitHub write path from this fork.                                                                                                                                                                                                                                        |
 | `README.md`                                                               | Headline, logo alt text, and the opening product paragraphs. License text stays upstream.                                                                                                                                                                                                               |
 | `packages/worker/start/components/site-header.tsx`                        | Header wordmark, in self-hosted Saira Stencil One. Personal-use mode hides marketing nav and points the brand at login or the workspace dashboard.                                                                                                                                                      |
 | `packages/worker/start/components/site-footer.tsx`                        | Footer wordmark, in self-hosted Saira Stencil One. Personal-use mode hides marketing links and points the brand at the same home.                                                                                                                                                                       |
@@ -228,14 +237,70 @@ Production hostnames and the CI skips for this fork are in
 [Production hostnames](#production-hostnames). Product copy still names upstream
 hosts; see Left as Kody.
 
+## Friction
+
+Agents in this fork file papercuts as GitHub issues on `cameron-nye/rhino`.
+Follow [rhino-friction](../../.agents/skills/rhino-friction/SKILL.md).
+[file-friction](../../.agents/skills/file-friction/SKILL.md) and
+[ship-pr](../../.agents/skills/ship-pr/SKILL.md) stop at a Rhino guard so an
+upstream sync keeps Kent's steps underneath. Ship guidance is
+[rhino-ship-pr](../../.agents/skills/rhino-ship-pr/SKILL.md).
+
+Use `gh issue create` or `POST /repos/cameron-nye/rhino/issues` with the agent's
+own GitHub credentials. Search open `friction` issues first and comment on a
+match. The body states what happened, time lost, how to reproduce, a suggested
+fix, whether a product decision is required, and a short preliminary
+investigation.
+
+| Label                             | When                                                                                  |
+| --------------------------------- | ------------------------------------------------------------------------------------- |
+| `friction`                        | Durable papercut while working in this fork.                                          |
+| `friction` and `friction-skipped` | The repair needs a product decision from Cameron. The body includes a recommendation. |
+| `improvement`                     | Polish or a code-quality idea. Not a papercut.                                        |
+
+Do not call `@kentcdodds/friction-log`. Do not open issues on `kody-hq/kody` or
+any other Kent repository. Do not post to Discord. If `gh` cannot write, stop.
+The upstream daily sweep does not run here.
+
+Agents wait for `✅ Validate` and for the `Cursor Bugbot` check, fix or answer
+its findings, resolve those review threads, and push again before expecting
+automerge. That wait is part of
+[rhino-ship-pr](../../.agents/skills/rhino-ship-pr/SKILL.md).
+
 ## Pull requests
 
 Agent pull requests use `cursor/` branches.
-`.github/workflows/rhino-automerge.yml` squash-merges them after `✅ Validate`
-(`.github/workflows/validate.yml`) finishes with conclusion `success`.
+`.github/workflows/rhino-automerge.yml` squash-merges them only when
+`✅ Validate` (`.github/workflows/validate.yml`) has completed with conclusion
+`success` on that head SHA and the Cursor Bugbot gate below is clear.
 
-The workflow runs from `main` via `workflow_run`. It does not check out the pull
-request. It squash-merges only when all of these are true:
+The workflow runs from `main`. It starts when Validate's `workflow_run`
+completes, and when the `check_run` named `Cursor Bugbot` completes. Either
+event can arrive first. Each run re-checks every gate. It does not check out the
+pull request.
+
+The check name `Cursor Bugbot` is the GitHub check in
+[Cursor's Bugbot docs](https://cursor.com/docs/bugbot) (CI check statuses). The
+Cursor GitHub App slug on that check is `cursor`. Conclusion `success` or
+`neutral` can merge. `success` means Bugbot found nothing unresolved. `neutral`
+is the default when Bugbot reports findings, when a newer commit cancelled the
+run, or when Bugbot hit an internal error, so unresolved threads are a separate
+gate. `failure` does not merge. Bugbot does not emit `skipped`. The separate
+`Cursor Bugbot Autofix` check is not a gate.
+
+When Bugbot has not reported a completed check on the head SHA, the job logs
+`Skipping: Cursor Bugbot has not reported on <sha>.` and does not merge.
+Unresolved review threads are read with GraphQL `reviewThreads`. A thread blocks
+the merge when it is unresolved and its first comment author is a Bot whose
+login is `cursor`, `cursor[bot]`, or `cursor-bot`. A GraphQL failure logs a skip
+and does not merge.
+
+Repository variable `RHINO_REQUIRE_BUGBOT` turns that gate off. Unset, empty, or
+any value other than `false`, `0`, `no`, or `off` (any case, surrounding space
+ignored) keeps the gate on. Set the variable to `false` when Bugbot is not
+installed and merges should follow Validate alone.
+
+It squash-merges only when all of these are also true:
 
 - The Validate run was a `pull_request` event, and the head branch is in this
   repository and starts with `cursor/`. Fork pull requests are ignored.
@@ -244,6 +309,22 @@ request. It squash-merges only when all of these are true:
 - The pull request does not have the `no-automerge` label.
 - The pull request author login (`user.login`) is exactly `cameron-nye`.
 - GitHub reports the pull request mergeable. Merge conflicts leave it open.
+
+### Enable Bugbot
+
+Cameron turns the check on from the Cursor dashboard. The workflow cannot do
+that.
+
+1. [Integrations](https://cursor.com/dashboard): GitHub is connected, and the
+   installation includes `cameron-nye/rhino`.
+2. [Bugbot](https://cursor.com/dashboard/bugbot), under Automations: enable this
+   repository from the installations list.
+3. On an individual plan, Bugbot reviews pull requests authored by the GitHub
+   account linked to that Cursor account. Automerge only merges `cameron-nye`,
+   so that login is the one that needs the repository enabled.
+4. Leave "Run only when mentioned" off. Each push then publishes
+   `Cursor Bugbot`. Agents do not comment `bugbot run`. Bugbot ignores that
+   command from a bot or a GitHub App.
 
 A squash merge made with `GITHUB_TOKEN` does not start `push` workflows, and it
 does not start the `pull_request: closed` run of `🔎 Preview`.
@@ -255,8 +336,8 @@ set to `production`. It also dispatches `🔎 Preview` on `main` with `action`
 dispatch runs when Actions already squash-merged the pull request. A failed
 Preview dispatch warns and leaves the merge in place.
 
-The workflow file has to be on `main` before it runs. The pull request that adds
-it does not merge itself.
+The workflow file has to be on `main` before either trigger runs. A pull request
+that changes the gate does not merge itself while it carries `no-automerge`.
 
 Before this can merge anything, the fork needs Actions enabled (including
 GitHub-owned actions such as `actions/checkout`), workflow permissions set to

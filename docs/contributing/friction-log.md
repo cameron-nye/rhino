@@ -1,5 +1,14 @@
 # Friction log
 
+## Rhino fork
+
+On `cameron-nye/rhino`, agents file with
+[rhino-friction](../../.agents/skills/rhino-friction/SKILL.md) and
+`gh issue create` (or the GitHub issues API) on this repository. Do not call
+`@kentcdodds/friction-log`. Do not open issues on `kody-hq/kody` or any other
+Kent repository. Do not post to Discord. The upstream route below applies on
+`kody-hq/kody`.
+
 Contributor and agent papercuts while working in this repository live as GitHub
 issues labeled `friction`. They are not files in the tree.
 

@@ -1,11 +1,23 @@
 ---
 name: ship-pr
 description: >
-  Babysit a PR to done with the @kentcdodds/ship-pr Kody package: tick the PR,
-  read the focused step, fix / reply / decide, and tick again until done (merge
-  or park, deploy, leftover friction, Discord summary). Use when a pull request
-  needs to be shepherded to done.
+  Babysit a pull request to done. On cameron-nye/rhino, follow rhino-ship-pr:
+  wait for Cursor Bugbot, file friction on this fork, and do not call
+  @kentcdodds/ship-pr or Discord. Upstream kody-hq/kody still ticks the ship-pr
+  package. Use when a pull request needs to be shepherded to done.
 ---
+
+# Ship a pull request
+
+## Rhino fork
+
+This checkout is Cameron's fork. Follow
+[rhino-ship-pr](../rhino-ship-pr/SKILL.md). Stop here. Do not run the tick
+command below. Do not call `@kentcdodds/ship-pr` or `@kentcdodds/friction-log`.
+Do not open issues on `kody-hq/kody` or any other Kent repository. Do not post
+to Discord.
+
+## Upstream (kody-hq/kody only)
 
 ```bash
 npx @kodycodes/cli execute --local \
