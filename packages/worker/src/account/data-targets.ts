@@ -210,10 +210,10 @@ export const accountUserDataPendingDropTables = [] as const
 
 export const accountUserDataTargets: ReadonlyArray<UserScopedDataTarget> = [
 	{ kind: 'user_id', table: 'api_tokens' },
-	{ kind: 'user_id', table: 'connection_profiles' },
 	{ kind: 'user_id', table: 'mcp_event_subscriptions' },
 	{ kind: 'user_id', table: 'cli_credential_bootstrap_codes' },
 	{ kind: 'user_id', table: 'oauth_device_authorizations' },
+	{ kind: 'user_id', table: 'agent_registrations' },
 	{ kind: 'user_id', table: 'user_storage_buckets' },
 	{ kind: 'user_id', table: 'usage_rollups' },
 	{
@@ -325,6 +325,29 @@ export const accountUserDataTargets: ReadonlyArray<UserScopedDataTarget> = [
 		columns: ['operator_user_id'],
 	},
 	{ kind: 'user_id', table: 'execution_context_opt_ins' },
+	// Profiles a person acts as (ADR 0092). Their `grants` rows are swept by
+	// the profile purge once the profile row is gone.
+	{
+		kind: 'user_columns',
+		table: 'profiles',
+		columns: ['acting_user_id'],
+	},
+	// Who created or revoked a profile is attribution only (an Owner may revoke
+	// a member's profile): anonymize instead of dropping the member's row.
+	{
+		kind: 'replace_user_column',
+		table: 'profiles',
+		matchColumn: 'created_by_user_id',
+		setColumn: 'created_by_user_id',
+		value: 'deleted-user',
+	},
+	{
+		kind: 'replace_user_column',
+		table: 'profiles',
+		matchColumn: 'revoked_by_user_id',
+		setColumn: 'revoked_by_user_id',
+		value: 'deleted-user',
+	},
 	{
 		kind: 'user_columns',
 		table: 'execution_context_org_attachments',
@@ -540,6 +563,22 @@ export const accountUserDataTargets: ReadonlyArray<UserScopedDataTarget> = [
 		surface: 'email_outbound_provider_index',
 		reason:
 			'Operational global provider→owner reverse lookup omitted from portable export. Mailbox rows retain provider ids, but no fleet-wide automatic rebuild is claimed; account deletion keeps explicit owner cleanup.',
+	},
+	{
+		kind: 'user_id',
+		table: 'email_deliverability_effects',
+		includeInExport: false,
+		surface: 'email_deliverability_effects',
+		reason:
+			'Operational per-provider-event deliverability side-effect ledger omitted from portable export; account deletion removes the owner rows.',
+	},
+	{
+		kind: 'user_id',
+		table: 'email_mailbox_delivery_cursors',
+		includeInExport: false,
+		surface: 'email_mailbox_delivery_cursors',
+		reason:
+			'Operational per-message mailbox delivery cursor that orders lifecycle events for deliverability holds; omitted from portable export; account deletion removes the owner rows.',
 	},
 	{
 		kind: 'user_id',
@@ -1248,6 +1287,11 @@ export const accountExportRedactedColumnsByTable: Readonly<
 	api_tokens: ['token_hash'],
 	cli_credential_bootstrap_codes: ['code_hash'],
 	oauth_device_authorizations: ['device_code_hash', 'user_code'],
+	agent_registrations: [
+		'claim_token_hash',
+		'attempt_token_hash',
+		'user_code_hash',
+	],
 	email_verifications: ['token_hash'],
 	org_invite_links: ['token_hash'],
 	mcp_event_subscriptions: ['secret_encrypted', 'previous_secret_encrypted'],
@@ -1281,7 +1325,7 @@ export const accountExportForeignUserIdColumnsByTable: Readonly<
 	community_activity_events: ['actor_user_id'],
 	durable_object_duration_daily: ['actor_user_id'],
 	usage_attribution_daily: ['actor_user_id'],
-	package_app_visitor_attribution_daily: ['visitor_user_id'],
+	package_app_visitor_attribution_daily: ['visitor_user_id', 'billed_org_id'],
 	usage_connection_daily: ['holder_user_id'],
 	usage_rollups: ['actor_user_id'],
 	community_reports: ['listing_owner_user_id', 'resolved_by_user_id'],

@@ -32,6 +32,7 @@ type ExecutionContextPermission =
 	| 'write'
 	| 'delete'
 	| 'manage_access'
+	| 'command'
 
 export type ExecutionContextPreset = 'use' | 'contribute' | 'manage'
 export type ExecutionContextSharingLevel = 'only_me' | 'people' | 'team' | 'org'
@@ -50,6 +51,8 @@ export type ExecutionContextShareGrant = {
 	orgSlug?: string
 	subject: ExecutionContextGrantSubject
 	preset: ExecutionContextPreset
+	/** Explicit execution_context:command on top of the preset (ADR 0093). */
+	commands?: boolean
 }
 
 export type ExecutionContextSharing = {
@@ -63,9 +66,10 @@ export type ExecutionContextGrantSummary = {
 	fs: number
 	fsMode?: 'read' | 'write'
 	egress: { mode: ExecutionContextEgressMode; hosts?: number }
-	credentials: 'none' | { count: number }
 	runtime: 'all' | 'none' | { mode: 'allowlist'; count: number }
 	timeoutMs: number
+	/** Host commands (ADR 0093): on only after the machine opted in locally. */
+	commands?: boolean
 }
 
 type ExecutionContextChainUsage = {
@@ -86,11 +90,21 @@ export type ExecutionContextListItem = {
 	acceptingRuns: boolean
 	lastSeenAt: string | null
 	revokedAt: string | null
-	client: { name: string; version: string } | null
+	client: {
+		name: string
+		version: string
+		/** Newest published @kodycodes/cli, when Kody could look it up. */
+		latestVersion?: string | null
+		outdated?: boolean
+	} | null
 	capabilities: {
 		os?: string
 		maxConcurrent?: number
 		features?: Array<string>
+		/** Background service manager, or null when run in a terminal. */
+		service?: 'systemd' | 'launchd' | 'taskscheduler' | null
+		/** Daemon auto-update, or null when the daemon predates it. */
+		autoUpdate?: 'on' | 'off' | null
 	} | null
 	grantSummary: ExecutionContextGrantSummary
 	optedIn: boolean
@@ -180,6 +194,35 @@ type ExecutionContextAuditEvent = {
 export type ExecutionContextAuditPage = {
 	events: Array<ExecutionContextAuditEvent>
 	nextCursor: string | null
+}
+
+/** Numeric x.y.z compare; a prerelease sorts before its stable release. Build tags are ignored. */
+export function isOlderCliVersion(version: string, latest: string) {
+	const parts = (value: string) =>
+		value
+			.split(/[-+]/)[0]!
+			.split('.')
+			.map((part) => Number.parseInt(part, 10) || 0)
+	const a = parts(version)
+	const b = parts(latest)
+	for (let index = 0; index < 3; index++) {
+		const left = a[index] ?? 0
+		const right = b[index] ?? 0
+		if (left !== right) return left < right
+	}
+	const prerelease = (value: string) => value.split('+')[0]!.includes('-')
+	return prerelease(version) && !prerelease(latest)
+}
+
+export function daemonRunsAsLabel(
+	service: 'systemd' | 'launchd' | 'taskscheduler' | null | undefined,
+	status: ExecutionContextStatus,
+) {
+	if (service === 'systemd') return 'Background service (systemd)'
+	if (service === 'launchd') return 'Background service (launchd)'
+	if (service === 'taskscheduler') return 'Background service (Task Scheduler)'
+	if (status !== 'online') return 'Not running'
+	return 'Terminal (not a background service)'
 }
 
 export type ExecutionContextsPageData =
@@ -478,12 +521,6 @@ export function runtimeLabel(runtime: ExecutionContextGrantSummary['runtime']) {
 	return runtime.count === 0 ? 'none' : `${runtime.count} allowed`
 }
 
-function credentialsLabel(
-	credentials: ExecutionContextGrantSummary['credentials'],
-) {
-	return credentials === 'none' ? 'none' : String(credentials.count)
-}
-
 function timeoutLabel(timeoutMs: number) {
 	return `${Math.round(timeoutMs / 1000)} s`
 }
@@ -494,14 +531,9 @@ export function grantSummaryCell(grant: ExecutionContextGrantSummary) {
 		grant.egress.mode === 'none'
 			? 'no egress'
 			: `${egressLabel(grant.egress.mode)} egress`
-	const credentials =
-		grant.credentials === 'none'
-			? 'no credentials'
-			: pluralize(grant.credentials.count, 'credential')
 	return [
 		pluralize(grant.fs, 'path'),
 		egress,
-		credentials,
 		`Kody APIs: ${runtimeLabel(grant.runtime)}`,
 		timeoutLabel(grant.timeoutMs),
 	].join(' · ')
@@ -512,9 +544,9 @@ export function grantSummaryDetail(grant: ExecutionContextGrantSummary) {
 	return [
 		`Filesystem: ${pluralize(grant.fs, 'path')}`,
 		`Egress: ${egressLabel(grant.egress.mode)}`,
-		`Credentials: ${credentialsLabel(grant.credentials)}`,
 		`Kody APIs: ${runtimeLabel(grant.runtime)}`,
 		`Timeout: ${timeoutLabel(grant.timeoutMs)}`,
+		`Commands: ${grant.commands ? 'on' : 'off'}`,
 	].join(' · ')
 }
 
@@ -683,6 +715,30 @@ const executionContextAuditLabels: Record<string, string> = {
 	detached: 'Detached from an org',
 	chain_added: 'Added to a chain',
 	chain_removed: 'Removed from a chain',
+	commands_enabled: 'Commands turned on (on the machine)',
+	commands_disabled: 'Commands turned off',
+	command_started: 'Command started',
+	command_finished: 'Command finished',
+	run_cancelled: 'Run cancelled',
+}
+
+/** `$ npm test in /repo, exit 0` for host command audit rows (ADR 0093). */
+export function commandAuditSummary(detail: string | null | undefined) {
+	if (!detail) return null
+	let parsed: Record<string, unknown>
+	try {
+		parsed = JSON.parse(detail) as Record<string, unknown>
+	} catch {
+		return null
+	}
+	if (typeof parsed.command !== 'string') return null
+	const parts = [`$ ${parsed.command}`]
+	if (typeof parsed.cwd === 'string') parts.push(`in ${parsed.cwd}`)
+	if (parsed.background === true) parts.push('(background)')
+	if (typeof parsed.exitCode === 'number') parts.push(`exit ${parsed.exitCode}`)
+	else if (typeof parsed.reason === 'string' && parsed.reason !== 'exited')
+		parts.push(parsed.reason.replaceAll('_', ' '))
+	return parts.join(' ')
 }
 
 export function auditEventLabel(action: string) {

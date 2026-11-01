@@ -1,4 +1,6 @@
 /** @jsxImportSource @emotion/react */
+import { workspaceHomeHref } from '#client/routes/account-rail.ts'
+import { isPlainDocumentSearch } from '#universal/limited-browser.ts'
 import { homeSoftwareApplicationJsonLdScriptText } from '#universal/home-json-ld.ts'
 import { workspaceLayoutNavigation } from '../workspace-layout-policy.ts'
 import { publicAsset } from '../public-assets.ts'
@@ -52,6 +54,8 @@ import { SENTRY_CONFIG_META_NAME } from '#universal/sentry-config.ts'
 import { NotFoundPage } from '../components/not-found-page.tsx'
 import { RouteErrorPage } from '../components/route-error-page.tsx'
 import { isPermissionDeniedError } from '#universal/permission-denied.ts'
+import { DesktopExecutionProvider } from '../components/desktop-execution.tsx'
+import { DesktopNavigation } from '../components/desktop-navigation.tsx'
 import { Toaster } from '../components/toaster.tsx'
 import { YouTubeWatchOverlay } from '../components/youtube-watch-overlay.tsx'
 
@@ -184,6 +188,14 @@ export const Route = createRootRouteWithContext<{
 			abortController.signal.throwIfAborted()
 			return {
 				actorKey: shell.actorKey,
+				desktopHomeHref: (() => {
+					const personal = shell.session?.organizations.find(
+						(org) => org.personal,
+					)
+					return personal
+						? workspaceHomeHref(personal)
+						: '/account/organizations'
+				})(),
 				appShell: context.appShell,
 				shellLocation: {
 					pathname: location.pathname,
@@ -311,53 +323,68 @@ function LoadedAppLayout() {
 		'/login',
 		appShell.preserveLoginReturn ? authReturnHref : null,
 	)
+	const signupHref = buildAuthLink(
+		'/signup',
+		appShell.preserveLoginReturn ? authReturnHref : null,
+	)
 	const authShell = appShell.mode === 'auth'
 	const focused = appShell.mode === 'focused'
 	const workspace = Boolean(workspaceLayoutNavigation(useMatches(), session))
 	const Content = workspace ? 'div' : 'main'
 	return (
-		<div
-			data-app-frame
-			data-app-interface={pageNavigation ? '' : undefined}
-			css={appFrameCss}
+		<DesktopExecutionProvider
+			key={session?.username ?? 'signed-out'}
+			actorKey={actorKey}
+			username={session?.username ?? null}
+			orgSlug={session?.organizations.find((org) => org.personal)?.slug ?? null}
+			pathname={pathname}
 		>
-			<a href="#main" css={visuallyHiddenUntilFocusedCss}>
-				Skip to content
-			</a>
-			{authShell || workspace ? null : (
-				<SiteHeader
-					focused={focused}
-					loggedIn={session !== null}
-					organizationSession={session}
-					displayName={session?.username || session?.email || ''}
-					username={session?.username ?? ''}
-					avatarUrl={session?.avatarUrl ?? null}
-					showAdminLink={session?.roles.includes('admin') ?? false}
-					showDemoIndicator={session?.featureFlags?.['demo-indicator'] === true}
-					loginHref={loginHref}
-					currentPathname={pathname}
-				/>
-			)}
-			<Content
-				id={workspace ? undefined : 'main'}
-				tabIndex={-1}
-				css={
-					workspace
-						? { width: '100%', flex: 1 }
-						: appMainCss(appShell, illustratedError)
-				}
+			<div
+				data-app-frame
+				data-app-interface={pageNavigation ? '' : undefined}
+				css={appFrameCss}
 			>
-				<Outlet />
-			</Content>
-			{authShell || focused || workspace ? null : (
-				<SiteFooter
-					loggedIn={session !== null}
-					loginHref={loginHref}
-					homeHref={homeHref}
-				/>
-			)}
-			<YouTubeWatchOverlay snapshot={youtubeWatch} location={shellLocation} />
-		</div>
+				<a href="#main" css={visuallyHiddenUntilFocusedCss}>
+					Skip to content
+				</a>
+				{authShell || workspace ? null : (
+					<SiteHeader
+						focused={focused}
+						loggedIn={session !== null}
+						organizationSession={session}
+						displayName={session?.username || session?.email || ''}
+						username={session?.username ?? ''}
+						avatarUrl={session?.avatarUrl ?? null}
+						showAdminLink={session?.roles.includes('admin') ?? false}
+						showDemoIndicator={
+							session?.featureFlags?.['demo-indicator'] === true
+						}
+						loginHref={loginHref}
+						currentPathname={pathname}
+					/>
+				)}
+				<Content
+					id={workspace ? undefined : 'main'}
+					tabIndex={-1}
+					css={
+						workspace
+							? { width: '100%', flex: 1 }
+							: appMainCss(appShell, illustratedError)
+					}
+				>
+					<Outlet />
+				</Content>
+				{authShell || focused || workspace ? null : (
+					<SiteFooter
+						loggedIn={session !== null}
+						loginHref={loginHref}
+						signupHref={signupHref}
+						homeHref={homeHref}
+					/>
+				)}
+				<YouTubeWatchOverlay snapshot={youtubeWatch} location={shellLocation} />
+			</div>
+		</DesktopExecutionProvider>
 	)
 }
 
@@ -378,6 +405,10 @@ function DocumentShell({ children }: { children: ReactNode }) {
 			state.status === 'idle' ? state.resolvedLocation?.href : undefined,
 	})
 
+	// Limited browsers get sign-in pages as plain HTML (ADR 0094).
+	const plainDocument = useRouterState({
+		select: (state) => isPlainDocumentSearch(state.location.searchStr),
+	})
 	const loaded = Route.useLoaderData()
 	const failure = useRouterState({
 		select: (state) => state.matches.find((match) => match.error)?.error,
@@ -520,12 +551,15 @@ function DocumentShell({ children }: { children: ReactNode }) {
 				<FathomTracker siteId={loaded?.fathomSiteId} />
 			</head>
 			<body>
+				<DesktopNavigation
+					homeHref={loaded?.desktopHomeHref ?? '/account/organizations'}
+				/>
 				<AppBrowserEffects />
 				{children}
 				<Toaster />
 				{/* Classic script: hoist Emotion SSR styles before module hydrate. */}
 				<script src={publicAsset('/emotion-style-hoist.js')} />
-				<Scripts />
+				{plainDocument ? null : <Scripts />}
 			</body>
 		</html>
 	)

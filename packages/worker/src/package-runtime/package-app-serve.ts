@@ -41,12 +41,12 @@ import {
 	filterPackageAppSetCookies,
 	logPackageAppSetCookieNamesDropped,
 	logPackageAppSetCookieDomainStripped,
-	scrubPackageAppSetCookieDomains,
 } from '#worker/package-runtime/package-app-set-cookie.ts'
+import { recordPackageAppCookieFindings } from '#worker/package-runtime/package-app-cookie-httponly.ts'
 import {
-	enforcePackageAppCookieHttpOnly,
-	recordPackageAppCookieFindings,
-} from '#worker/package-runtime/package-app-cookie-httponly.ts'
+	deferPackageAppResponseRewrite,
+	type PackageAppResponseRewriteReport,
+} from '#worker/package-runtime/package-app-response-rewrite.ts'
 import {
 	filterPackageAppRequestCookies,
 	packageAppCookiePrefix,
@@ -67,6 +67,7 @@ import {
 import { getPackageNameLeaf } from '#worker/package-registry/package-name.ts'
 import { getPackageAppClientReadableCookieNames } from '#worker/package-registry/manifest.ts'
 import { loadPackageSourceBySourceId } from '#worker/package-registry/source.ts'
+import { newRunCredentialClientBinding } from '#worker/credentials/credential-client-handle.ts'
 import { loadPublishedCredentialNeeds } from '#worker/credentials/credential-needs-closure.ts'
 import { savedCredentialNeeds } from '#worker/credentials/credential-needs.ts'
 import { isPackageCredentialSuppliersEnabled } from '#worker/credentials/credential-suppliers-flag.ts'
@@ -94,10 +95,10 @@ import {
 	packageAppSyntheticHeaderValue,
 	type PackageAppTrustedDispatch,
 } from '#worker/package-runtime/package-app-synthetic.ts'
+import { resolvePackageAppBilling } from '#worker/package-runtime/package-app-billing.ts'
 import { withPackageAppVisitorHeader } from '#worker/package-runtime/package-app-visitor-header.ts'
 import {
 	endPackageAppVisit,
-	endPackageAppVisitWithResponse,
 	withPackageAppVisitTicket,
 } from '#worker/package-runtime/package-app-visit-ticket.ts'
 import { packageRealtimeSessionRpc } from '#worker/package-runtime/realtime-session.ts'
@@ -108,7 +109,6 @@ import {
 } from '#worker/package-runtime/package-app-anonymous-serve.ts'
 import { wantsJson } from '#worker/utils.ts'
 import {
-	applyServerTimingHeader,
 	pushServerTiming,
 	type ServerTimingEntry,
 } from '#worker/server-timing.ts'
@@ -673,22 +673,12 @@ function createPackageAppErrorResponse(input: {
 function attachPackageAppServerTiming(
 	response: Response,
 	serverTiming: Array<ServerTimingEntry>,
+	visitNonce?: string | null,
 ) {
-	if (serverTiming.length === 0) return response
-	// Skip timing on WebSocket upgrades — see function doc.
-	if (response.webSocket || response.status === 101) return response
-	const headers = new Headers(response.headers)
-	applyServerTimingHeader(headers, serverTiming)
-	// 204, 205, and 304 cannot carry a body. Drop it before rewrapping so
-	// attaching Server-Timing cannot throw on a null-body app response.
-	const nullBody =
-		response.status === 204 ||
-		response.status === 205 ||
-		response.status === 304
-	return new Response(nullBody ? null : response.body, {
-		status: response.status,
-		statusText: response.statusText,
-		headers,
+	// WebSocket upgrades skip timing inside the rewrite (see function doc).
+	return deferPackageAppResponseRewrite(response, {
+		serverTiming,
+		...(visitNonce ? { visitNonce } : {}),
 	})
 }
 
@@ -784,6 +774,8 @@ export async function servePackageAppRequest(input: {
 	visitor: RuntimePackageAppVisitor | null
 	/** See `RuntimePackageAppServeInput.identity`. Ignored with a visitor. */
 	identity?: RuntimePackageAppIdentity | null
+	/** See `RuntimePackageAppServeInput.consentPrincipal`. Never reaches the app. */
+	consentPrincipal?: RuntimePackageAppIdentity | null
 	/** See `RuntimePackageAppServeInput.approvedPublishedCommit`. */
 	approvedPublishedCommit?: string | null
 	packagePath: PackageAppPath
@@ -817,6 +809,7 @@ export async function servePackageAppRequest(input: {
 			owner: input.owner,
 			visitor: input.visitor,
 			identity: input.identity ?? null,
+			consentPrincipal: input.consentPrincipal ?? null,
 			approvedPublishedCommit: input.approvedPublishedCommit,
 			packagePath: input.packagePath,
 			dispatch: input.dispatch,
@@ -827,6 +820,8 @@ export async function servePackageAppRequest(input: {
 	// Identity rides only on an otherwise anonymous request; a visitor already
 	// names the person.
 	const identity = visitor ? null : (input.identity ?? null)
+	// Only decides whether to offer consent; it is never handed to the app.
+	const consentPerson = visitor ?? identity ?? input.consentPrincipal ?? null
 	const serverTiming = input.serverTiming ?? []
 	const requestUrl = new URL(request.url)
 	const { kodyId } = packagePath
@@ -1095,6 +1090,20 @@ export async function servePackageAppRequest(input: {
 	let clientReadableCookieNames: ReadonlyArray<string> = []
 	let visitNonce: string | null = null
 	try {
+		// The supplier flag depends only on the owning org, so it runs beside
+		// the manifest and billing reads instead of after them.
+		const suppliersEnabledPending = pushServerTiming(
+			serverTiming,
+			'credentialSuppliers',
+			() =>
+				isPackageCredentialSuppliersEnabled({
+					db: env.APP_DB,
+					orgId: owner.userId,
+					request,
+				}),
+		)
+		// Settled below or abandoned on refusal; never an unhandled rejection.
+		suppliersEnabledPending.catch(() => {})
 		const [packageManifest, callerContext] = await Promise.all([
 			pushServerTiming(serverTiming, 'manifest', () =>
 				loadInvokeManifestBySourceId({
@@ -1103,12 +1112,22 @@ export async function servePackageAppRequest(input: {
 					sourceId: savedPackage.sourceId,
 				}),
 			),
-			createPackageAppCallerContext({
-				baseUrl,
-				owner,
-				visitor,
-				packageId: savedPackage.id,
-			}),
+			pushServerTiming(serverTiming, 'billing', () =>
+				resolvePackageAppBilling({
+					db: env.APP_DB,
+					ownerId: owner.userId,
+					visitor,
+					internetVisible: savedPackage.isInternetVisible,
+				}),
+			).then((billing) =>
+				createPackageAppCallerContext({
+					baseUrl,
+					owner,
+					visitor,
+					packageId: savedPackage.id,
+					billing,
+				}),
+			),
 		])
 		clientReadableCookieNames = getPackageAppClientReadableCookieNames(
 			packageManifest.manifest,
@@ -1119,19 +1138,17 @@ export async function servePackageAppRequest(input: {
 			publishedCommit: packageManifest.source.published_commit,
 		})
 		if (refusal) return attachPackageAppServerTiming(refusal, serverTiming)
-		const suppliersEnabled = await isPackageCredentialSuppliersEnabled({
-			db: env.APP_DB,
-			orgId: owner.userId,
-			request,
-		})
+		const suppliersEnabled = await suppliersEnabledPending
 		const visitorNeeds = suppliersEnabled
 			? savedCredentialNeeds(
-					await loadPublishedCredentialNeeds({
-						env,
-						userId: owner.userId,
-						sourceId: savedPackage.sourceId,
-						request: callerContext.request,
-					}),
+					await pushServerTiming(serverTiming, 'credentialNeeds', () =>
+						loadPublishedCredentialNeeds({
+							env,
+							userId: owner.userId,
+							sourceId: savedPackage.sourceId,
+							request: callerContext.request,
+						}),
+					),
 				)
 			: []
 		const executorNeeds = visitorNeeds.filter(
@@ -1145,12 +1162,14 @@ export async function servePackageAppRequest(input: {
 		// executor-only visit: nothing else treats them as a visitor.
 		const executorGrant =
 			!visitor && identity && executorNeeds.length > 0
-				? await findLivePackageAppOauthGrant({
-						db: env.APP_DB,
-						personId: identity.userId,
-						orgUsername: packagePath.username.toLowerCase(),
-						kodyId: savedPackage.kodyId,
-					})
+				? await pushServerTiming(serverTiming, 'executorGrant', () =>
+						findLivePackageAppOauthGrant({
+							db: env.APP_DB,
+							personId: identity.userId,
+							orgUsername: packagePath.username.toLowerCase(),
+							kodyId: savedPackage.kodyId,
+						}),
+					)
 				: null
 		if (executorGrant) {
 			await notePackageAppOauthGrantUse({
@@ -1212,7 +1231,8 @@ export async function servePackageAppRequest(input: {
 					{
 						env,
 						callerContext,
-						binding: '',
+						// Only checks the need can open; the handle is discarded.
+						binding: newRunCredentialClientBinding(),
 						packageId: savedPackage.id,
 						runNeeds: async () =>
 							new Map(visitorNeeds.map((item) => [item.key, item])),
@@ -1248,13 +1268,13 @@ export async function servePackageAppRequest(input: {
 		// no grant for this app yet goes to consent, and any grant (even one
 		// that declined every optional need) serves the app after that.
 		if (
-			(visitor ?? identity) &&
+			consentPerson &&
 			(request.method === 'GET' || request.method === 'HEAD') &&
 			executorNeeds.some((need) => need.required === false) &&
 			!executorGrant &&
 			!(await findLivePackageAppOauthGrant({
 				db: env.APP_DB,
-				personId: (visitor ?? identity)!.userId,
+				personId: consentPerson.userId,
 				orgUsername: packagePath.username.toLowerCase(),
 				kodyId: savedPackage.kodyId,
 			}))
@@ -1352,11 +1372,9 @@ export async function servePackageAppRequest(input: {
 			)
 		} catch (error) {
 			if (request.method === 'OPTIONS') {
-				return endPackageAppVisitWithResponse(
-					attachPackageAppServerTiming(
-						unhandledPackageAppOptionsResponse(),
-						serverTiming,
-					),
+				return attachPackageAppServerTiming(
+					unhandledPackageAppOptionsResponse(),
+					serverTiming,
 					visitNonce,
 				)
 			}
@@ -1375,41 +1393,35 @@ export async function servePackageAppRequest(input: {
 					method: request.method,
 					error,
 				}))
-			return endPackageAppVisitWithResponse(
-				attachPackageAppServerTiming(
-					createPackageAppErrorResponse({
-						request,
-						kind: 'package-entrypoint',
-						kodyId: savedPackage.kodyId,
-						packageName: savedPackage.name,
-						runtimeRunId,
-					}),
-					serverTiming,
-				),
+			return attachPackageAppServerTiming(
+				createPackageAppErrorResponse({
+					request,
+					kind: 'package-entrypoint',
+					kodyId: savedPackage.kodyId,
+					packageName: savedPackage.name,
+					runtimeRunId,
+				}),
+				serverTiming,
 				visitNonce,
 			)
 		}
 		if (isPackageAppRuntimeThrownResponse(fetched)) {
 			if (request.method === 'OPTIONS') {
-				return endPackageAppVisitWithResponse(
-					attachPackageAppServerTiming(
-						unhandledPackageAppOptionsResponse(),
-						serverTiming,
-					),
+				return attachPackageAppServerTiming(
+					unhandledPackageAppOptionsResponse(),
+					serverTiming,
 					visitNonce,
 				)
 			}
-			return endPackageAppVisitWithResponse(
-				attachPackageAppServerTiming(
-					createPackageAppErrorResponse({
-						request,
-						kind: 'package-entrypoint',
-						kodyId: savedPackage.kodyId,
-						packageName: savedPackage.name,
-						runtimeRunId: fetched.headers.get(packageAppRuntimeRunIdHeader),
-					}),
-					serverTiming,
-				),
+			return attachPackageAppServerTiming(
+				createPackageAppErrorResponse({
+					request,
+					kind: 'package-entrypoint',
+					kodyId: savedPackage.kodyId,
+					packageName: savedPackage.name,
+					runtimeRunId: fetched.headers.get(packageAppRuntimeRunIdHeader),
+				}),
+				serverTiming,
 				visitNonce,
 			)
 		}
@@ -1422,56 +1434,76 @@ export async function servePackageAppRequest(input: {
 			runtimeRunId: fetched.headers.get(packageAppRuntimeRunIdHeader),
 		})
 		const requestUrl = new URL(request.url)
-		const scrubbed = scrubPackageAppSetCookieDomains(fetched, {
-			responseHostname: requestUrl.hostname,
-			packageAppApexHostnames: listPackageAppOrigins({ env }).map(
-				(origin) => origin.hostname,
-			),
-		})
-		const filtered = filterPackageAppSetCookies(scrubbed.response, cookiePrefix)
-		const enforced = enforcePackageAppCookieHttpOnly(filtered.response, {
-			clientReadable: clientReadableCookieNames,
-		})
-		if (enforced.findings.length > 0) {
-			const warningWrite = recordPackageAppCookieFindings({
-				db: env.APP_DB,
-				packageId: savedPackage.id,
-				findings: enforced.findings,
-				hostname: requestUrl.hostname,
-				pathname: requestUrl.pathname,
-				now: Date.now(),
-			}).catch((error) => {
-				console.warn('package-app-cookie-warning-record-failed', {
-					packageId: savedPackage.id,
-					error: getErrorMessage(error),
-				})
-			})
-			try {
-				scheduleWorkerWaitUntil(warningWrite)
-			} catch {
-				void warningWrite
-			}
-		}
-		logPackageAppSetCookieNamesDropped({
-			hostname: requestUrl.hostname,
-			pathname: requestUrl.pathname,
-			dropped: filtered.dropped,
-			surface: 'package-app-serve',
-		})
-		logPackageAppSetCookieDomainStripped({
-			hostname: requestUrl.hostname,
-			pathname: requestUrl.pathname,
-			stripped: scrubbed.stripped,
-			surface: 'package-app-serve',
-		})
-		return endPackageAppVisitWithResponse(
-			attachPackageAppServerTiming(enforced.response, serverTiming),
+		// One pass for cookie scrub/filter/HttpOnly, timing, and the visit
+		// watch; inside the origin boundary it merges with cache headers and
+		// the run-id strip.
+		return deferPackageAppResponseRewrite(fetched, {
+			domainScrub: {
+				responseHostname: requestUrl.hostname,
+				packageAppApexHostnames: listPackageAppOrigins({ env }).map(
+					(origin) => origin.hostname,
+				),
+			},
+			cookiePrefix,
+			httpOnly: { clientReadable: clientReadableCookieNames },
+			serverTiming,
 			visitNonce,
-		)
+			onReport: [
+				(report) => {
+					recordPackageAppServeCookieReport({
+						env,
+						packageId: savedPackage.id,
+						requestUrl,
+						report,
+					})
+				},
+			],
+		})
 	} catch (error) {
 		endPackageAppVisit(visitNonce)
 		throw error
 	}
+}
+
+function recordPackageAppServeCookieReport(input: {
+	env: Env
+	packageId: string
+	requestUrl: URL
+	report: PackageAppResponseRewriteReport
+}) {
+	const { env, packageId, requestUrl, report } = input
+	if (report.findings.length > 0) {
+		const warningWrite = recordPackageAppCookieFindings({
+			db: env.APP_DB,
+			packageId,
+			findings: report.findings,
+			hostname: requestUrl.hostname,
+			pathname: requestUrl.pathname,
+			now: Date.now(),
+		}).catch((error) => {
+			console.warn('package-app-cookie-warning-record-failed', {
+				packageId,
+				error: getErrorMessage(error),
+			})
+		})
+		try {
+			scheduleWorkerWaitUntil(warningWrite)
+		} catch {
+			void warningWrite
+		}
+	}
+	logPackageAppSetCookieNamesDropped({
+		hostname: requestUrl.hostname,
+		pathname: requestUrl.pathname,
+		dropped: report.dropped,
+		surface: 'package-app-serve',
+	})
+	logPackageAppSetCookieDomainStripped({
+		hostname: requestUrl.hostname,
+		pathname: requestUrl.pathname,
+		stripped: report.stripped,
+		surface: 'package-app-serve',
+	})
 }
 
 export { isPackageAppSyntheticRequest }

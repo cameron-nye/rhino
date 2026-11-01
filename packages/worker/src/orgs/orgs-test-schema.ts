@@ -33,6 +33,9 @@ export async function ensureOrgsTestSchema(db: D1Database) {
 				deleted_at TEXT,
 				deleting_at TEXT,
 				access_epoch INTEGER NOT NULL DEFAULT 0,
+				members_can_create_packages INTEGER NOT NULL DEFAULT 0,
+				members_can_create_credentials INTEGER NOT NULL DEFAULT 1,
+				usage_warnings_enabled INTEGER NOT NULL DEFAULT 1,
 				created_by_user_id TEXT,
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL
@@ -47,6 +50,17 @@ export async function ensureOrgsTestSchema(db: D1Database) {
 			.run()
 	} catch {
 		// Column already present on fuller schemas / re-runs.
+	}
+	for (const column of [
+		'members_can_create_packages INTEGER NOT NULL DEFAULT 0',
+		'members_can_create_credentials INTEGER NOT NULL DEFAULT 1',
+		'usage_warnings_enabled INTEGER NOT NULL DEFAULT 1',
+	]) {
+		try {
+			await db.prepare(`ALTER TABLE orgs ADD COLUMN ${column}`).run()
+		} catch {
+			// Column already present on fuller schemas / re-runs.
+		}
 	}
 	try {
 		await db
@@ -140,7 +154,32 @@ export async function ensureOrgsTestSchema(db: D1Database) {
 				created_by_user_id TEXT NOT NULL,
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL,
-				deleted_at TEXT
+				deleted_at TEXT,
+				origin TEXT NOT NULL DEFAULT 'manual',
+				expires_at TEXT,
+				allow_unmappable_credential_changes INTEGER NOT NULL DEFAULT 0
+			)`,
+		)
+		.run()
+	await db
+		.prepare(
+			`CREATE TABLE IF NOT EXISTS profiles (
+				id TEXT PRIMARY KEY NOT NULL,
+				org_id TEXT NOT NULL,
+				owner_kind TEXT NOT NULL DEFAULT 'person' CHECK (owner_kind IN ('person')),
+				acting_user_id TEXT,
+				parent_profile_id TEXT REFERENCES profiles (id),
+				name TEXT NOT NULL,
+				depth INTEGER NOT NULL CHECK (depth BETWEEN 1 AND 5),
+				expires_at TEXT,
+				revoked_at TEXT,
+				revoked_by_user_id TEXT,
+				created_by_user_id TEXT NOT NULL,
+				created_by_profile_id TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				CHECK (owner_kind <> 'person' OR acting_user_id IS NOT NULL),
+				CHECK ((parent_profile_id IS NULL) = (depth = 1))
 			)`,
 		)
 		.run()
@@ -187,6 +226,8 @@ export async function ensureOrgsTestSchema(db: D1Database) {
 				trigger_name TEXT NOT NULL,
 				instance_id TEXT NOT NULL,
 				enabler_user_id TEXT NOT NULL,
+				enabler_scopes_json TEXT,
+				enabler_profile_id TEXT,
 				state TEXT NOT NULL DEFAULT 'on',
 				paused_reason TEXT,
 				paused_permission TEXT,
@@ -328,6 +369,7 @@ export async function ensureOrgsTestSchema(db: D1Database) {
 				epoch INTEGER NOT NULL,
 				compiled_json TEXT NOT NULL,
 				computed_at TEXT NOT NULL,
+				valid_until TEXT,
 				PRIMARY KEY (org_id, user_id)
 			)`,
 		)

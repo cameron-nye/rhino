@@ -1,4 +1,11 @@
 import { ExecutionContextError } from '#worker/execution-contexts/errors.ts'
+import { loadOrgUsageWarningsEnabled } from '#worker/orgs/usage-warnings.ts'
+import {
+	computeIncludeHeadsUpClaimTtlSeconds,
+	computeIncludeHeadsUpKvKey,
+	formatComputeIncludeHeadsUp,
+} from '#mcp/compute-include-heads-up.ts'
+import { orgUsagePath } from '#universal/org-pages.ts'
 import { executionContextsFlagKey } from '#worker/execution-contexts/flag.ts'
 import {
 	type ExecuteRoutingArgs,
@@ -6,7 +13,10 @@ import {
 	routeExecuteForCaller,
 } from '#worker/execution-contexts/execute-routing.ts'
 import {
-	describeCloudFallback,
+	describeRanOn,
+	describeRanOnWithWorkerUnits,
+	ranOnFromMetadata,
+	type ExecuteRanOn,
 	type ExecutionContextRunMetadata,
 } from '#worker/execution-contexts/routing.ts'
 import * as Sentry from '@sentry/cloudflare'
@@ -113,6 +123,7 @@ import {
 	beginRunRecord,
 	claimRunRecord,
 	ensureRunRecordStarted,
+	updateRunningRunRecordMetadata,
 	finishRunRecord,
 	getRunRecord,
 	getRunRecordByIdempotencyKey,
@@ -241,22 +252,33 @@ export const executeToolOutputSchema = {
 	warnings: z
 		.array(z.string())
 		.optional()
-		.describe('Server guidance, e.g. raw-fetch host nudges.'),
+		.describe(
+			'Server guidance, e.g. raw-fetch host nudges, or the once-a-month usage heads-up when this workspace has used 80% or more of its included Worker compute.',
+		),
 	memories: z
 		.unknown()
 		.optional()
 		.describe('Relevant stored memories surfaced for this call.'),
+	ranOn: z
+		.unknown()
+		.optional()
+		.describe(
+			'Where the run happened, on every routed response (input errors before routing may omit it): { kind: "cloud" | "context", id: "cloud" | context id, name: "Kody cloud" | context name, yours?, timing?, attempts, fellBackToCloud, workerUnits? }. workerUnits is the Worker compute units charged by the worker of this call: 0 on an execution context or when that worker already ran today, 1 when Kody cloud started it today; omitted while a cloud run is still in progress. attempts lists contexts that passed on it (offline, busy, skipped) with reasons. timing (ms, context runs that reported it): queueMs, setupMs (packageGraphMs, packageGraphCached), executeMs and daemonMs on the machine, serverMs on Kody, transitMs = serverMs - daemonMs for dispatch plus return.',
+		),
 	executionContext: z
 		.unknown()
 		.optional()
 		.describe(
-			'Where an execution-context run went: the context, every attempt, and fellBackToCloud when it ran on Kody cloud instead.',
+			'Legacy detail for runs that involved an execution context (same attempts and fellBackToCloud as ranOn). Prefer ranOn.',
 		),
 }
 
 export type ExecuteToolStructuredContent = StructuredContentFromFields<
 	typeof executeToolOutputSchema
 >
+
+/** Longest a detached context run waits for its main run record to start. */
+const runRecordStartWaitMs = 2_000
 
 const executeCodeRequiredMessage =
 	'execute requires `code`: a single ESM module string with a default export.'
@@ -401,8 +423,9 @@ export async function runExecuteToolCall(input: {
 	let transportSignal: ReturnType<typeof createDetachableAbortSignal> | null =
 		null
 	let claimedExecuteUsage: ClaimedExecuteUsage | null = null
+	let chargedWorkerUnits = 0
 	const response = await attachExecuteUsage(
-		await runExecuteToolWithErrorBoundary(),
+		attachWorkerUnits(await runExecuteToolWithErrorBoundary()),
 	)
 	// Detach only after the follow response is built, including the
 	// usage read. A caller cancel before that still stops the sandbox.
@@ -418,6 +441,51 @@ export async function runExecuteToolCall(input: {
 		transportDetached = true
 	}
 	return response
+
+	/**
+	 * Units this call's own worker charged, on `ranOn` and its text line.
+	 * Context runs never claim one; a cloud run still in progress has not
+	 * settled yet, so it is left out until runGet.
+	 */
+	function attachWorkerUnits<
+		Response extends {
+			content: Array<ContentBlock>
+			structuredContent: Record<string, unknown>
+		},
+	>(response: Response): Response {
+		const ranOn = response.structuredContent['ranOn'] as
+			| ExecuteRanOn
+			| undefined
+		if (!ranOn || typeof ranOn !== 'object' || !('kind' in ranOn)) {
+			return response
+		}
+		if (
+			ranOn.kind === 'cloud' &&
+			response.structuredContent['inProgress'] === true
+		) {
+			return response
+		}
+		const workerUnits = ranOn.kind === 'context' ? 0 : chargedWorkerUnits
+		const lines = new Set([
+			describeRanOn(ranOn),
+			describeRanOn(ranOn, { running: true }),
+		])
+		return {
+			...response,
+			content: response.content.map((block) =>
+				block.type === 'text' && lines.has(block.text)
+					? {
+							...block,
+							text: describeRanOnWithWorkerUnits(block.text, workerUnits),
+						}
+					: block,
+			),
+			structuredContent: {
+				...response.structuredContent,
+				ranOn: { ...ranOn, workerUnits },
+			},
+		}
+	}
 
 	async function attachExecuteUsage<
 		Response extends { structuredContent: Record<string, unknown> },
@@ -583,6 +651,7 @@ export async function runExecuteToolCall(input: {
 						email: entitlementEmail,
 						onUsage: (claimed) => {
 							claimedExecuteUsage = claimed
+							if (claimed.usage.created) chargedWorkerUnits += 1
 						},
 						waitUntil,
 						orgBudget: callerContext.request
@@ -633,10 +702,7 @@ export async function runExecuteToolCall(input: {
 			// cannot record one.
 			await admissionPromise
 		}
-		const executeStartedByLabel =
-			input.startedByLabel?.trim() ||
-			callerContext.request?.credential.profileName ||
-			null
+		const executeStartedByLabel = input.startedByLabel?.trim() || null
 		if (normalizedIdempotencyKey && storageOwnerId) {
 			const claim = await claimRunRecord({
 				env,
@@ -781,38 +847,64 @@ export async function runExecuteToolCall(input: {
 					...claimedRunHandle.context.metadata,
 					executionContext: routed.metadata,
 				}
+				// Best-effort and never throws; routing must not wait on it. The
+				// running-row check keeps a late write off a finished run.
+				const metadataWrite = updateRunningRunRecordMetadata({
+					env,
+					handle: claimedRunHandle,
+				})
+				if (waitUntil) waitUntil(metadataWrite)
+				else void metadataWrite
 			}
 		}
-		const { cloudFallbackContent, cloudFallbackFields } = cloudFallbackParts(
+		const { ranOnContent, ranOnFields } = ranOnParts(
 			routed?.kind === 'cloud' ? routed.metadata : null,
 		)
 		if (routed?.kind === 'pending' || routed?.kind === 'queued') {
 			transportDetached = true
+			// The context finishes this row later; make sure the running row
+			// (idempotency key, started_by) is readable before the caller polls.
+			const started = claimedRunHandle
+				? await Promise.race([
+						ensureRunRecordStarted({ env, handle: claimedRunHandle }).catch(
+							(error: unknown) => {
+								console.warn('execute-context-run-start-failed', error)
+								return false
+							},
+						),
+						new Promise<false>((resolve) =>
+							setTimeout(resolve, runRecordStartWaitMs, false),
+						),
+					])
+				: false
 			const timing = finishToolTiming(timingStart)
 			return buildTransportBudgetFollowResponse({
 				conversationId: resolvedConversationId,
 				timing,
 				runId: routed.runId,
-				idempotencyKey: runRowOwned
-					? (claimedRunHandle?.context.idempotencyKey?.trim() ?? '')
-					: '',
+				idempotencyKey:
+					runRowOwned || started
+						? (claimedRunHandle?.context.idempotencyKey?.trim() ?? '')
+						: '',
 				memories: null,
+				executionContext: routed.metadata,
 			})
 		}
 		if (routed?.kind === 'ran') {
 			transportDetached = true
 			const timing = finishToolTiming(timingStart)
+			const ranOnContext = ranOnParts(routed.metadata)
 			return {
-				content: prependToolMetadataContent(
-					resolvedConversationId,
-					routed.result.content as Array<ContentBlock>,
-				),
+				content: prependToolMetadataContent(resolvedConversationId, [
+					...(routed.result.content as Array<ContentBlock>),
+					...ranOnContext.ranOnContent,
+				]),
 				structuredContent: {
 					...routed.result.structuredContent,
 					conversationId: resolvedConversationId,
 					timing,
 					...(claimedRunHandle ? { runId: claimedRunHandle.id } : {}),
-					executionContext: routed.metadata,
+					...ranOnContext.ranOnFields,
 				},
 				isError: routed.result.isError,
 			}
@@ -1074,6 +1166,11 @@ export async function runExecuteToolCall(input: {
 				conversationId: resolvedConversationId,
 				claimed: claimedExecuteUsage,
 			})),
+			...(await resolveComputeIncludeHeadsUp({
+				env,
+				callerContext,
+				claimed: claimedExecuteUsage,
+			})),
 		]
 		const runId =
 			typeof result.runId === 'string'
@@ -1119,7 +1216,7 @@ export async function runExecuteToolCall(input: {
 						type: 'text',
 						text: formatExecutionOutput(result),
 					},
-					...cloudFallbackContent,
+					...ranOnContent,
 					...formatRawFetchHostNudgeContent(rawFetchHostNudges),
 					...formatSurfacedMemoriesMarkdown(surfacedMemories),
 				]),
@@ -1132,12 +1229,11 @@ export async function runExecuteToolCall(input: {
 					errorDetails,
 					...entitlementStructuredContent(result.error),
 					logs: result.logs ?? [],
-					...cloudFallbackFields,
 					...(rawFetchHostNudges.length > 0
 						? { warnings: rawFetchHostNudges }
 						: {}),
 					...buildMemoryStructuredContent(surfacedMemories),
-					...cloudFallbackFields,
+					...ranOnFields,
 				},
 				isError: true,
 			}
@@ -1175,7 +1271,7 @@ export async function runExecuteToolCall(input: {
 							text: `Error: ${message}`,
 						},
 						...formatSurfacedMemoriesMarkdown(surfacedMemories),
-						...cloudFallbackContent,
+						...ranOnContent,
 					]),
 					structuredContent: {
 						conversationId: resolvedConversationId,
@@ -1186,7 +1282,7 @@ export async function runExecuteToolCall(input: {
 						result: passthrough?.structuredResult ?? null,
 						logs: result.logs ?? [],
 						...buildMemoryStructuredContent(surfacedMemories),
-						...cloudFallbackFields,
+						...ranOnFields,
 					},
 					isError: true,
 				}
@@ -1204,7 +1300,7 @@ export async function runExecuteToolCall(input: {
 							text: `Error: ${contentLimited.note}`,
 						},
 						...formatSurfacedMemoriesMarkdown(surfacedMemories),
-						...cloudFallbackContent,
+						...ranOnContent,
 					]),
 					structuredContent: {
 						conversationId: resolvedConversationId,
@@ -1216,7 +1312,7 @@ export async function runExecuteToolCall(input: {
 						result: passthrough?.structuredResult ?? null,
 						logs: result.logs ?? [],
 						...buildMemoryStructuredContent(surfacedMemories),
-						...cloudFallbackFields,
+						...ranOnFields,
 					},
 					isError: true,
 				}
@@ -1251,7 +1347,7 @@ export async function runExecuteToolCall(input: {
 					...contentLimited.blocks,
 					...formatRawFetchHostNudgeContent(rawFetchHostNudges),
 					...formatSurfacedMemoriesMarkdown(surfacedMemories),
-					...cloudFallbackContent,
+					...ranOnContent,
 				]),
 				structuredContent: {
 					conversationId: resolvedConversationId,
@@ -1274,7 +1370,7 @@ export async function runExecuteToolCall(input: {
 						? { warnings: rawFetchHostNudges }
 						: {}),
 					...buildMemoryStructuredContent(surfacedMemories),
-					...cloudFallbackFields,
+					...ranOnFields,
 				},
 				isError,
 			}
@@ -1314,7 +1410,7 @@ export async function runExecuteToolCall(input: {
 						displayText: structuredResultValue.displayText,
 					}),
 				},
-				...cloudFallbackContent,
+				...ranOnContent,
 				...formatRawFetchHostNudgeContent(rawFetchHostNudges),
 				...formatSurfacedMemoriesMarkdown(surfacedMemories),
 			]),
@@ -1331,7 +1427,7 @@ export async function runExecuteToolCall(input: {
 					: {}),
 				result: structuredResultValue.value,
 				logs: result.logs ?? [],
-				...cloudFallbackFields,
+				...ranOnFields,
 				...(rawFetchHostNudges.length > 0
 					? { warnings: rawFetchHostNudges }
 					: {}),
@@ -1350,6 +1446,15 @@ function normalizeExecuteIdempotencyKey(
 	return trimmed.slice(0, runRecordMaxIdempotencyKeyLength)
 }
 
+/** The context a detached run is on; cloud runs have no context to cancel. */
+function runningContextName(metadata: unknown) {
+	if (!metadata || typeof metadata !== 'object') return null
+	const { id, name } = metadata as { id?: unknown; name?: unknown }
+	return typeof id === 'string' && id !== 'cloud' && typeof name === 'string'
+		? name
+		: null
+}
+
 function buildTransportBudgetFollowResponse(input: {
 	conversationId: string
 	timing: {
@@ -1362,16 +1467,20 @@ function buildTransportBudgetFollowResponse(input: {
 	memories: Parameters<typeof formatSurfacedMemoriesMarkdown>[0]
 	executionContext?: unknown
 }) {
-	const { cloudFallbackContent, cloudFallbackFields } = cloudFallbackParts(
-		input.executionContext,
-	)
-	const text = input.idempotencyKey
+	const { ranOnContent, ranOnFields } = ranOnParts(input.executionContext, {
+		running: true,
+	})
+	const base = input.idempotencyKey
 		? `Execute is still running (runId: ${input.runId}). Poll runGet with that id. Retrying execute with idempotencyKey "${input.idempotencyKey}" reads this run instead of starting another mutation.`
 		: `Execute is still running (runId: ${input.runId}). Poll runGet with that id. Do not start another mutation for this call.`
+	const contextName = runningContextName(input.executionContext)
+	const text = contextName
+		? `${base} To stop it, call executionContextRunCancel with id "${contextName}" and that run_id.`
+		: base
 	return {
 		content: prependToolMetadataContent(input.conversationId, [
 			{ type: 'text' as const, text },
-			...cloudFallbackContent,
+			...ranOnContent,
 			...formatSurfacedMemoriesMarkdown(input.memories),
 		]),
 		structuredContent: {
@@ -1382,7 +1491,7 @@ function buildTransportBudgetFollowResponse(input: {
 			inProgress: true as const,
 			status: 'running' as const,
 			...buildMemoryStructuredContent(input.memories),
-			...cloudFallbackFields,
+			...ranOnFields,
 		},
 		isError: false,
 	}
@@ -1398,12 +1507,16 @@ function buildKeyedExecuteLookupResponse(input: {
 	}
 }) {
 	if (input.run.status === 'running') {
+		const running = ranOnParts(input.run.metadata['executionContext'], {
+			running: true,
+		})
 		return {
 			content: prependToolMetadataContent(input.conversationId, [
 				{
 					type: 'text',
 					text: `Execute still in progress (runId: ${input.run.id}). Poll runGet with that id, or retry with the same idempotencyKey.`,
 				},
+				...running.ranOnContent,
 			]),
 			structuredContent: {
 				conversationId: input.conversationId,
@@ -1414,13 +1527,14 @@ function buildKeyedExecuteLookupResponse(input: {
 					: {}),
 				inProgress: true,
 				status: 'running' as const,
+				...running.ranOnFields,
 			},
 			isError: false,
 		}
 	}
 
 	const retainedResult = input.run.metadata['result']
-	const { cloudFallbackContent, cloudFallbackFields } = cloudFallbackParts(
+	const { ranOnContent, ranOnFields } = ranOnParts(
 		input.run.metadata['executionContext'],
 	)
 	if (input.run.status === 'error') {
@@ -1434,7 +1548,7 @@ function buildKeyedExecuteLookupResponse(input: {
 					type: 'text',
 					text: `Error: ${errorMessage}`,
 				},
-				...cloudFallbackContent,
+				...ranOnContent,
 			]),
 			structuredContent: {
 				conversationId: input.conversationId,
@@ -1450,7 +1564,7 @@ function buildKeyedExecuteLookupResponse(input: {
 				...entitlementStructuredContent(replayedError),
 				...(retainedResult !== undefined ? { result: retainedResult } : {}),
 				logs: [] as Array<unknown>,
-				...cloudFallbackFields,
+				...ranOnFields,
 			},
 			isError: true,
 		}
@@ -1467,7 +1581,7 @@ function buildKeyedExecuteLookupResponse(input: {
 					displayText: undefined,
 				}),
 			},
-			...cloudFallbackContent,
+			...ranOnContent,
 		]),
 		structuredContent: {
 			conversationId: input.conversationId,
@@ -1480,25 +1594,28 @@ function buildKeyedExecuteLookupResponse(input: {
 			returnedBytes: 0,
 			result: retainedResult,
 			logs: [] as Array<unknown>,
-			...cloudFallbackFields,
+			...ranOnFields,
 		},
 		isError: false,
 	}
 }
 
-function isCloudFallback(value: unknown): value is ExecutionContextRunMetadata {
+function isRunMetadata(value: unknown): value is ExecutionContextRunMetadata {
 	if (typeof value !== 'object' || value === null) return false
-	const candidate = value as Partial<ExecutionContextRunMetadata>
-	return candidate.fellBackToCloud === true && Array.isArray(candidate.attempts)
+	return Array.isArray((value as Partial<ExecutionContextRunMetadata>).attempts)
 }
 
-function cloudFallbackParts(metadata: unknown) {
-	const fallback = isCloudFallback(metadata) ? metadata : null
+/** `ranOn` (and the legacy `executionContext`) plus its human line. */
+function ranOnParts(metadata: unknown, options: { running?: boolean } = {}) {
+	const ranOn = ranOnFromMetadata(metadata)
 	return {
-		cloudFallbackContent: fallback
-			? [{ type: 'text' as const, text: describeCloudFallback(fallback) }]
-			: [],
-		cloudFallbackFields: fallback ? { executionContext: fallback } : {},
+		ranOnContent: [
+			{ type: 'text' as const, text: describeRanOn(ranOn, options) },
+		],
+		ranOnFields: {
+			ranOn,
+			...(isRunMetadata(metadata) ? { executionContext: metadata } : {}),
+		},
 	}
 }
 
@@ -1551,6 +1668,59 @@ async function resolveRawFetchHostNudges(input: {
 		})
 	}
 	return applied.nudges
+}
+
+/**
+ * Once a month per org, the hosted execute call that mints a new worker
+ * while the org is at or past 80% of its included Worker compute says so.
+ */
+async function resolveComputeIncludeHeadsUp(input: {
+	env: Env
+	callerContext: ReturnType<McpRegistrationAgent['getCallerContext']>
+	claimed: ClaimedExecuteUsage | null
+}): Promise<Array<string>> {
+	if (dailyFreshWorkersFromClaim(input.claimed?.usage) === null) return []
+	const ownerId = ownerIdFromCaller(input.callerContext)
+	const kv = input.env.BUNDLE_ARTIFACTS_KV
+	if (!ownerId || !kv) return []
+	try {
+		const now = input.claimed?.claimedAt ?? new Date()
+		const key = computeIncludeHeadsUpKvKey(ownerId, now)
+		if (await kv.get(key)) return []
+		if (!(await loadOrgUsageWarningsEnabled(input.env.APP_DB, ownerId))) {
+			return []
+		}
+		const [entitlement, usage] = await Promise.all([
+			getCachedUserEntitlement(input.env.APP_DB, {
+				userId: ownerId,
+				email: entitlementEmailForOwner(input.callerContext, ownerId),
+			}),
+			readMonthlyComputeUsage({
+				db: input.env.APP_DB,
+				stableUserId: ownerId,
+				month: preferLocalNudgeMonthKey(now),
+			}),
+		])
+		const slug = input.callerContext.request?.org.slug
+		const usageUrl = new URL(
+			slug ? orgUsagePath(slug) : '/account/usage',
+			input.callerContext.baseUrl,
+		).toString()
+		const text = formatComputeIncludeHeadsUp({
+			used: usage.uniqueWorkerDays,
+			include: monthlyIncludeForPreferLocalNudge(entitlement, now),
+			creditWallet: entitlement.creditWallet,
+			usageUrl,
+		})
+		if (!text) return []
+		await kv.put(key, String(now.getTime()), {
+			expirationTtl: computeIncludeHeadsUpClaimTtlSeconds,
+		})
+		return [text]
+	} catch (error: unknown) {
+		console.warn('compute-include-heads-up-failed', error)
+		return []
+	}
 }
 
 async function resolvePreferLocalExecuteNudges(input: {

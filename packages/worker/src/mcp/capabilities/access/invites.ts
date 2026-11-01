@@ -1,5 +1,8 @@
 import { timingSafeEqualString } from '@kody-internal/shared/timing-safe.ts'
-import { resolveGrantPermissions } from '@kody-internal/shared/grant-presets.ts'
+import {
+	type GrantPreset,
+	resolveGrantPermissions,
+} from '@kody-internal/shared/grant-presets.ts'
 import {
 	type OrgPermission,
 	type OrgResourceType,
@@ -8,11 +11,16 @@ import { ownerIdFromStored } from '@kody-internal/shared/owner-person-ids.ts'
 import { type OrgRole } from '@kody-internal/shared/request-context.ts'
 import { z } from 'zod'
 import { McpCallerError } from '#mcp/caller-error.ts'
+import { unmappableCredentialGrantWarnings } from '#mcp/capabilities/access/unmappable-credential-warnings.ts'
 import { defineDomainCapability } from '#mcp/capabilities/define-domain-capability.ts'
 import { capabilityDomainNames } from '#mcp/capabilities/domain-metadata.ts'
 import { assertMemoryGrantsAllowedOnOrg } from '#mcp/memory/memory-owner.ts'
 import { normalizeEmailAddress } from '#worker/email/address.ts'
 import { normalizeUsername } from '#worker/identity/username.ts'
+import {
+	type GrantSubjectChoices,
+	grantSubjectMatchSql,
+} from '#worker/authorization/grant-subjects.ts'
 import {
 	authorize,
 	computeEffectivePermissions,
@@ -125,6 +133,27 @@ function toInvitePayload(invite: StoredInvite, orgSlug: string) {
 	}
 }
 
+/**
+ * An inviter who is no longer a member keeps grant invites valid only with a
+ * direct grant here. Team seats and everyone-in-org grants both need a live
+ * membership, and a live member already passed the check above.
+ */
+export const outsideInviterGrantSubjects = {
+	user: 'include',
+	team: {
+		exclude:
+			'Team seats need a live org membership (addTeamMember, offboarding tombstones them), and members pass before this check.',
+	},
+	org: {
+		exclude:
+			'An org subject grant only reaches live members, and members pass before this check.',
+	},
+	profile: {
+		exclude:
+			'Profile grants narrow a profile; they never grant the person behind it.',
+	},
+} as const satisfies GrantSubjectChoices
+
 async function assertInviterStillValid(db: D1Database, invite: StoredInvite) {
 	const requireOwner = invite.kind === 'membership' && invite.role === 'owner'
 	const inviter = await db
@@ -152,16 +181,19 @@ async function assertInviterStillValid(db: D1Database, invite: StoredInvite) {
 	}
 	// Grant invites may come from outside collaborators who still hold a grant.
 	if (inviter) return
+	const subjectMatch = grantSubjectMatchSql({
+		subjects: outsideInviterGrantSubjects,
+		personId: invite.invitedByUserId,
+	})
 	const grant = await db
 		.prepare(
-			`SELECT id FROM grants
-			 WHERE org_id = ?
-			   AND subject_type = 'user'
-			   AND subject_id = ?
-			   AND deleted_at IS NULL
+			`SELECT g.id AS id FROM grants g
+			 WHERE g.org_id = ?
+			   AND ${subjectMatch.sql}
+			   AND g.deleted_at IS NULL
 			 LIMIT 1`,
 		)
-		.bind(invite.orgId, invite.invitedByUserId)
+		.bind(invite.orgId, ...subjectMatch.binds)
 		.first<{ id: string }>()
 	if (!grant) {
 		throw new McpCallerError(
@@ -464,6 +496,11 @@ export const inviteCreateCapability = defineDomainCapability(
 			invite: inviteSchema,
 			token: z.string(),
 			prompt: z.string(),
+			warnings: z
+				.array(z.string())
+				.describe(
+					'Share-time warnings, e.g. the package has unmappable credentials this invitee could make its code use once they accept. The invite was still created.',
+				),
 		}),
 		async handler(args, ctx) {
 			try {
@@ -478,7 +515,7 @@ export const inviteCreateCapability = defineDomainCapability(
 				let teamIds: Array<string> | null = null
 				let resourceType: GrantResourceType | null = null
 				let resourceId: string | null = null
-				let preset: 'use' | 'contribute' | 'manage' | null = null
+				let preset: GrantPreset | null = null
 				let permissions: Array<OrgPermission> | null = null
 				switch (kind) {
 					case 'membership': {
@@ -584,10 +621,29 @@ export const inviteCreateCapability = defineDomainCapability(
 					inviteId: created.id,
 				})
 				if (!invite) throw new Error('Invite was not saved.')
+				const warnings =
+					invite.kind === 'grant' &&
+					invite.resourceType === 'package' &&
+					invite.resourceId
+						? await unmappableCredentialGrantWarnings({
+								env: ctx.env,
+								orgId: request.org.id,
+								resourceType: invite.resourceType,
+								resourceId: invite.resourceId,
+								permissions: resolveGrantPermissions({
+									family: 'package',
+									preset: invite.preset,
+									permissions: invite.permissions,
+								}),
+								changesAllowed: false,
+								request,
+							})
+						: []
 				return {
 					invite: toInvitePayload(invite, org.slug),
 					token,
 					prompt: inviteAcceptPrompt({ orgSlug: org.slug, token }),
+					warnings,
 				}
 			} catch (error) {
 				rethrowAccessError(error)

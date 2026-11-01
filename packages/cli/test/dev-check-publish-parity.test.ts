@@ -56,7 +56,7 @@ async function withPackage(fn: (root: string) => Promise<void>) {
 		await writeStampedScopePackage(root)
 		await fn(root)
 	} finally {
-		await rm(root, { recursive: true, force: true })
+		await rm(root, { recursive: true, force: true, maxRetries: 10 })
 	}
 }
 
@@ -153,7 +153,7 @@ test('kody dev check passes a data-only app package with no exports field', asyn
 		assert.match(out.stdout, /^ok\s+publish:manifest/m)
 		assert.doesNotMatch(out.stdout, /export:/)
 	} finally {
-		await rm(root, { recursive: true, force: true })
+		await rm(root, { recursive: true, force: true, maxRetries: 10 })
 	}
 })
 
@@ -364,4 +364,39 @@ test('parsePackageCheckResult validates the packageCheck response', () => {
 		{ ok: false, checks: [{ kind: 'credentials', ok: false, message: 'no' }] },
 	)
 	assert.throws(() => parsePackageCheckResult({ ok: true }), /unexpected/)
+})
+
+test('parsePackageCheckResult keeps notices such as the unmappable-credential lock', () => {
+	assert.deepEqual(
+		parsePackageCheckResult({
+			ok: true,
+			package_name: '@local/poll',
+			checks: [],
+			notices: ['Package "@local/poll" has unmappable credentials.', 7],
+		}),
+		{
+			ok: true,
+			notices: ['Package "@local/poll" has unmappable credentials.'],
+			checks: [],
+		},
+	)
+})
+
+test('kody dev check prints the unmappable-credential lock notice as a warning', async () => {
+	await withPackage(async (root) => {
+		const out = capture()
+		await runDevCheck({
+			target: 'mock',
+			cwd: root,
+			io: out.io,
+			runPublishChecks: async () => ({
+				ok: true,
+				checks: [],
+				notices: [
+					'Package "@local/poll" has unmappable credentials: "Prod DB" (need "rooms-db"). Changes are owner-only.',
+				],
+			}),
+		})
+		assert.match(out.stdout, /unmappable credentials.*"Prod DB"/)
+	})
 })

@@ -256,7 +256,8 @@
 			],
 			// Replaces the top-level observability block (wrangler env keys
 			// override wholesale, so "enabled" is restated). Upstream also
-			// lists destinations: ["sentry-otlp-traces"]. Rhino omits that
+			// lists destinations: ["sentry-otlp-traces"], pointed at the
+			// kody Sentry project's OTLP traces endpoint. Rhino omits that
 			// until the account-level Traces destination exists; an unknown
 			// destination fails the deploy. Workers Observability dashboard
 			// traces stay on. See docs/contributing/rhino.md.

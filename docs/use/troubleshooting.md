@@ -189,6 +189,17 @@ Cloudflare Tunnel and Access, also see
 [Connect a home MCP server](../guides/local-mcp-tunnels.md) and
 [home-mcp-starter](https://github.com/kody-bot/home-mcp-starter).
 
+## The `api` tool is missing (only `search` and `execute`)
+
+- **ChatGPT:** Kody's tool updates are not currently being picked up in ChatGPT.
+  If `api` is missing, add Kody manually in developer mode (see
+  [Connect your agent](./connect-your-agent.md)), or use the Kody CLI, for
+  example `npx @kodycodes/cli api tokenList` and
+  `npx @kodycodes/cli api tokenRevoke --params '{"token_id":"<id>"}'`.
+- **Other clients:** refresh the Kody server's tools (reconnect, or restart the
+  client). Until then, use `npx @kodycodes/cli api <operationId>`. See
+  [API tokens](../guides/api-tokens.md).
+
 ## Search returns no good matches
 
 - **Rephrase the query** using domain vocabulary from the search tool’s domain
@@ -221,11 +232,10 @@ signed in, user-scoped package results are empty.
   read and use user secrets; unadopted community forks need an
   `allowed_packages` grant (or adoption after review). When a credential's
   `allowed_packages` list is non-empty and leaves a package out, that package is
-  denied when it is reached through another package or imported in a one-off
-  execute run, even if you authored or adopted it. A self-authored or adopted
-  package that runs on its own still uses the credential; publish and save warn
-  about it. Approve the package on the secret's page or move the use into a
-  package already on the list. See
+  denied, even if you authored or adopted it, and publish and save warn about
+  it. The error names the credential and the package. Approve the package on the
+  secret's page (the approval link in the error) or move the use into a package
+  already on the list. See
   [Secrets and host approval](./secrets-and-values.md#package-approval).
 
 ## MCP servers

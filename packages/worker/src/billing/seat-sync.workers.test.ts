@@ -4,6 +4,7 @@ import { syncOrgSeatQuantity } from './seat-sync.ts'
 import { ensureOrgsTestSchema } from '#worker/orgs/orgs-test-schema.ts'
 import { ensureCreditWalletTestSchema } from './test-schema.ts'
 import { testStableUserIdFromEmail } from '#worker/test-support/stable-user-id.ts'
+import * as orgAudit from '#worker/orgs/org-audit.ts'
 
 function jsonResponse(body: unknown, status = 200) {
 	return new Response(JSON.stringify(body), {
@@ -12,9 +13,12 @@ function jsonResponse(body: unknown, status = 200) {
 	})
 }
 
-function stubStripeFetch(handler: (url: string) => Response) {
-	const fetchStub = vi.fn(async (request: RequestInfo | URL) =>
-		handler(String(request)),
+function stubStripeFetch(
+	handler: (url: string, init?: RequestInit) => Response,
+) {
+	const fetchStub = vi.fn(
+		async (request: RequestInfo | URL, init?: RequestInit) =>
+			handler(String(request), init),
 	)
 	vi.stubGlobal('fetch', fetchStub)
 	return Object.assign(fetchStub, {
@@ -26,18 +30,22 @@ async function seedPaidOrg(input: {
 	orgId: string
 	stripeCustomerId: string
 	seatRoles: Array<'owner' | 'member' | 'billing'>
+	plan?: string
+	stripePlan?: string | null
 }) {
 	await ensureCreditWalletTestSchema(env.APP_DB)
 	await ensureOrgsTestSchema(env.APP_DB)
 	const now = new Date().toISOString()
 	await env.APP_DB.prepare(
 		`INSERT INTO orgs (
-			id, slug, plan, stripe_customer_id, created_at, updated_at
-		) VALUES (?, ?, 'pro', ?, ?, ?)`,
+			id, slug, plan, stripe_plan, stripe_customer_id, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 	)
 		.bind(
 			input.orgId,
 			`org-${input.orgId.slice(0, 8)}`,
+			input.plan ?? 'pro',
+			input.stripePlan ?? null,
 			input.stripeCustomerId,
 			now,
 			now,
@@ -63,6 +71,63 @@ async function seedPaidOrg(input: {
 			.run()
 	}
 }
+
+test('syncOrgSeatQuantity updates seats for Stripe-paid orgs with a free manual plan', async () => {
+	const orgId = testStableUserIdFromEmail('stripe-paid-seat-sync@example.com')
+	await seedPaidOrg({
+		orgId,
+		stripeCustomerId: 'cus_stripe_paid_seats',
+		seatRoles: ['owner', 'member', 'member'],
+		plan: 'free',
+		stripePlan: 'pro',
+	})
+	using fetchStub = stubStripeFetch((url) => {
+		if (url.includes('/v1/subscriptions')) {
+			return jsonResponse({
+				data: [
+					{
+						id: 'sub_stripe_paid',
+						status: 'active',
+						cancel_at: null,
+						items: {
+							data: [
+								{
+									id: 'si_stripe_paid',
+									quantity: 1,
+									price: { id: 'price_pro' },
+								},
+							],
+						},
+					},
+				],
+			})
+		}
+		if (url.includes('/v1/subscription_items/si_stripe_paid')) {
+			return jsonResponse({ id: 'si_stripe_paid', quantity: 3 })
+		}
+		return jsonResponse({ error: 'unexpected path' }, 500)
+	})
+	const result = await syncOrgSeatQuantity({
+		db: env.APP_DB,
+		env: {
+			STRIPE_SECRET_KEY: 'sk_test',
+			STRIPE_API_BASE_URL: 'https://stripe.mock',
+			STRIPE_PRO_PRICE_ID: 'price_pro',
+			STRIPE_PRO_YEARLY_PRICE_ID: 'price_pro_yearly',
+		},
+		orgId,
+	})
+	expect(result).toEqual({ previousQuantity: 1, nextQuantity: 3 })
+	const mutation = fetchStub.mock.calls.find(
+		([request, init]) =>
+			String(request).includes('/v1/subscription_items/si_stripe_paid') &&
+			init?.method === 'POST',
+	)
+	expect(mutation?.[1]).toMatchObject({
+		method: 'POST',
+		body: 'quantity=3',
+	})
+})
 
 test('syncOrgSeatQuantity no-ops for free orgs', async () => {
 	const orgId = testStableUserIdFromEmail('free-org@example.com')
@@ -108,8 +173,13 @@ test('syncOrgSeatQuantity updates Stripe when seat count changes', async () => {
 						items: {
 							data: [
 								{
-									id: 'si_paid',
+									id: 'si_non_seat',
 									quantity: 1,
+									price: { id: 'price_other' },
+								},
+								{
+									id: ' si_paid ',
+									quantity: 2,
 									price: { id: 'price_pro' },
 								},
 							],
@@ -123,6 +193,9 @@ test('syncOrgSeatQuantity updates Stripe when seat count changes', async () => {
 		}
 		return jsonResponse({ error: 'unexpected path' }, 500)
 	})
+	const auditSpy = vi
+		.spyOn(orgAudit, 'recordOrgAuditEvent')
+		.mockResolvedValue(undefined)
 	const result = await syncOrgSeatQuantity({
 		db: env.APP_DB,
 		env: {
@@ -132,13 +205,137 @@ test('syncOrgSeatQuantity updates Stripe when seat count changes', async () => {
 			STRIPE_PRO_YEARLY_PRICE_ID: 'price_pro_yearly',
 		},
 		orgId,
+		audit: {} as never,
 	})
-	expect(result).toEqual({ previousQuantity: 1, nextQuantity: 3 })
-	expect(
-		fetchStub.mock.calls.some((call) =>
-			String(call[0]).includes('subscription_items'),
-		),
-	).toBe(true)
+	expect(result).toEqual({ previousQuantity: 2, nextQuantity: 3 })
+	expect(auditSpy).toHaveBeenCalledTimes(1)
+	expect(auditSpy.mock.calls[0]?.[1]).toMatchObject({
+		orgId,
+		action: 'billing_seat_quantity_synced',
+		resourceType: 'org_subscription',
+		details: { previousQuantity: 2, nextQuantity: 3 },
+	})
+	const mutation = fetchStub.mock.calls.find(
+		([request, init]) =>
+			String(request).includes('/v1/subscription_items/si_paid') &&
+			init?.method === 'POST',
+	)
+	expect(mutation).toBeDefined()
+	expect(String(mutation?.[0])).toContain('/v1/subscription_items/si_paid')
+	expect(mutation?.[1]).toMatchObject({ method: 'POST', body: 'quantity=3' })
+	auditSpy.mockRestore()
+})
+
+test('syncOrgSeatQuantity does not audit when the Stripe quantity is already current', async () => {
+	const orgId = testStableUserIdFromEmail('current-seat-sync@example.com')
+	await seedPaidOrg({
+		orgId,
+		stripeCustomerId: 'cus_current_seats',
+		seatRoles: ['owner', 'member'],
+	})
+	using fetchStub = stubStripeFetch((url) =>
+		url.includes('/v1/subscriptions')
+			? jsonResponse({
+					data: [
+						{
+							id: 'sub_current',
+							status: 'active',
+							cancel_at: null,
+							items: {
+								data: [
+									{
+										id: 'si_non_seat_current',
+										quantity: 1,
+										price: { id: 'price_other' },
+									},
+									{
+										id: 'si_current',
+										quantity: 2,
+										price: { id: 'price_pro' },
+									},
+								],
+							},
+						},
+					],
+				})
+			: jsonResponse({ error: 'unexpected update' }, 500),
+	)
+	const auditSpy = vi
+		.spyOn(orgAudit, 'recordOrgAuditEvent')
+		.mockResolvedValue(undefined)
+	await syncOrgSeatQuantity({
+		db: env.APP_DB,
+		env: {
+			STRIPE_SECRET_KEY: 'sk_test',
+			STRIPE_API_BASE_URL: 'https://stripe.mock',
+			STRIPE_PRO_PRICE_ID: 'price_pro',
+		},
+		orgId,
+		audit: {} as never,
+	})
+	expect(auditSpy).not.toHaveBeenCalled()
+	expect(fetchStub.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(
+		false,
+	)
+	auditSpy.mockRestore()
+})
+
+test('syncOrgSeatQuantity tolerates an audit failure after Stripe updates', async () => {
+	const orgId = testStableUserIdFromEmail('audit-failure-seat-sync@example.com')
+	await seedPaidOrg({
+		orgId,
+		stripeCustomerId: 'cus_audit_failure',
+		seatRoles: ['owner', 'member', 'member'],
+	})
+	using fetchStub = stubStripeFetch((url) => {
+		if (url.includes('/v1/subscriptions')) {
+			return jsonResponse({
+				data: [
+					{
+						id: 'sub_audit_failure',
+						status: 'active',
+						cancel_at: null,
+						items: {
+							data: [
+								{
+									id: 'si_audit_failure',
+									quantity: 1,
+									price: { id: 'price_pro' },
+								},
+							],
+						},
+					},
+				],
+			})
+		}
+		return jsonResponse({ id: 'si_audit_failure', quantity: 3 })
+	})
+	const auditSpy = vi
+		.spyOn(orgAudit, 'recordOrgAuditEvent')
+		.mockRejectedValue(new Error('audit unavailable'))
+	const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+	await expect(
+		syncOrgSeatQuantity({
+			db: env.APP_DB,
+			env: {
+				STRIPE_SECRET_KEY: 'sk_test',
+				STRIPE_API_BASE_URL: 'https://stripe.mock',
+				STRIPE_PRO_PRICE_ID: 'price_pro',
+			},
+			orgId,
+			audit: {} as never,
+		}),
+	).resolves.toEqual({ previousQuantity: 1, nextQuantity: 3 })
+	expect(auditSpy).toHaveBeenCalledTimes(1)
+	expect(warnSpy).toHaveBeenCalledWith(
+		'org-seat-sync-audit-failed',
+		expect.objectContaining({ orgId }),
+	)
+	expect(fetchStub.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(
+		true,
+	)
+	auditSpy.mockRestore()
+	warnSpy.mockRestore()
 })
 
 test('syncOrgSeatQuantity ignores non-Kody subscriptions on the shared Stripe account', async () => {

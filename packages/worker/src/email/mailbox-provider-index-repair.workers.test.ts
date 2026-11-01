@@ -20,12 +20,8 @@ test('accepted terminal persists repair, alarm repairs D1, and replay never rese
 	const userId = uniqueUserId('provider-repair')
 	const messageId = 'provider-repair-message'
 	const providerMessageId = 'provider-repair-id'
-	// Alarm runs provider-index repair, then retention. Retention drops delivery
-	// events older than mailboxDeliveryEventRetentionDays (90) against the wall
-	// clock. A fixed 2026-08-03 timestamp aged out on 2026-11-01, so the sent
-	// event was gone before the length assert. Keep the stamp recent enough to
-	// survive that pass and old enough that the repair retry is already due.
-	const acceptedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+	// Recent so delivery-event retention (90 days) does not prune it.
+	const acceptedAt = new Date(Date.now() - 60_000).toISOString()
 	const mailbox = rpcFor(userId)
 	await mailbox.upsertMessageGraph({
 		ownerId: userId,
@@ -34,6 +30,9 @@ test('accepted terminal persists repair, alarm repairs D1, and replay never rese
 			direction: 'outbound',
 			processingStatus: 'stored',
 			rawMimeKey: null,
+			receivedAt: acceptedAt,
+			createdAt: acceptedAt,
+			updatedAt: acceptedAt,
 		}),
 	})
 	const terminal = {
@@ -60,8 +59,16 @@ test('accepted terminal persists repair, alarm repairs D1, and replay never rese
 			createdAt: acceptedAt,
 		},
 	}
-	await mailbox.commitOutboundTerminal(terminal)
-	await mailbox.commitOutboundTerminal(terminal)
+	await expect(mailbox.commitOutboundTerminal(terminal)).resolves.toMatchObject(
+		{
+			eventInserted: true,
+		},
+	)
+	await expect(mailbox.commitOutboundTerminal(terminal)).resolves.toMatchObject(
+		{
+			eventInserted: false,
+		},
+	)
 	await expect(
 		mailbox.getOutboundProviderIndexRepairStatus({ ownerId: userId }),
 	).resolves.toMatchObject({ pendingCount: 1 })

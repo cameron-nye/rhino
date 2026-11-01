@@ -14,6 +14,7 @@ export type SiteFooterProps = {
 	loggedIn: boolean
 	loginHref: string
 	homeHref: string
+	signupHref: string
 }
 
 const footerLinks = [
@@ -56,7 +57,7 @@ export function SiteFooter(props: SiteFooterProps) {
 					) : (
 						<>
 							Welcome{' '}
-							<SiteLink href="/signup" css={taglineLinkCss}>
+							<SiteLink href={props.signupHref} css={taglineLinkCss}>
 								home
 							</SiteLink>
 						</>

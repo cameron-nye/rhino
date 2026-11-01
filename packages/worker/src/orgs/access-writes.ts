@@ -129,6 +129,14 @@ function changesOf(result: unknown) {
  * Resource types a grant may target. `org` is organization-level permissions.
  * `credential` grants are keyed by stable credential id.
  */
+/**
+ * Where a grant came from. `created` is the creator's own grant on a
+ * resource they made; org transfer re-points or drops it.
+ */
+export const grantOrigins = ['manual', 'created'] as const
+
+export type GrantOrigin = (typeof grantOrigins)[number]
+
 export const grantResourceTypes = [
 	'package',
 	'app',
@@ -347,23 +355,51 @@ export async function upsertGrant(input: {
 	subject: GrantSubject
 	preset: GrantPreset | null
 	permissions: ReadonlyArray<OrgPermission> | null
+	/**
+	 * Permissions added on top of a preset (e.g. `execution_context:command`,
+	 * which no preset carries). Each must be grantable on the family.
+	 */
+	extraPermissions?: ReadonlyArray<OrgPermission>
 	createdByUserId: string
+	/** Defaults to `manual`; a manual write over a `created` grant claims it. */
+	origin?: GrantOrigin
+	/**
+	 * When the grant stops counting (ISO). Null never expires. Omitted keeps
+	 * an existing grant's unexpired expiry; rewriting an expired grant starts
+	 * it fresh with none.
+	 */
+	expiresAt?: string | null
+	/**
+	 * Lets this person or team change or publish the package even while it
+	 * has unmappable credentials. Omitted keeps an existing grant's choice.
+	 */
+	allowUnmappableCredentialChanges?: boolean
 	audit: OrgAuditWriter
 }) {
 	assertGrantSubjectInOrg(input)
+	const origin = input.origin ?? 'manual'
 	const family = input.family ?? grantFamilyOf(input.resourceType)
-	const permissions = resolveGrantPermissions({
-		family,
-		preset: input.preset,
-		permissions: input.permissions,
-	})
+	const permissions = [
+		...new Set([
+			...resolveGrantPermissions({
+				family,
+				preset: input.preset,
+				permissions: input.permissions,
+			}),
+			...resolveGrantPermissions({
+				family,
+				preset: null,
+				permissions: input.extraPermissions ?? [],
+			}),
+		]),
+	]
 	if (permissions.length === 0) {
 		throw new Error('A grant needs at least one permission.')
 	}
 	const now = new Date().toISOString()
 	const existing = await input.db
 		.prepare(
-			`SELECT id FROM grants
+			`SELECT id, expires_at FROM grants
 			 WHERE org_id = ?
 			   AND resource_type = ?
 			   AND resource_id = ?
@@ -378,18 +414,32 @@ export async function upsertGrant(input: {
 			input.subject.type,
 			input.subject.id,
 		)
-		.first<{ id: string }>()
+		.first<{ id: string; expires_at: string | null }>()
 	const grantId = existing?.id ?? crypto.randomUUID()
+	const keptExpiry =
+		existing?.expires_at && existing.expires_at > now
+			? existing.expires_at
+			: null
+	const expiresAt = input.expiresAt === undefined ? keptExpiry : input.expiresAt
 	const statements: Array<{ run(): Promise<unknown> }> = []
 	if (existing) {
 		statements.push(
 			input.db
 				.prepare(
 					`UPDATE grants
-					 SET preset = ?, updated_at = ?, created_by_user_id = ?
+					 SET preset = ?, updated_at = ?, created_by_user_id = ?, origin = ?,
+					     expires_at = ?
 					 WHERE id = ? AND org_id = ?${andLiveDeletedAtSql()}`,
 				)
-				.bind(input.preset, now, input.createdByUserId, grantId, input.orgId),
+				.bind(
+					input.preset,
+					now,
+					input.createdByUserId,
+					origin,
+					expiresAt,
+					grantId,
+					input.orgId,
+				),
 			input.db
 				.prepare(`DELETE FROM grant_permissions WHERE grant_id = ?`)
 				.bind(grantId),
@@ -400,8 +450,8 @@ export async function upsertGrant(input: {
 				.prepare(
 					`INSERT INTO grants (
 						id, org_id, resource_type, resource_id, subject_type, subject_id,
-						preset, created_by_user_id, created_at, updated_at
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						preset, created_by_user_id, created_at, updated_at, origin, expires_at
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
 				.bind(
 					grantId,
@@ -414,6 +464,22 @@ export async function upsertGrant(input: {
 					input.createdByUserId,
 					now,
 					now,
+					origin,
+					expiresAt,
+				),
+		)
+	}
+	if (input.allowUnmappableCredentialChanges !== undefined) {
+		statements.push(
+			input.db
+				.prepare(
+					`UPDATE grants SET allow_unmappable_credential_changes = ?
+					 WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+				)
+				.bind(
+					input.allowUnmappableCredentialChanges ? 1 : 0,
+					grantId,
+					input.orgId,
 				),
 		)
 	}
@@ -443,10 +509,18 @@ export async function upsertGrant(input: {
 				subjectId: input.subject.id,
 				preset: input.preset,
 				permissions,
+				origin,
+				expiresAt,
+				...(input.allowUnmappableCredentialChanges === undefined
+					? {}
+					: {
+							allowUnmappableCredentialChanges:
+								input.allowUnmappableCredentialChanges,
+						}),
 			},
 		},
 	})
-	return { id: grantId, permissions }
+	return { id: grantId, permissions, expiresAt }
 }
 
 export async function softDeleteGrant(input: {
@@ -722,6 +796,10 @@ export type GrantView = {
 	createdByUserId: string
 	createdAt: string
 	updatedAt: string
+	/** Null never expires. Listings include expired grants until revoked. */
+	expiresAt: string | null
+	/** The owner let this subject change the package despite unmappable credentials. */
+	allowUnmappableCredentialChanges: boolean
 }
 
 type GrantJoinRow = {
@@ -735,6 +813,8 @@ type GrantJoinRow = {
 	created_by_user_id: string
 	created_at: string
 	updated_at: string
+	expires_at: string | null
+	allow_unmappable_credential_changes?: number | null
 	permission: string | null
 }
 
@@ -761,6 +841,9 @@ function groupGrantRows(rows: ReadonlyArray<GrantJoinRow>): Array<GrantView> {
 				createdByUserId: row.created_by_user_id,
 				createdAt: row.created_at,
 				updatedAt: row.updated_at,
+				expiresAt: row.expires_at ?? null,
+				allowUnmappableCredentialChanges:
+					row.allow_unmappable_credential_changes === 1,
 			}
 			byId.set(row.id, grant)
 		}
@@ -781,7 +864,11 @@ export async function listGrants(input: {
 	subjectType?: GrantSubjectType | null
 	subjectId?: string | null
 }): Promise<Array<GrantView>> {
-	const where = ['g.org_id = ?']
+	// Profile grants (subject_type 'profile') are not listed with person grants.
+	const where = [
+		'g.org_id = ?',
+		`g.subject_type IN (${grantSubjectTypes.map((type) => `'${type}'`).join(', ')})`,
+	]
 	const params: Array<string> = [input.orgId]
 	if (input.grantId) {
 		where.push('g.id = ?')
@@ -815,6 +902,8 @@ export async function listGrants(input: {
 			        g.created_by_user_id AS created_by_user_id,
 			        g.created_at AS created_at,
 			        g.updated_at AS updated_at,
+			        g.expires_at AS expires_at,
+			        g.allow_unmappable_credential_changes AS allow_unmappable_credential_changes,
 			        gp.permission AS permission
 			 FROM grants g
 			 LEFT JOIN grant_permissions gp ON gp.grant_id = g.id

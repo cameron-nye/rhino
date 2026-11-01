@@ -2,9 +2,12 @@
 id: package_sharing
 title: Share a package and manage access
 summary:
-  Give a person or team Use, Contribute, or Manage on one package with a grant,
-  invite someone who is not in your organization yet, and know what each side
-  can run, read, and pay for. Fork instead when they should own a copy.
+  Give a person or team Read, Use, Contribute, or Manage on one package with a
+  grant, invite someone who is not in your organization yet, share private
+  source with one person (Read, then they fork it), and know what each side can
+  run, read, and pay for. Also covers unmappable credentials: share-time
+  warnings, the owner-only change lock, and the per-grant "allow changes
+  despite unmappable credentials" option.
 category: platform
 audience: agents
 ---
@@ -16,21 +19,48 @@ secrets, integrations, memory, email) live in one org, and a **grant** gives one
 person or team a preset on one resource. To let someone use a package without
 sharing a login, grant them **Use** on it.
 
-> [!TIP] Prefer a
-> [fork](/docs/package-lifecycle#fork-a-close-public-package-before-creating)
-> when they should own and edit a copy. Grant access when they should run
-> **your** live package.
+> [!TIP] Grants and forks work together. Grant **Read** when someone should see
+> your private source and fork their own copy; grant **Use** when they should
+> run **your** live package. See
+> [Share source with one person](#share-source-with-one-person).
+
+## Share source with one person
+
+To let one person (inside or outside your organization) read a private package
+and fork it into their own Kody, without running yours or opening your app:
+
+1. Open the package's **Collaborators** tab and give them **Read**: pick the
+   member, or in a personal org invite their email or username with **Read**.
+   Agents call `packageCollaboratorSet` with `"preset": "read"` (a username
+   outside the org becomes an outside collaborator), `inviteCreate` with
+   `kind: "grant"` and `"preset": "read"`, or `inviteLinkCreate` with
+   `"preset": "read"`. The CLI takes `--preset read`.
+2. They open the package page and click **Fork**, or their agent calls
+   `packageFork` with `{ "package": "@owner/package-name" }`.
+3. The fork is a new package in their own org. It records where it came from, so
+   they see when your source moves ahead, and it runs and bills in their org.
+
+Read is `package:read` only. They can view and `git clone` the source, but
+cannot run your package (no `package:execute`) or open your app (no
+`app:execute`). Forking never gives them more access to your package. Everyone
+with a preset that includes read (Read, Use, Contribute, Manage) and you as the
+owner can fork the same way. Someone without access still gets a 404 and cannot
+fork. Making a package public is a different choice: anyone on the internet can
+read and fork the default branch.
 
 ## Presets
 
 | Preset         | On a package                                                        |
 | -------------- | ------------------------------------------------------------------- |
+| **Read**       | Read, clone, and fork the source (`package:read`)                   |
 | **Use**        | Read the source and run it (`package:read`, `package:execute`)      |
 | **Contribute** | Use, plus write (`package:write`)                                   |
 | **Manage**     | Contribute, plus publish, delete, and manage access for the package |
 
 Advanced grants take an explicit permission list instead of a preset. No preset
-includes `billing:*` or revealing a secret.
+includes `billing:*` or revealing a secret. On the web, **Advanced: choose
+permissions** under the preset picker sends the same list. Read applies to
+packages only; other resources start at Use.
 
 ## Grant access
 
@@ -90,8 +120,9 @@ saved-package UUID or the package name leaf (`@owner/leaf` or `leaf`).
   and preset.
 - `packageCollaboratorSet` adds a team, an org member, or everyone in the org,
   or changes the preset of one already listed. Pass exactly one of `team_slug`,
-  `team_id`, `username`, `user_id`, or `everyone: true`. People outside the org
-  are refused, and Owners already have full access:
+  `team_id`, `username`, `user_id`, or `everyone: true`, plus a preset or an
+  advanced `permissions` list. A person outside the org becomes an outside
+  collaborator. Owners already have full access:
 
   ```json
   {
@@ -112,17 +143,20 @@ audited the same way.
 People with Manage on a package see a **Collaborators** tab on the package page
 (`/@owner/<package>/collaborators`). It lists who has access and their preset,
 adds everyone in this organization, a team, or an org member, changes a preset,
-and removes access, using the package collaborator calls. Outside collaborators
-are listed and can be removed; their access is changed through `accessGrant`.
-Org owners always have full access and are not listed.
+and removes access, using the package collaborator calls. **Advanced: choose
+permissions** under each preset picker sends an explicit permission list
+instead. Outside collaborators are listed and can be removed; their access is
+changed through `accessGrant` or `packageCollaboratorSet`. Org owners always
+have full access and are not listed.
 
 In a personal org there are no members or teams to add, so the tab invites
 people instead:
 
-- **Invite a collaborator** takes an email or username and a preset: **Use** to
-  run it and read the source, **Contribute** to also update it, or **Manage** to
-  also publish, delete, and choose who else has access. It calls `inviteCreate`
-  with `kind: "grant"`.
+- **Invite a collaborator** takes an email or username and a preset: **Read** to
+  read and fork the source without running it, **Use** to run it and read the
+  source, **Contribute** to also update it, or **Manage** to also publish,
+  delete, and choose who else has access. It calls `inviteCreate` with
+  `kind: "grant"`.
 - The invite message is shown once, with a copy button. Send it to the person so
   their agent can call `inviteAccept`. Open **Details** to see the message.
 - **Pending invites** lists invites that have not been accepted. **Revoke**
@@ -178,6 +212,49 @@ The web Grants page is aimed at team orgs. In a personal org, invite and remove
 collaborators from the package's [Collaborators tab](#on-the-web), or use those
 capabilities.
 
+## Unmappable credentials
+
+A credential is **unmappable** when nobody who runs or visits the package can
+swap in their own, so it always acts as the owning org. A package has one while
+its published version declares a need with `supplier: "publisher"` (while the
+`package-credential-suppliers` flag is on) or `ownerCredentialForVisitors: true`
+(see [Credentials](./credentials.md#choose-who-supplies-a-package-credential)).
+Anyone who can change or publish such a package could make its code use those
+credentials however they like, so Kody surfaces and guards it:
+
+- **Share-time warning.** Granting a preset that can change or publish the
+  package (Contribute or Manage, or a custom list with `package:write` or
+  `package:publish`) still succeeds, and returns a warning that names each
+  credential (by name and need key, never values or ids) and says the grantee
+  could make the package's code use them. It shows in the Collaborators tab on
+  the web, after `kody package grant`, and in the `warnings` field of
+  `packageCollaboratorSet`, `accessGrant`, `inviteCreate`, and
+  `inviteLinkCreate`. The Collaborators tab also shows it on each existing grant
+  it affects.
+- **Owner-only changes.** While the package has unmappable credentials, only org
+  Owners (the owner of a personal org) can push, publish, or otherwise change
+  its code or manifest. Existing collaborators are locked too, with no
+  grandfathering, and the lock applies as soon as a credential becomes
+  unmappable. Read and Use are unaffected: collaborators keep running it.
+  Denials have code `unmappable_credentials`, name the credentials, and say how
+  an Owner can allow the collaborator.
+- **Allow one collaborator anyway.** An org Owner can let one person or team
+  change it despite the risk, per grant: the **Allow changes despite unmappable
+  credentials** checkbox on their row in the Collaborators tab,
+  `kody package grant <package> --user <name> --preset contribute --allow-changes-despite-unmappable-credentials`
+  (`--disallow-changes-despite-unmappable-credentials` turns it off), or
+  `allow_changes_despite_unmappable_credentials: true` on
+  `packageCollaboratorSet` or `accessGrant`. Omitting it keeps the grant's
+  current choice. It is not available on everyone-in-org or profile grants.
+- **Owner notice.** Owners see a notice explaining the lock on the package page,
+  the Collaborators tab (`unmappable_credentials` on `packageCollaboratorList`),
+  `kody dev check` / `packageCheck` (`notices`), and publish output
+  (`unmappable_credentials_notice`). No email is sent.
+- **Profiles.** The check uses the acting principal through the profile chain. A
+  profile acting for an Owner changes the package only when every layer of its
+  chain holds the permission; a profile acting for a collaborator follows that
+  collaborator's grant, including its allow option.
+
 ## What a collaborator can do
 
 Someone who holds a grant but is not a member is an **outside collaborator**.
@@ -208,7 +285,13 @@ from these runs is charged to the collaborator's personal plan.
 
 Example: Jesse has Use on `@acme/bot`. Connected as `@acme`, a run debits acme's
 credits and budgets and counts against acme's execute pool. Jesse's own
-personal-org limits are untouched. See
+personal-org limits are untouched by those runs.
+
+Package **apps** are the exception. When Jesse opens an internal app of `@acme`
+in the browser (he holds a grant on it but is not a member), his own personal
+org pays for the metered work his visits cause, and acme keeps paying the app's
+Worker compute. Internet-visible apps stay paid by acme for every visitor. See
+[Package apps: who pays for visits](/docs/package-apps#who-pays-for-visits). See
 [Organizations](/docs/organizations#execute-limits-one-org-wide-pool) for how
 the pool is sized.
 

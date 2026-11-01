@@ -13,14 +13,12 @@ const grants: Record<string, ExecutionContextGrantSummary> = {
 	locked: {
 		fs: 0,
 		egress: { mode: 'none' },
-		credentials: 'none',
 		runtime: 'none',
 		timeoutMs: 90_000,
 	},
 	publicDefault: {
 		fs: 0,
 		egress: { mode: 'public' },
-		credentials: 'none',
 		runtime: 'all',
 		timeoutMs: 90_000,
 	},
@@ -28,7 +26,6 @@ const grants: Record<string, ExecutionContextGrantSummary> = {
 		fs: 2,
 		fsMode: 'write',
 		egress: { mode: 'public-and-lan' },
-		credentials: { count: 1 },
 		runtime: { mode: 'allowlist', count: 3 },
 		timeoutMs: 300_000,
 	},
@@ -36,7 +33,6 @@ const grants: Record<string, ExecutionContextGrantSummary> = {
 		fs: 1,
 		fsMode: 'read',
 		egress: { mode: 'allowlist', hosts: 4 },
-		credentials: 'none',
 		runtime: { mode: 'allowlist', count: 0 },
 		timeoutMs: 60_000,
 	},
@@ -83,9 +79,7 @@ test('register copy, personal and team, names kody login', () => {
 	const team = registerCopy({ orgSlug: 'acme' })
 	expect(personal).toMatchSnapshot('personal')
 	expect(team).toMatchSnapshot('team')
-	expect(team.commands).toContain(
-		'kody context register --name my-machine --org acme',
-	)
+	expect(team.commands).toContain('kody connect --name my-machine --org acme')
 	for (const copy of [personal, team]) {
 		expect(copy.login).toContain('`kody login`')
 	}
@@ -100,10 +94,12 @@ test('LAN line appears only when local network access is on', () => {
 	).toContain('Local network access is on')
 })
 
-test('credential copy depends on oauthClientCredentials returning only a handle', () => {
-	// If credential values could reach a context, every "stay on Kody" line is false.
-	expect(
-		optInCopy({ name: 'x', operator: 'sam', grant: grants.locked! })
-			.paragraphs[0],
-	).toContain('Your credential values stay on Kody.')
+test('opt-in copy discloses that the machine can use your credentials and read the responses', () => {
+	const copy = optInCopy({ name: 'x', operator: 'sam', grant: grants.locked! })
+	const text = copy.paragraphs.join(' ')
+	expect(text).toContain(
+		"can use your credentials (GitHub, email and any others you've connected) and read the responses",
+	)
+	expect(text).toContain('Your credential values stay in Kody cloud')
+	expect(text).toContain('Opting in is your consent to this.')
 })

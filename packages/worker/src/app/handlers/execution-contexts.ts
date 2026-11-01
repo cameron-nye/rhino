@@ -1,10 +1,12 @@
 import { type readAuthenticatedAppUser } from '#app/authenticated-user.ts'
+import {
+	callCapabilityAsWebsite,
+	websiteCapabilityContext,
+} from '#app/website-capability.ts'
 import { isMcpCallerError } from '#mcp/caller-error.ts'
 import { resolvePersonId } from '#mcp/capabilities/access/shared.ts'
 import { getStaticRegistry } from '#mcp/capabilities/registry.ts'
 import { type CapabilityContext } from '#mcp/capabilities/types.ts'
-import { createMcpCallerContext } from '#mcp/context.ts'
-import { getAppBaseUrl } from '#worker/app-base-url.ts'
 import { isFeatureEnabled } from '#worker/feature-flags/service.ts'
 import { isPersonalOrg } from '#worker/orgs/is-personal-org.ts'
 import {
@@ -45,9 +47,12 @@ export const executionContextCapabilityNames = {
 	get: 'executionContextGet',
 	optIn: 'executionContextOptIn',
 	optOut: 'executionContextOptOut',
+	update: 'executionContextUpdate',
+	delete: 'executionContextDelete',
 	chainGet: 'executionChainGet',
 	chainSet: 'executionChainSet',
 	runList: 'executionContextRunList',
+	runCancel: 'executionContextRunCancel',
 	auditList: 'executionContextAuditList',
 	shareList: 'executionContextShareList',
 	shareSet: 'executionContextShareSet',
@@ -97,15 +102,8 @@ export async function loadExecutionContextsScope(input: {
 		input.orgSlug,
 	)
 	if (!binding) return null
-	const callerContext = createMcpCallerContext({
-		baseUrl: getAppBaseUrl({ env: input.env, requestUrl: input.request.url }),
-		source: { kind: 'session' },
-		executionOrigin: 'interactive',
-		user: input.user.mcpUser,
-		orgBinding: binding,
-	})
 	return {
-		ctx: { env: input.env, callerContext },
+		ctx: websiteCapabilityContext({ ...input, orgBinding: binding }),
 		org: binding.org,
 		personal: await isPersonalOrg(input.env.APP_DB, binding.org.id),
 		binding,
@@ -127,7 +125,7 @@ async function callCapability(
 	const registry = await getStaticRegistry()
 	const capability = registry.capabilityMap[name]
 	if (!capability) throw new ExecutionContextsUnavailableError()
-	const result = await capability.handler(args, scope.ctx)
+	const result = await callCapabilityAsWebsite(scope.ctx, capability, args)
 	return result && typeof result === 'object'
 		? (result as Record<string, unknown>)
 		: {}
@@ -285,6 +283,11 @@ export function normalizeContext(
 				? {
 						name: text(client.name, 'unknown'),
 						version: text(client.version, ''),
+						latestVersion:
+							typeof client.latestVersion === 'string'
+								? client.latestVersion
+								: null,
+						outdated: client.outdated === true,
 					}
 				: null,
 	} as ExecutionContextListItem
@@ -489,6 +492,19 @@ export async function optIntoExecutionContextForUser(
 	})
 }
 
+export async function deleteExecutionContextForUser(
+	input: ScopedInput & { contextId: string },
+) {
+	return runScoped(input, async (scope) => {
+		const result = await callCapability(
+			scope,
+			executionContextCapabilityNames.delete,
+			{ id: input.contextId },
+		)
+		return { ok: true as const, deleted: result.deleted === true }
+	})
+}
+
 export async function optOutOfExecutionContextForUser(
 	input: ScopedInput & { contextId: string },
 ) {
@@ -504,6 +520,19 @@ export async function optOutOfExecutionContextForUser(
 			chainChanged: result.chainChanged === true,
 			chain: result.chain ? parseChain(result.chain) : null,
 		}
+	})
+}
+
+/** Turning host commands on is machine-only (ADR 0093); off works here. */
+export async function turnOffExecutionContextCommandsForUser(
+	input: ScopedInput & { contextId: string },
+) {
+	return runScoped(input, async (scope) => {
+		await callCapability(scope, executionContextCapabilityNames.update, {
+			id: input.contextId,
+			grant: { commands: { enabled: false } },
+		})
+		return { ok: true as const }
 	})
 }
 
@@ -569,6 +598,23 @@ export async function listExecutionContextRunsForUser(
 	})
 }
 
+export async function cancelExecutionContextRunForUser(
+	input: ScopedInput & { contextId: string; runId: string },
+) {
+	return runScoped(input, async (scope) => {
+		const result = await callCapability(
+			scope,
+			executionContextCapabilityNames.runCancel,
+			{ id: input.contextId, run_id: input.runId },
+		)
+		return {
+			ok: true as const,
+			cancelled: result.cancelled === true,
+			state: typeof result.state === 'string' ? result.state : null,
+		}
+	})
+}
+
 export async function listExecutionContextAuditForUser(
 	input: ScopedInput & { contextId: string; cursor?: string },
 ) {
@@ -618,6 +664,7 @@ function normalizeShareGrant(
 						...(subject.outside === true ? { outside: true } : {}),
 					},
 		preset,
+		...(grant.commands === true ? { commands: true } : {}),
 	}
 }
 
@@ -648,6 +695,7 @@ export async function setExecutionContextShareForUser(
 			| { kind: 'team'; slug: string }
 			| { kind: 'org'; enabled?: boolean }
 		preset: 'use' | 'contribute' | 'manage'
+		commands?: boolean
 	},
 ) {
 	return runScoped(input, async (scope) => {
@@ -662,6 +710,9 @@ export async function setExecutionContextShareForUser(
 						? { team_slug: input.subject.slug }
 						: { all_members: input.subject.enabled ?? true }),
 				preset: input.preset,
+				...(input.commands && input.subject.kind !== 'org'
+					? { commands: true }
+					: {}),
 			},
 		)
 		return {

@@ -11,7 +11,7 @@ jobs:
     name: Seal SECRET_STORE_KEY into DR backup bucket
     # Job-level `if` cannot read secrets. A missing credential skips every
     # step so a manual dispatch does not fail.
-    runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     env:
       # Always false on this fork. Upstream sets this true when

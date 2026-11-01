@@ -3,6 +3,8 @@ import { expect, test } from 'vitest'
 import {
 	clearFeatureFlagUserOverride,
 	deleteStaleFeatureFlag,
+	evaluateFeatureFlag,
+	evaluateFeatureFlagBatched,
 	getFeatureFlagEvaluationsForUser,
 	getFeatureFlagsForUser,
 	isFeatureEnabled,
@@ -311,13 +313,14 @@ function createFeatureFlagsTestDb(
 
 const registryKeys = [
 	'demo-indicator',
-	'connection-profiles',
 	'mcp-skills-extension',
 	'mcp-events-extension',
 	'package-credential-suppliers',
 	'repo-push-queue',
 	'execution-contexts',
 	'credential-need-enforcement',
+	'credential-allowed-packages-safety-window',
+	'profiles',
 ] as const
 
 function everyFlag<T>(value: T, overrides: Partial<Record<FlagKey, T>> = {}) {
@@ -371,7 +374,9 @@ async function userInBucket(db: TestDb, inRollout: boolean) {
 test('isFeatureEnabled falls back to registry default when no DB state exists', async () => {
 	const db = createFeatureFlagsTestDb()
 	expect(await enabledFor(db, [1, null])).toEqual([false, false])
-	await expect(getFeatureFlagsForUser(db, 1)).resolves.toEqual(everyFlag(false))
+	await expect(getFeatureFlagsForUser(db, 1)).resolves.toEqual(
+		everyFlag(false, { 'credential-allowed-packages-safety-window': true }),
+	)
 })
 
 test('global on/off and percentage rollout evaluation', async () => {
@@ -441,7 +446,10 @@ test('user override wins over global off and global on; clear restores evaluatio
 	await setOverride(db, 7, true)
 	expect(await enabledFor(db, [7, 8])).toEqual([true, false])
 	await expect(getFeatureFlagsForUser(db, 7)).resolves.toEqual(
-		everyFlag(false, { 'demo-indicator': true }),
+		everyFlag(false, {
+			'demo-indicator': true,
+			'credential-allowed-packages-safety-window': true,
+		}),
 	)
 
 	await setGlobal(db, true)
@@ -465,14 +473,14 @@ test('setFeatureFlagUserOverrides writes paired keys atomically', async () => {
 			updatedBy: 7,
 		},
 		{
-			key: 'connection-profiles',
+			key: 'profiles',
 			userId: 7,
 			enabled: true,
 			updatedBy: 7,
 		},
 	])
 	expect(await enabledFor(db, [7], 'mcp-skills-extension')).toEqual([true])
-	expect(await enabledFor(db, [7], 'connection-profiles')).toEqual([true])
+	expect(await enabledFor(db, [7], 'profiles')).toEqual([true])
 
 	const originalPrepare = db.prepare.bind(db)
 	let overrideRuns = 0
@@ -515,7 +523,7 @@ test('setFeatureFlagUserOverrides writes paired keys atomically', async () => {
 	expect(db.overrides.has('demo-indicator:7')).toBe(false)
 	expect(db.overrides.has('mcp-skills-extension:7')).toBe(true)
 	expect(await enabledFor(db, [7], 'mcp-skills-extension')).toEqual([true])
-	expect(await enabledFor(db, [7], 'connection-profiles')).toEqual([true])
+	expect(await enabledFor(db, [7], 'profiles')).toEqual([true])
 })
 
 test('getFeatureFlagEvaluationsForUser reports assignment sources', async () => {
@@ -524,7 +532,15 @@ test('getFeatureFlagEvaluationsForUser reports assignment sources', async () => 
 		(await getFeatureFlagEvaluationsForUser(db, userId))['demo-indicator']
 
 	await expect(getFeatureFlagEvaluationsForUser(db, 7)).resolves.toEqual(
-		everyFlag({ enabled: false, source: 'default' }),
+		everyFlag(
+			{ enabled: false, source: 'default' },
+			{
+				'credential-allowed-packages-safety-window': {
+					enabled: true,
+					source: 'default',
+				},
+			},
+		),
 	)
 
 	await setGlobal(db, true)
@@ -600,7 +616,7 @@ test('listFeatureFlagsForAdmin includes registry flags and stale DB-only keys', 
 	}
 	const registryExpectations: Array<[string, Record<string, unknown>]> = [
 		[
-			'connection-profiles',
+			'profiles',
 			{ defaultAudience: 'experiments_opt_in', successMetric: executeMetric },
 		],
 		[
@@ -755,7 +771,7 @@ test('experiments_opt_in audience requires users.experiments_opt_in; overrides s
 	).rejects.toThrow(/audience must be one of/)
 })
 
-test('connection-profiles first insert without audience uses registry defaultAudience', async () => {
+test('profiles first insert without audience uses registry defaultAudience', async () => {
 	const db = createFeatureFlagsTestDb({
 		users: [
 			{ id: 7, username: 'opted', experiments_opt_in: 1 },
@@ -763,12 +779,126 @@ test('connection-profiles first insert without audience uses registry defaultAud
 		],
 	})
 
-	await setGlobal(db, true, { key: 'connection-profiles' })
-	expect(db.globals.get('connection-profiles')?.audience).toBe(
-		'experiments_opt_in',
-	)
-	expect(await enabledFor(db, [7, 8], 'connection-profiles')).toEqual([
-		true,
-		false,
-	])
+	await setGlobal(db, true, { key: 'profiles' })
+	expect(db.globals.get('profiles')?.audience).toBe('experiments_opt_in')
+	expect(await enabledFor(db, [7, 8], 'profiles')).toEqual([true, false])
+})
+
+test('evaluateFeatureFlagBatched matches evaluateFeatureFlag in one batch', async () => {
+	const now = '2026-10-31T00:00:00.000Z'
+	const scenarios: Array<{
+		name: string
+		globals?: Array<GlobalRow>
+		overrides?: Array<OverrideRow>
+		optIn?: number
+	}> = [
+		{ name: 'default' },
+		{
+			name: 'global on',
+			globals: [
+				{
+					key: 'package-credential-suppliers',
+					enabled: 1,
+					rollout_percent: null,
+					audience: 'everyone',
+					note: '',
+					updated_by: null,
+					updated_at: now,
+				},
+			],
+		},
+		{
+			name: 'opt-in audience without opt-in',
+			globals: [
+				{
+					key: 'package-credential-suppliers',
+					enabled: 1,
+					rollout_percent: null,
+					audience: 'experiments_opt_in',
+					note: '',
+					updated_by: null,
+					updated_at: now,
+				},
+			],
+		},
+		{
+			name: 'opt-in audience with opt-in',
+			optIn: 1,
+			globals: [
+				{
+					key: 'package-credential-suppliers',
+					enabled: 1,
+					rollout_percent: null,
+					audience: 'experiments_opt_in',
+					note: '',
+					updated_by: null,
+					updated_at: now,
+				},
+			],
+		},
+		{
+			name: 'user override wins over global',
+			globals: [
+				{
+					key: 'package-credential-suppliers',
+					enabled: 0,
+					rollout_percent: null,
+					audience: 'everyone',
+					note: '',
+					updated_by: null,
+					updated_at: now,
+				},
+			],
+			overrides: [
+				{
+					flag_key: 'package-credential-suppliers',
+					user_id: 3,
+					enabled: 1,
+					updated_by: null,
+					updated_at: now,
+				},
+			],
+		},
+	]
+	for (const scenario of scenarios) {
+		const db = createFeatureFlagsTestDb({
+			globals: scenario.globals,
+			overrides: scenario.overrides,
+			users: [
+				{ id: 3, username: 'alice', experiments_opt_in: scenario.optIn ?? 0 },
+			],
+		})
+		let batches = 0
+		let prepares = 0
+		const prepare = db.prepare.bind(db)
+		const counted = Object.assign(Object.create(db), {
+			// D1 batch semantics: one results array per statement.
+			batch: async (statements: Array<{ first: () => Promise<unknown> }>) => {
+				batches += 1
+				return await Promise.all(
+					statements.map(async (statement) => {
+						const row = await statement.first()
+						return { results: row ? [row] : [] }
+					}),
+				)
+			},
+			prepare: (query: string) => {
+				prepares += 1
+				return prepare(query)
+			},
+		}) as D1Database
+		const expected = await evaluateFeatureFlag(
+			db,
+			'package-credential-suppliers',
+			3,
+		)
+		await expect(
+			evaluateFeatureFlagBatched(counted, 'package-credential-suppliers', 3),
+		).resolves.toEqual(expected)
+		expect({ scenario: scenario.name, batches, prepares }).toEqual({
+			scenario: scenario.name,
+			batches: 1,
+			prepares: 3,
+		})
+	}
 })

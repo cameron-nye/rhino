@@ -4,10 +4,12 @@ import {
 	type RuntimePackageAppVisitor,
 } from '@kody-internal/shared/runtime-worker.ts'
 import { html } from 'remix/html-template'
+import { packageAppOauthPaths } from '#universal/package-app-oauth-paths.ts'
 import { createHtmlResponse } from 'remix/response/html'
 import {
 	buildPackageAppCustomHostnameUrl,
 	buildPackageAppOpenPath,
+	buildPackageAppPath,
 	buildPackageAppSubdomainPath,
 	buildPackageAppSubdomainUrl,
 	buildPackagePagePath,
@@ -47,10 +49,7 @@ import {
 	listPackageAppOrigins,
 	parsePackageAppRequestHost,
 } from '#worker/app-base-url.ts'
-import {
-	logPackageAppSetCookieDomainStripped,
-	scrubPackageAppSetCookieDomains,
-} from '#worker/package-runtime/package-app-set-cookie.ts'
+import { logPackageAppSetCookieDomainStripped } from '#worker/package-runtime/package-app-set-cookie.ts'
 import { redirectToLoginWhenUnauthenticated } from '#app/auth-redirect.ts'
 import { readAuthenticatedAppUser } from '#app/authenticated-user.ts'
 import {
@@ -86,7 +85,6 @@ import {
 	servePackageAppRequest,
 } from '#app/handlers/package-app.ts'
 import { type PackageAppServeOwner } from '#worker/package-runtime/package-app-serve.ts'
-import { applyPackageAppCacheHeaders } from '#worker/package-runtime/package-app-cache-headers.ts'
 import { resolveInternetVisibleApprovedCommit } from '#app/package-app-internet-visible.ts'
 import {
 	mintPackageAppTicketCookie,
@@ -109,9 +107,15 @@ import {
 	type ServerTimingEntry,
 } from '#worker/server-timing.ts'
 import { loadOrgBindingForOrg } from '#worker/orgs/repo.ts'
-import { runWithRequestContext } from '#worker/request-context.ts'
+import {
+	getRequestContext,
+	runWithRequestContext,
+} from '#worker/request-context.ts'
+import {
+	deferPackageAppResponseRewrite,
+	runWithPackageAppResponseRewrite,
+} from '#worker/package-runtime/package-app-response-rewrite.ts'
 import { runWithDeferredWork } from '#worker/deferred-work.ts'
-import { stripPackageAppRuntimeRunId } from '#worker/package-runtime/package-app-diagnostics.ts'
 import { wantsJson } from '#worker/utils.ts'
 import { resolvePublicPackageAppLocation } from '#worker/package-app-public-url.ts'
 
@@ -645,6 +649,59 @@ async function buildCustomHostnameHandoffTarget(input: {
 }
 
 /**
+ * The app's own sign-in start (`/-/auth/login` on its hosted origin) for a
+ * Kody package path such as `/@{user}/packages/{name}/open`. "Sign in on
+ * another device" (ADR 0094) goes through it so the limited browser holds the
+ * app host's PKCE cookie, exactly like the app's normal Sign in link.
+ */
+export async function resolvePackageAppSignInStartUrl(input: {
+	env: Env
+	requestUrl: URL
+	packagePath: PackageAppPath
+}) {
+	const { env, packagePath } = input
+	const entry = new URL(input.requestUrl)
+	const packageAppOrigin = getPackageAppBaseUrl({ env })
+	let target = entry
+	let kodyId = packagePath.kodyId
+	if (packageAppOrigin) {
+		const custom = await buildCustomHostnameHandoffTarget({
+			env,
+			packagePath,
+			url: entry,
+		})
+		kodyId = custom?.kodyId ?? packagePath.kodyId
+		target =
+			custom?.target ??
+			(await buildHandoffHostedTarget({
+				env,
+				packageAppOrigin,
+				packagePath,
+				kodyId,
+				url: entry,
+			}))
+	}
+	// Inline serving (no package-app origin) runs the app on this origin under
+	// `/@{user}/packages/{name}`, so the return path drops the `/open` hop.
+	const returnTo = packageAppOrigin
+		? withoutHandoffToken(target)
+		: new URL(
+				buildPackageAppPath({
+					username: packagePath.username,
+					kodyId: packagePath.kodyId,
+					restPath: packagePath.restPath === '/' ? null : packagePath.restPath,
+				}),
+				entry.origin,
+			)
+	if (!packageAppOrigin) returnTo.search = withoutHandoffToken(entry).search
+	const login = new URL(packageAppOauthPaths.login, target.origin)
+	login.searchParams.set('org', packagePath.username)
+	login.searchParams.set('app', kodyId)
+	login.searchParams.set('return_to', `${returnTo.pathname}${returnTo.search}`)
+	return login
+}
+
+/**
  * App-origin `/@{username}/packages/…` when a separate package-app origin is
  * configured. The app origin never executes package code.
  *
@@ -1000,31 +1057,50 @@ async function serveInternetVisiblePackageApp(input: {
 	resolveIdentity?: (
 		kodyId: string,
 	) => Promise<RuntimePackageAppIdentity | null>
+	/**
+	 * The signed-in person without identity, so serve can offer consent for
+	 * optional executor needs. Never reaches package code.
+	 */
+	consentPrincipal?: RuntimePackageAppIdentity | null
 }): Promise<Response | null> {
-	const org = await resolvePackageAppOrgOwnerByHandle({
-		env: input.env,
-		handle: input.handle,
-	})
+	const org = await pushServerTiming(input.serverTiming, 'org', () =>
+		resolvePackageAppOrgOwnerByHandle({
+			env: input.env,
+			handle: input.handle,
+		}),
+	)
 	if (!org) return null
-	const lookup = await resolveSavedPackageForPackageAppSlug({
-		db: input.env.APP_DB,
-		userId: org.userId,
-		slug: input.packagePath.kodyId,
-	})
-	const approvedPublishedCommit = await resolveInternetVisibleApprovedCommit({
-		env: input.env,
-		lookup,
-		requestUrl: input.request.url,
-	})
+	const lookup = await pushServerTiming(input.serverTiming, 'appSlug', () =>
+		resolveSavedPackageForPackageAppSlug({
+			db: input.env.APP_DB,
+			userId: org.userId,
+			slug: input.packagePath.kodyId,
+		}),
+	)
+	const approvedPublishedCommit = await pushServerTiming(
+		input.serverTiming,
+		'approvedCommit',
+		() =>
+			resolveInternetVisibleApprovedCommit({
+				env: input.env,
+				lookup,
+				requestUrl: input.request.url,
+			}),
+	)
 	if (!approvedPublishedCommit) return null
 	// Only an app that will actually serve pays the identity lookup.
 	// The lookup only adds identity, so a failure serves the visitor anonymously.
 	let identity: RuntimePackageAppIdentity | null = null
 	try {
-		identity =
-			(await input.resolveIdentity?.(
-				lookup?.savedPackage.kodyId ?? input.packagePath.kodyId,
-			)) ?? null
+		identity = input.resolveIdentity
+			? await pushServerTiming(input.serverTiming, 'identity', async () =>
+					input.resolveIdentity
+						? await input.resolveIdentity(
+								lookup?.savedPackage.kodyId ?? input.packagePath.kodyId,
+							)
+						: null,
+				)
+			: null
 	} catch (error) {
 		console.warn('package-app-identity-lookup-failed', error)
 	}
@@ -1039,15 +1115,15 @@ async function serveInternetVisiblePackageApp(input: {
 		},
 		visitor: null,
 		identity,
+		consentPrincipal: identity ? null : (input.consentPrincipal ?? null),
 		approvedPublishedCommit,
 		packagePath: input.packagePath,
 		serverTiming: input.serverTiming,
 	})
 	// A response that may name the visitor must never reach a shared cache.
-	return applyPackageAppCacheHeaders(
-		response,
-		identity ? 'signed-in' : 'anonymous',
-	)
+	return deferPackageAppResponseRewrite(response, {
+		cacheAudience: identity ? 'signed-in' : 'anonymous',
+	})
 }
 
 /**
@@ -1074,17 +1150,6 @@ export async function resolvePackageAppIdentityOnlyVisitor(input: {
 	if (!grant) return null
 	await notePackageAppOauthGrantUse({ db: input.env.APP_DB, grant })
 	return input.authorized.person
-}
-
-function withSetCookie(response: Response, setCookie: string) {
-	if (response.webSocket || response.status === 101) return response
-	const headers = new Headers(response.headers)
-	headers.append('Set-Cookie', setCookie)
-	return new Response(response.body, {
-		status: response.status,
-		statusText: response.statusText,
-		headers,
-	})
 }
 
 /**
@@ -1140,25 +1205,29 @@ async function servePackageAppForSession(input: {
 	const servedRequest = url.searchParams.has(packageAppHandoffQueryParam)
 		? new Request(withoutHandoffToken(url), request)
 		: request
-	const parsedSession = await readPackageAppSession({
-		request,
-		env,
-		slug: packagePath.kodyId,
-	})
-	const serverTiming: Array<ServerTimingEntry> = []
-	const secure = isSecureRequest(request)
-	if (parsedSession) {
-		const ticket = await readPackageAppTicket({
+	const serverTiming = packageAppServerTiming()
+	const parsedSession = await pushServerTiming(serverTiming, 'appSession', () =>
+		readPackageAppSession({
 			request,
 			env,
-			host: url.host,
 			slug: packagePath.kodyId,
-			session: {
-				stableUserId: parsedSession.session.stableUserId,
-				issuedAt: parsedSession.issuedAt,
-			},
-			secure,
-		})
+		}),
+	)
+	const secure = isSecureRequest(request)
+	if (parsedSession) {
+		const ticket = await pushServerTiming(serverTiming, 'appTicket', () =>
+			readPackageAppTicket({
+				request,
+				env,
+				host: url.host,
+				slug: packagePath.kodyId,
+				session: {
+					stableUserId: parsedSession.session.stableUserId,
+					issuedAt: parsedSession.issuedAt,
+				},
+				secure,
+			}),
+		)
 		if (ticket) {
 			logSampledPackageAppTicketAllow({
 				orgHandle: handle,
@@ -1173,7 +1242,9 @@ async function servePackageAppForSession(input: {
 				packagePath,
 				serverTiming,
 			})
-			return applyPackageAppCacheHeaders(response, 'signed-in')
+			return deferPackageAppResponseRewrite(response, {
+				cacheAudience: 'signed-in',
+			})
 		}
 	}
 	const authorized: AuthorizedPackageAppServe = parsedSession
@@ -1218,10 +1289,10 @@ async function servePackageAppForSession(input: {
 			appSlug: packagePath.kodyId,
 			reason: `role ${authorized.visitor.role ?? 'grant'}, epoch ${authorized.epoch}`,
 		})
-		return withSetCookie(
-			applyPackageAppCacheHeaders(response, 'signed-in'),
-			ticketCookie,
-		)
+		return deferPackageAppResponseRewrite(response, {
+			cacheAudience: 'signed-in',
+			appendSetCookies: [ticketCookie],
+		})
 	}
 
 	const anonymous = await serveInternetVisiblePackageApp({
@@ -1238,6 +1309,8 @@ async function servePackageAppForSession(input: {
 				packagePath,
 				kodyId,
 			}),
+		consentPrincipal:
+			authorized.kind === 'forbidden' ? authorized.person : null,
 	})
 	if (anonymous) return anonymous
 
@@ -1391,16 +1464,22 @@ async function handleUserSubdomainRequest(input: {
 	// Resolve retired slugs before the legacy `/packages` HTML 308 so a
 	// renamed leaf becomes one hop to `/{current}` instead of `/packages/old`
 	// → `/{old}` → `/{current}`.
-	const retiredRedirect = await redirectRetiredPackageAppSlug({
-		env,
-		url,
-		packagePath,
-		buildLocation: (currentSlug) =>
-			buildPackageAppSubdomainPath({
-				kodyId: currentSlug,
-				restPath: packagePath.restPath === '/' ? null : packagePath.restPath,
+	const retiredRedirect = await pushServerTiming(
+		packageAppServerTiming(),
+		'retiredSlug',
+		() =>
+			redirectRetiredPackageAppSlug({
+				env,
+				url,
+				packagePath,
+				buildLocation: (currentSlug) =>
+					buildPackageAppSubdomainPath({
+						kodyId: currentSlug,
+						restPath:
+							packagePath.restPath === '/' ? null : packagePath.restPath,
+					}),
 			}),
-	})
+	)
 	if (retiredRedirect) {
 		// Still count legacy `/packages/{old}` hits when the retired slug
 		// redirects in one hop to `/{current}` before the legacy handler runs.
@@ -1548,34 +1627,63 @@ export async function handlePackageAppOriginRequest(
 	// One request context per package-app request so per-request memos (org
 	// binding, handle) dedupe across the auth gate and serve. Audit rows and
 	// access-decision writes run after the response via `ctx.waitUntil`.
-	const response = await runWithDeferredWork(
+	const startedAt = Date.now()
+	const url = new URL(request.url)
+	return await runWithDeferredWork(
 		ctx ? (promise) => ctx.waitUntil(promise) : undefined,
 		() =>
 			runWithRequestContext(request, () =>
-				dispatchPackageAppOriginRequest(request, env),
+				runWithPackageAppResponseRewrite(
+					() => dispatchPackageAppOriginRequest(request, env),
+					// Serve, cache headers, and ticket cookies registered their
+					// parts; this boundary adds its own and the response is
+					// rewritten once.
+					({ reported }) => {
+						const serverTiming = packageAppServerTiming()
+						serverTiming.push({
+							name: 'total',
+							durationMs: Date.now() - startedAt,
+						})
+						return {
+							// servePackageAppRequest logs x-kody-runtime-run-id; a
+							// browser on the package-app origin never sees it.
+							stripRuntimeRunId: true,
+							// Defense in depth for every package-app host response
+							// (author apps, /-/ system routes, apex redirects): never
+							// let Set-Cookie Domain cover the shared apex or another
+							// tenant host.
+							domainScrub: {
+								responseHostname: url.hostname,
+								packageAppApexHostnames: listPackageAppOrigins({ env }).map(
+									(origin) => origin.hostname,
+								),
+							},
+							serverTiming,
+							// Serve already logs its own strips.
+							onReport: reported
+								? []
+								: [
+										(report) =>
+											logPackageAppSetCookieDomainStripped({
+												hostname: url.hostname,
+												pathname: url.pathname,
+												stripped: report.stripped,
+												surface: 'package-app-origin',
+											}),
+									],
+						}
+					},
+				),
 			),
 	)
-	if (!response) return null
-	// servePackageAppRequest logs x-kody-runtime-run-id, then this boundary
-	// strips it so a browser on the package-app origin never sees the header.
-	const withoutRuntimeRunId = stripPackageAppRuntimeRunId(response).response
-	// Defense in depth for every package-app host response (author apps, /-/
-	// system routes, apex redirects): never let Set-Cookie Domain cover the
-	// shared apex or another tenant host.
-	const url = new URL(request.url)
-	const scrubbed = scrubPackageAppSetCookieDomains(withoutRuntimeRunId, {
-		responseHostname: url.hostname,
-		packageAppApexHostnames: listPackageAppOrigins({ env }).map(
-			(origin) => origin.hostname,
-		),
-	})
-	logPackageAppSetCookieDomainStripped({
-		hostname: url.hostname,
-		pathname: url.pathname,
-		stripped: scrubbed.stripped,
-		surface: 'package-app-origin',
-	})
-	return scrubbed.response
+}
+
+/**
+ * The request's Server-Timing bag. Every package-app phase (host routing,
+ * session, owner, serve) records here, and the origin boundary writes it once.
+ */
+function packageAppServerTiming(): Array<ServerTimingEntry> {
+	return getRequestContext()?.serverTiming ?? []
 }
 
 async function dispatchPackageAppOriginRequest(request: Request, env: Env) {

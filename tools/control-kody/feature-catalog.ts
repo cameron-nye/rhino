@@ -50,6 +50,7 @@ export const featureCatalog: ReadonlyArray<Feature> = [
 			'/session',
 			'/oauth',
 			'/device',
+			'/agent',
 			'/-/auth',
 			'/_kody/auth',
 		],
@@ -189,6 +190,12 @@ export const featureCatalog: ReadonlyArray<Feature> = [
 			'/account/execution-contexts',
 			'/@{$orgSlug}/-/execution-contexts',
 		],
+	},
+	{
+		id: 'profiles',
+		title: 'Agent profiles',
+		file: 'profiles.md',
+		prefixes: ['/account/profiles', '/@{$orgSlug}/-/profiles'],
 	},
 	{
 		id: 'workflows',
