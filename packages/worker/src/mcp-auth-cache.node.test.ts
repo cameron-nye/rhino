@@ -411,7 +411,8 @@ test('org soft-delete unbinds on the next request and restore does not revive th
 
 	// The rows softDeleteOrg leaves behind: the org tombstone is stamped first,
 	// then the membership graph is swept at the same deleted_at (no bump).
-	const deletedAt = '2026-10-11T00:00:00.000Z'
+	// Relative to now: a fixed date ages out of the restore window.
+	const deletedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
 	sqlite
 		.prepare(`UPDATE orgs SET deleted_at = ? WHERE id = ?`)
 		.run(deletedAt, org.id)
