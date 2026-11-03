@@ -1,13 +1,41 @@
 import { spawnSync } from 'node:child_process'
+import {
+	diffAttributedSources,
+	type AttributedSourceBytes,
+	type SourceByteDelta,
+} from './startup-bundle-attribution.ts'
 
 export type StartupBundleOverageName = 'origin' | 'platform' | 'runtime'
+
+/**
+ * Sources come from the build that just measured the entry. `outdirDeltas`
+ * is set only when that build was compared with a previous outdir. Otherwise
+ * the next main-CI update diffs against the snapshot stored on the open issue.
+ */
+export type StartupBundleOverageAttribution = {
+	sources: ReadonlyArray<AttributedSourceBytes>
+	outdirDeltas?: ReadonlyArray<SourceByteDelta> | null
+}
 
 export type StartupBundleOverage = {
 	name: StartupBundleOverageName
 	size: number
 	maxEntryBytes: number
 	overage: number
+	attribution?: StartupBundleOverageAttribution | null
 }
+
+const startupBundleOverageSourceLimit = 25
+const startupBundleOveragePackageLimit = 8
+const startupBundleOverageDeltaLimit = 25
+/**
+ * GitHub issue bodies cap at 65,536 characters. The visible tables stay small.
+ * The hidden snapshot is what the next main push diffs against, capped so the
+ * prose, tables, and marker still fit.
+ */
+const startupBundleAttributionSnapshotBudget = 40_000
+/** Stay under GitHub's 65,536-character issue body cap with room for the marker. */
+const startupBundleOverageIssueBodyLimit = 60_000
 
 export type StartupBundleOverageIssueAction =
 	| { action: 'created'; name: StartupBundleOverageName; url: string }
@@ -31,20 +59,307 @@ function formatStartupBundleBytes(bytes: number) {
 }
 
 function formatStartupBundleOverageWarning(overage: StartupBundleOverage) {
-	return (
+	const warning =
 		`${overage.name} startup entry is ${formatStartupBundleBytes(overage.size)} bytes, ` +
 		`${formatStartupBundleBytes(overage.overage)} over its ` +
 		`${formatStartupBundleBytes(overage.maxEntryBytes)}-byte reviewed budget ` +
 		`(warning only; does not fail CI).`
-	)
+	const top = largestAttributedSource(overage.attribution?.sources ?? [])
+	if (!top) return warning
+	return `${warning} Largest attributed source: ${top.source} (${formatStartupBundleBytes(top.bytes)} bytes).`
 }
 
-function buildStartupBundleOverageIssueBody(
+function largestAttributedSource(
+	sources: ReadonlyArray<AttributedSourceBytes>,
+) {
+	return rankAttributedSources(sources)[0] ?? null
+}
+
+function rankAttributedSources(sources: ReadonlyArray<AttributedSourceBytes>) {
+	return sources
+		.filter((entry) => entry.bytes > 0)
+		.sort(
+			(left, right) =>
+				right.bytes - left.bytes || left.source.localeCompare(right.source),
+		)
+}
+
+function formatSignedStartupBundleBytes(bytes: number) {
+	const formatted = formatStartupBundleBytes(Math.abs(bytes))
+	if (bytes > 0) return `+${formatted}`
+	if (bytes < 0) return `-${formatted}`
+	return formatted
+}
+
+function escapeMarkdownTableCell(value: string) {
+	return value.replaceAll('|', '\\|').replaceAll('\n', ' ')
+}
+
+function markdownByteTable(
+	headers: readonly [string, string],
+	rows: ReadonlyArray<readonly [string, string]>,
+) {
+	const [left, right] = headers
+	return [
+		`| ${left} | ${right} |`,
+		'| ---: | --- |',
+		...rows.map(
+			([value, label]) =>
+				`| \`${value}\` | \`${escapeMarkdownTableCell(label)}\` |`,
+		),
+	].join('\n')
+}
+
+/**
+ * Group a source path the way an agent does by hand: the package under
+ * `packages/`, or the npm package after the last `node_modules/` segment
+ * (so pnpm's nested store still names `zod`, not `.pnpm`).
+ */
+function attributedPackageKey(source: string) {
+	const normalized = source.replaceAll('\\', '/')
+	const nodeModules = '/node_modules/'
+	const nodeIndex = normalized.lastIndexOf(nodeModules)
+	const nodeRest =
+		nodeIndex === -1
+			? normalized.startsWith('node_modules/')
+				? normalized.slice('node_modules/'.length)
+				: null
+			: normalized.slice(nodeIndex + nodeModules.length)
+	if (nodeRest !== null) {
+		const [scope, name] = nodeRest.split('/')
+		if (scope?.startsWith('@') && name) {
+			return `node_modules/${scope}/${name}`
+		}
+		if (scope) return `node_modules/${scope}`
+	}
+	const packagesMarker = '/packages/'
+	const packageIndex = normalized.lastIndexOf(packagesMarker)
+	const packageRest =
+		packageIndex === -1
+			? normalized.startsWith('packages/')
+				? normalized.slice('packages/'.length)
+				: null
+			: normalized.slice(packageIndex + packagesMarker.length)
+	if (packageRest !== null) {
+		const name = packageRest.split('/')[0]
+		if (name) return `packages/${name}`
+	}
+	const parts = normalized.split('/').filter((part) => part.length > 0)
+	if (parts.length >= 2) return `${parts[0]}/${parts[1]}`
+	return normalized
+}
+
+function rollupAttributedPackages(
+	sources: ReadonlyArray<AttributedSourceBytes>,
+) {
+	const totals = new Map<string, number>()
+	for (const entry of sources) {
+		const key = attributedPackageKey(entry.source)
+		totals.set(key, (totals.get(key) ?? 0) + entry.bytes)
+	}
+	return [...totals.entries()]
+		.map(([source, bytes]) => ({ source, bytes }))
+		.sort(
+			(left, right) =>
+				right.bytes - left.bytes || left.source.localeCompare(right.source),
+		)
+}
+
+function sanitizeSnapshotSource(source: string) {
+	return source
+		.replaceAll('\t', ' ')
+		.replaceAll('\n', ' ')
+		.replaceAll('-->', '>')
+}
+
+function encodeAttributionSnapshot(
+	name: StartupBundleOverageName,
+	sources: ReadonlyArray<AttributedSourceBytes>,
+	budget: number,
+) {
+	const header = `<!-- kody-startup-bundle-attribution:${name} `
+	const footer = '\n-->'
+	const statusWidth = 'truncated'.length
+	let used = header.length + statusWidth + footer.length
+	const bodyLines: Array<string> = []
+	let truncated = false
+	for (const entry of sources) {
+		const line = `\n${String(entry.bytes)}\t${sanitizeSnapshotSource(entry.source)}`
+		if (used + line.length > budget) {
+			truncated = true
+			break
+		}
+		bodyLines.push(line)
+		used += line.length
+	}
+	const status = truncated ? 'truncated' : 'complete'
+	return `${header}${status}${bodyLines.join('')}${footer}`
+}
+
+function parseAttributionSnapshot(
+	body: string,
+	name: StartupBundleOverageName,
+) {
+	const marker = `<!-- kody-startup-bundle-attribution:${name} `
+	const start = body.indexOf(marker)
+	if (start === -1) return null
+	const end = body.indexOf('-->', start)
+	if (end === -1) return null
+	const inner = body.slice(start + marker.length, end).replace(/^\n/, '')
+	const newline = inner.indexOf('\n')
+	const status = (newline === -1 ? inner : inner.slice(0, newline)).trim()
+	if (status !== 'complete' && status !== 'truncated') return null
+	const sources: Array<AttributedSourceBytes> = []
+	const lines = newline === -1 ? [] : inner.slice(newline + 1).split('\n')
+	for (const line of lines) {
+		if (line.trim() === '') continue
+		const tab = line.indexOf('\t')
+		if (tab <= 0) return null
+		const bytes = Number(line.slice(0, tab))
+		const source = line.slice(tab + 1)
+		if (!Number.isSafeInteger(bytes) || bytes < 0 || source.length === 0) {
+			return null
+		}
+		sources.push({ bytes, source })
+	}
+	return { complete: status === 'complete', sources }
+}
+
+function baselineByteDeltas(
+	attribution: StartupBundleOverageAttribution,
+	previousBody: string | null,
+	name: StartupBundleOverageName,
+) {
+	if (attribution.outdirDeltas) {
+		return {
+			deltas: attribution.outdirDeltas,
+			label: 'the previous outdir',
+		}
+	}
+	if (!previousBody) return null
+	const snapshot = parseAttributionSnapshot(previousBody, name)
+	if (!snapshot || snapshot.sources.length === 0) return null
+	if (snapshot.complete) {
+		return {
+			deltas: diffAttributedSources(attribution.sources, snapshot.sources),
+			label: 'the previous issue snapshot',
+		}
+	}
+	const known = new Set(snapshot.sources.map((entry) => entry.source))
+	return {
+		deltas: diffAttributedSources(
+			attribution.sources.filter((entry) => known.has(entry.source)),
+			snapshot.sources,
+		),
+		label:
+			'the previous issue snapshot (largest sources only; modules absent from that snapshot are omitted)',
+	}
+}
+
+function formatStartupBundleOverageAttribution(
+	overage: StartupBundleOverage,
+	context: {
+		previousBody?: string | null
+		snapshotBudget?: number
+	},
+) {
+	const attribution = overage.attribution
+	if (!attribution) return []
+	const ranked = rankAttributedSources(attribution.sources)
+	if (ranked.length === 0) return []
+	const shown = ranked.slice(0, startupBundleOverageSourceLimit)
+	const shownBytes = shown.reduce((sum, entry) => sum + entry.bytes, 0)
+	const lines = [
+		'### Largest attributed sources',
+		'',
+		'Generated bytes mapped back to original sources. The largest rows show whether one module or many account for the startup entry.',
+		'',
+		`Top ${String(shown.length)} account for \`${formatStartupBundleBytes(shownBytes)}\` of \`${formatStartupBundleBytes(overage.size)}\` measured bytes.`,
+		'',
+		markdownByteTable(
+			['Bytes', 'Source'],
+			shown.map((entry) => [
+				formatStartupBundleBytes(entry.bytes),
+				entry.source,
+			]),
+		),
+		'',
+	]
+	const packages = rollupAttributedPackages(ranked).slice(
+		0,
+		startupBundleOveragePackageLimit,
+	)
+	if (packages.length > 0) {
+		lines.push(
+			'### Largest packages',
+			'',
+			'The same bytes grouped by package.',
+			'',
+			markdownByteTable(
+				['Bytes', 'Package'],
+				packages.map((entry) => [
+					formatStartupBundleBytes(entry.bytes),
+					entry.source,
+				]),
+			),
+			'',
+		)
+	}
+	const comparison = baselineByteDeltas(
+		attribution,
+		context.previousBody ?? null,
+		overage.name,
+	)
+	if (comparison) {
+		const changed = [...comparison.deltas]
+			.filter((entry) => entry.delta !== 0)
+			.sort(
+				(left, right) =>
+					Math.abs(right.delta) - Math.abs(left.delta) ||
+					right.bytes - left.bytes ||
+					left.source.localeCompare(right.source),
+			)
+			.slice(0, startupBundleOverageDeltaLimit)
+		lines.push(
+			'### Largest byte deltas',
+			'',
+			`Compared with ${comparison.label}.`,
+			'',
+		)
+		if (changed.length === 0) {
+			lines.push('No attributed byte changes against that baseline.', '')
+		} else {
+			lines.push(
+				markdownByteTable(
+					['Delta', 'Source'],
+					changed.map((entry) => [
+						formatSignedStartupBundleBytes(entry.delta),
+						entry.source,
+					]),
+				),
+				'',
+			)
+		}
+	}
+	lines.push(
+		encodeAttributionSnapshot(
+			overage.name,
+			ranked,
+			context.snapshotBudget ?? startupBundleAttributionSnapshotBudget,
+		),
+		'',
+	)
+	return lines
+}
+
+export function buildStartupBundleOverageIssueBody(
 	overage: StartupBundleOverage,
 	context: {
 		sha?: string | null
 		runUrl?: string | null
 		ref?: string | null
+		previousBody?: string | null
+		snapshotBudget?: number
 	} = {},
 ) {
 	const lines = [
@@ -62,6 +377,7 @@ function buildStartupBundleOverageIssueBody(
 		'2. Raise `tools/worker-startup-bundle-budget.json` and append a note in `tools/worker-startup-bundle-notes.md`.',
 		'',
 	]
+	lines.push(...formatStartupBundleOverageAttribution(overage, context))
 	if (context.sha) {
 		lines.push(`- SHA: \`${context.sha}\``)
 	}
@@ -72,7 +388,20 @@ function buildStartupBundleOverageIssueBody(
 		lines.push(`- CI run: ${context.runUrl}`)
 	}
 	lines.push('')
-	return `${lines.join('\n').trimEnd()}\n`
+	const body = `${lines.join('\n').trimEnd()}\n`
+	if (body.length <= startupBundleOverageIssueBodyLimit) return body
+	const snapshotBudget =
+		context.snapshotBudget ?? startupBundleAttributionSnapshotBudget
+	if (snapshotBudget <= 4_000) {
+		return body.replace(
+			/<!-- kody-startup-bundle-attribution:[\s\S]*?-->\n?/,
+			'',
+		)
+	}
+	return buildStartupBundleOverageIssueBody(overage, {
+		...context,
+		snapshotBudget: Math.floor(snapshotBudget / 2),
+	})
 }
 
 export function shouldReportStartupBundleOverageIssue(
@@ -218,12 +547,13 @@ export function upsertStartupBundleOverageIssue(
 	}
 	const gh = options.gh ?? runGh
 	const findOpen = options.findOpen ?? findOpenOverageIssue
+	const existing = findOpen(overage.name, env, gh)
 	const body = buildStartupBundleOverageIssueBody(overage, {
 		sha: options.sha ?? env.GITHUB_SHA ?? null,
 		runUrl: options.runUrl ?? resolveStartupBundleOverageRunUrl(env),
 		ref: options.ref ?? env.GITHUB_REF ?? env.GITHUB_REF_NAME ?? null,
+		previousBody: existing?.body ?? null,
 	})
-	const existing = findOpen(overage.name, env, gh)
 	if (existing) {
 		gh(['issue', 'edit', String(existing.number), '--body', body], env)
 		gh(

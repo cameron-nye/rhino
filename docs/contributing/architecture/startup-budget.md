@@ -158,11 +158,14 @@ boundaries deterministically. Byte ceilings live in
 
 Byte overages against the reviewed ceiling **warn and open/update a GitHub
 issue** on main CI (`Startup budget overage: <worker>`, marker
-`<!-- kody-startup-bundle-overage:<worker> -->`, `friction` label). They do
-**not** fail 🧹 Static / ✅ Validate or block 🚀 Deploy. Deferred-source and
-additional-module regressions still fail hard. Shrink the graph when you can;
-raise the committed budget (with a notes ledger entry) when the growth is
-intentional.
+`<!-- kody-startup-bundle-overage:<worker> -->`, `friction` label). The issue
+names the largest attributed sources, and the largest byte deltas when a
+previous outdir or the previous issue snapshot is available. Attribution reads
+the source map from the build that just measured the entry, so CI does not
+rebuild with `--attribute`. They do **not** fail 🧹 Static / ✅ Validate or
+block 🚀 Deploy. Deferred-source and additional-module regressions still fail
+hard. Shrink the graph when you can; raise the committed budget (with a notes
+ledger entry) when the growth is intentional.
 
 When a change buys headroom, lower the budget in the same PR.
 
