@@ -5,7 +5,8 @@ import { createServer } from 'node:http'
 import { type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { test } from 'node:test'
+import { mock, test } from 'node:test'
+import { Entry } from '@napi-rs/keyring'
 import {
 	buildExecuteToolArgs,
 	executeSourcesConflict,
@@ -18,7 +19,6 @@ import {
 	resolveCommand,
 	resolveLocalExecuteBearer,
 	runCli,
-	shouldUseApiToken,
 } from '../src/cli.js'
 import { OpenApiError, clearOpenApiRouteCache } from '../src/open-api-client.js'
 import { isPairedApiUrl } from '../src/api-token.js'
@@ -543,85 +543,6 @@ test('resolveLocalExecuteBearer fails clearly when neither login nor token is av
 	)
 })
 
-test('shouldUseApiToken prefers explicit --token and env token when not logged in', () => {
-	const noStoredToken = () => null
-	assert.equal(
-		shouldUseApiToken({
-			tokenValues: { token: 'flag' },
-			mcpUrl: 'https://kody.codes/mcp',
-			allowEnvWithoutLogin: true,
-			env: {},
-			hasSession: true,
-			loadApiToken: noStoredToken,
-		}),
-		true,
-	)
-	assert.equal(
-		shouldUseApiToken({
-			tokenValues: {},
-			mcpUrl: 'https://kody.codes/mcp',
-			allowEnvWithoutLogin: true,
-			env: { KODY_API_TOKEN: 'env-tok' },
-			hasSession: false,
-			loadApiToken: noStoredToken,
-		}),
-		true,
-	)
-	assert.equal(
-		shouldUseApiToken({
-			tokenValues: {},
-			mcpUrl: 'https://kody.codes/mcp',
-			allowEnvWithoutLogin: true,
-			env: { KODY_API_TOKEN: 'env-tok' },
-			hasSession: true,
-			loadApiToken: noStoredToken,
-		}),
-		false,
-	)
-	assert.equal(
-		shouldUseApiToken({
-			tokenValues: {},
-			mcpUrl: 'https://kody.codes/mcp',
-			allowEnvWithoutLogin: true,
-			env: {},
-			hasSession: false,
-			loadApiToken: noStoredToken,
-		}),
-		false,
-	)
-})
-
-test('shouldUseApiToken treats stored bootstrap token like env when not logged in', () => {
-	const stored: StoredApiToken = {
-		version: 1,
-		apiUrl: 'https://api.kody.codes',
-		token: 'kody_at_stored',
-		tokenId: 'tok_stored',
-	}
-	assert.equal(
-		shouldUseApiToken({
-			tokenValues: {},
-			mcpUrl: 'https://kody.codes/mcp',
-			allowEnvWithoutLogin: true,
-			env: {},
-			hasSession: false,
-			loadApiToken: () => stored,
-		}),
-		true,
-	)
-	assert.equal(
-		shouldUseApiToken({
-			tokenValues: {},
-			mcpUrl: 'https://kody.codes/mcp',
-			allowEnvWithoutLogin: true,
-			env: {},
-			hasSession: true,
-			loadApiToken: () => stored,
-		}),
-		false,
-	)
-})
-
 test('resolveApiToken falls back to a stored bootstrap token', () => {
 	const stored: StoredApiToken = {
 		version: 1,
@@ -1125,7 +1046,7 @@ test('execute --local --invoke rejects non-package export keys outside a package
 		)
 	} finally {
 		process.chdir(previous)
-		await rm(root, { recursive: true, force: true })
+		await rm(root, { recursive: true, force: true, maxRetries: 10 })
 	}
 })
 
@@ -1222,4 +1143,26 @@ test('redact strips token-looking assignments', () => {
 		redact('access_token=abc123 refresh_token: xyz'),
 		'access_token=[redacted] refresh_token=[redacted]',
 	)
+})
+
+test('version checks never open stored keychain credentials', async () => {
+	const password = mock.method(Entry.prototype, 'getPassword', () => {
+		throw new Error('Informational commands cannot read credentials')
+	})
+	try {
+		for (const command of ['version', '--version']) {
+			let output = ''
+			const code = await runCli([command], {
+				stdout: (text) => {
+					output += text
+				},
+				stderr: (text) => assert.fail(text),
+			})
+			assert.equal(code, 0)
+			assert.ok(output.length > 0)
+		}
+		assert.equal(password.mock.callCount(), 0)
+	} finally {
+		password.mock.restore()
+	}
 })

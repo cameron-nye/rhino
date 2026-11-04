@@ -64,6 +64,8 @@ export type AccountRailItem = {
 	icon: IconName
 	/** One line for the workspace overview card. */
 	description?: string
+	/** Short marker beside the label, such as `Experiment` for a flag-off feature. */
+	badge?: string
 	/**
 	 * Sibling pages shown as tabs under the page title. Each tab page also
 	 * marks this item current, so the rail lists the group once.
@@ -364,16 +366,42 @@ function jobsRailItem(orgSlug: string | null | undefined): AccountRailItem {
 	}
 }
 
+/**
+ * Shown whether or not the flag is on, so people can find the feature. Off,
+ * it is marked as an experiment and the page explains it and offers the
+ * opt-in.
+ */
 function executionContextsRailItem(
 	orgSlug: string | null | undefined,
+	enabled: boolean,
 ): AccountRailItem {
 	return {
+		...(enabled ? {} : { badge: 'Experiment' }),
 		href: orgSectionHref(orgSlug, 'execution-contexts'),
 		id: 'execution-contexts',
 		label: 'Execution contexts',
 		icon: 'server',
 		description:
 			'Your machines and shared servers that run execute, and the order Kody tries them in.',
+	}
+}
+
+/**
+ * Agent profiles (ADR 0092). Shown with the flag off too, marked as an
+ * experiment, so people find the page and its opt-in.
+ */
+function profilesRailItem(
+	orgSlug: string | null | undefined,
+	enabled: boolean,
+): AccountRailItem {
+	return {
+		...(enabled ? {} : { badge: 'Experiment' }),
+		href: orgSectionHref(orgSlug, 'profiles'),
+		id: 'profiles',
+		label: 'Agent profiles',
+		icon: 'users',
+		description:
+			'Scoped identities for your agents and bots, and the sub-profiles below them.',
 	}
 }
 
@@ -491,6 +519,7 @@ function workspaceResourceGroups(
 	orgSlug: string | null | undefined,
 	personal: boolean,
 	executionContexts = false,
+	profiles = false,
 ): Array<AccountRailGroup> {
 	return [
 		{
@@ -498,7 +527,7 @@ function workspaceResourceGroups(
 			items: [
 				repositoriesRailItem(orgSlug),
 				jobsRailItem(orgSlug),
-				...(executionContexts ? [executionContextsRailItem(orgSlug)] : []),
+				executionContextsRailItem(orgSlug, executionContexts),
 				{
 					href: orgSectionHref(orgSlug, 'webhooks'),
 					id: 'webhooks',
@@ -533,6 +562,7 @@ function workspaceResourceGroups(
 			label: 'Agents & data',
 			items: [
 				agentsRailItem(orgSlug),
+				profilesRailItem(orgSlug, profiles),
 				{
 					href: orgSectionHref(orgSlug, 'skills'),
 					id: 'skills',
@@ -578,6 +608,8 @@ export function workspaceRailGroups(input: {
 	profileUsername?: string | null
 	/** The `execution-contexts` flag is on for the viewer. */
 	executionContexts?: boolean
+	/** The `profiles` flag is on for the viewer. */
+	profiles?: boolean
 }): Array<AccountRailGroup> {
 	const { orgSlug, personal, role } = input
 	const profileUsername = personal ? input.profileUsername : null
@@ -654,7 +686,12 @@ export function workspaceRailGroups(input: {
 					},
 				]
 			: []),
-		...workspaceResourceGroups(orgSlug, personal, input.executionContexts),
+		...workspaceResourceGroups(
+			orgSlug,
+			personal,
+			input.executionContexts,
+			input.profiles,
+		),
 		{ label: 'Organization', items: organizationItems },
 	]
 }

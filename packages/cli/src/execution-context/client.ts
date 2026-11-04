@@ -4,7 +4,10 @@ import {
 	formatEcpSignatureHeader,
 	importEd25519PrivateKey,
 	signEcpHttpRequest,
+	ecpRootPublicKeys,
+	ecpTestRootPublicKey,
 	verifyServerKeySet,
+	type EcpRootKey,
 	type Ed25519PrivateJwk,
 	type EcpPublishedKey,
 	type EcpCryptoKey,
@@ -21,18 +24,55 @@ export class ExecutionContextApiError extends Error {
 		message: string,
 		readonly status: number,
 		readonly code: string | null,
+		readonly reason: string | null = null,
 	) {
 		super(message)
 	}
 }
 
+/** Kody will never accept this context's key again: stop, do not retry. */
+export function isPermanentContextRefusal(error: unknown) {
+	return (
+		error instanceof ExecutionContextApiError &&
+		(error.status === 401 || error.status === 403) &&
+		(error.reason === 'revoked' || error.reason === 'unknown_context')
+	)
+}
+
+/**
+ * The execution-contexts experiment is off for this account: say how to turn
+ * it on instead of retrying or echoing a bare 403.
+ */
+export function experimentOffError(apiUrl: string) {
+	const origin = new URL(apiUrl).origin
+	return new ExecutionContextApiError(
+		[
+			'Execution contexts are an experiment that is off for this account.',
+			`Turn them on at ${origin}/account/experiments, or ask your agent to call experimentSet with { "experiment": "execution-contexts", "enabled": true }.`,
+			`Then run this command again. Guide: ${origin}/docs/execution-contexts`,
+		].join('\n'),
+		403,
+		'feature_disabled',
+	)
+}
+
+export function isExperimentOffError(error: unknown) {
+	return (
+		error instanceof ExecutionContextApiError &&
+		error.code === 'feature_disabled'
+	)
+}
+
 async function readError(response: Response) {
 	const text = await response.text()
 	let code: string | null = null
+	let reason: string | null = null
 	let message = text || `HTTP ${response.status}`
 	try {
 		const body = JSON.parse(text) as {
-			error?: { code?: string; message?: string } | string
+			error?:
+				| { code?: string; message?: string; details?: { reason?: unknown } }
+				| string
 			message?: string
 		}
 		if (typeof body.error === 'string') {
@@ -41,9 +81,12 @@ async function readError(response: Response) {
 		} else if (body.error) {
 			code = body.error.code ?? null
 			message = body.error.message ?? message
+			if (typeof body.error.details?.reason === 'string') {
+				reason = body.error.details.reason
+			}
 		}
 	} catch {}
-	return new ExecutionContextApiError(message, response.status, code)
+	return new ExecutionContextApiError(message, response.status, code, reason)
 }
 
 /** Fetch with the context's Ed25519 HTTP signature (no bearer token). */
@@ -199,17 +242,75 @@ export async function requestConnectTicket(input: {
 	return (await response.json()) as { ticket: string; expiresAt: string }
 }
 
+/**
+ * Host commands opt-in (ADR 0093), signed with the context key so only this
+ * machine can turn commands on. Omit `enabled` to read the current state.
+ */
+export async function setContextCommands(input: {
+	apiUrl: string
+	ecid: string
+	privateKey: EcpCryptoKey
+	enabled?: boolean
+	fetchFn?: typeof fetch
+	signal?: AbortSignal
+}) {
+	const response = await signedFetch({
+		apiUrl: input.apiUrl,
+		ecid: input.ecid,
+		privateKey: input.privateKey,
+		...(input.fetchFn ? { fetchFn: input.fetchFn } : {}),
+		...(input.signal ? { signal: input.signal } : {}),
+		method: 'POST',
+		pathAndQuery: `${executionContextsPath}/commands`,
+		body: JSON.stringify(
+			input.enabled === undefined ? {} : { enabled: input.enabled },
+		),
+		headers: { 'content-type': 'application/json' },
+	})
+	if (!response.ok) throw await readError(response)
+	return (await response.json()) as {
+		id: string
+		name: string
+		commands: { enabled: boolean; enabledAt?: string | null }
+		grantVersion: number
+	}
+}
+
+/**
+ * Root keys a daemon trusts for this API. TEST ONLY: `KODY_ECP_TRUST_TEST_ROOT=1`
+ * adds the public test root, and only for https `*.workers.dev` previews and
+ * `localhost`; kody.codes and every other host get the pinned roots only.
+ */
+export function serverKeyRootsFor(
+	apiUrl: string,
+	env: NodeJS.ProcessEnv = process.env,
+): ReadonlyArray<EcpRootKey> {
+	if (env.KODY_ECP_TRUST_TEST_ROOT !== '1') return ecpRootPublicKeys
+	const { protocol, hostname } = new URL(apiUrl)
+	const host = hostname.toLowerCase()
+	const testHost =
+		(protocol === 'https:' && host.endsWith('.workers.dev')) ||
+		host === 'localhost'
+	return testHost
+		? [...ecpRootPublicKeys, ecpTestRootPublicKey]
+		: ecpRootPublicKeys
+}
+
 /** Server frame keys, trusted only when signed by a pinned root key. */
 export async function fetchServerKeys(input: {
 	apiUrl: string
 	fetchFn?: typeof fetch
 	now?: number
+	env?: NodeJS.ProcessEnv
 }): Promise<Array<EcpPublishedKey>> {
 	const response = await (input.fetchFn ?? fetch)(
 		new URL(`${executionContextsPath}/server-keys`, input.apiUrl),
 	)
 	if (!response.ok) throw await readError(response)
-	const set = await verifyServerKeySet({ document: await response.json() })
+	const set = await verifyServerKeySet({
+		document: await response.json(),
+		roots: serverKeyRootsFor(input.apiUrl, input.env),
+	})
 	if (!set) {
 		throw new Error(
 			'Kody server keys failed root signature verification. Refusing to connect.',

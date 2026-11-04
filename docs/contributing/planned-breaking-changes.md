@@ -1,3 +1,13 @@
+## User-targeted admin billing capabilities
+
+The legacy user-targeted billing capabilities still work as deprecated
+forwarders for personal organizations, preserving their existing inputs and
+outputs. New integrations should use `adminOrgPlanSet`, `adminOrgCreditGrant`,
+`adminOrgCreditEligibilitySet`, and `adminOrgGet` with an organization handle.
+This change introduced the deprecation and forwarder behavior. Removal is ready
+when there are no invocations of the four tools in the platform audit log for 4
+consecutive weeks.
+
 # Planned breaking changes
 
 Leftover fields and params that still work, and that a later change will remove.
@@ -47,3 +57,17 @@ drop the param and columns without a fleet codemod.
 
 **Introduced as leftover by:** the change that documents identity as scoped
 `name` or `package_id` while leaving the leftover param in the runtime contract.
+
+## `ownerCredentialForVisitors`
+
+Package apps run as their publisher. `kody.credentials` slots may still declare
+`ownerCredentialForVisitors: true`. The field parses and stays in the capability
+fingerprint so existing approvals do not churn. Runtime reads it only as a
+legacy alias for `supplier: "publisher"`.
+
+**Ready when:** published manifests and capability-set rows no longer need the
+field, and a dedicated removal PR can drop it from the schema without a fleet
+codemod.
+
+**Introduced as leftover by:** the change that removed the visitor-authority
+path and retired the opt-in.

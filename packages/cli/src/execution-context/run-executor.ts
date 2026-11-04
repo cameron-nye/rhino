@@ -1,4 +1,12 @@
-import { type EcpRunRequestBody } from '@kody-internal/shared/execution-context-protocol/index.ts'
+import {
+	type EcpGrant,
+	type EcpRunRequestBody,
+} from '@kody-internal/shared/execution-context-protocol/index.ts'
+import { egressPolicyFromGrant } from '../local-egress.js'
+import { type EffectiveFs } from './fs-access.js'
+import { type HostCommands } from './host-commands.js'
+import { type LocalExecuteTiming } from '../local-execute.js'
+import { type PackageGraphCache } from './package-graph-cache.js'
 import { type LocalWorkerTracker } from './worker-tracker.js'
 
 /**
@@ -12,8 +20,15 @@ export async function runContextRun(input: {
 	signal: AbortSignal
 	apiUrl: string
 	workerTracker?: LocalWorkerTracker
+	/** The context grant's egress; absent means the default (public only). */
+	egress?: EcpGrant['egress']
+	hostFs?: () => EffectiveFs
+	hostCommands?: HostCommands
+	packageGraphCache?: PackageGraphCache
 }) {
+	const hostCommands = input.hostCommands
 	const { runLocalExecute } = await import('../local-execute.js')
+	let timing: LocalExecuteTiming | undefined
 	const result = await runLocalExecute({
 		code: input.request.source.code,
 		params: input.request.params,
@@ -25,6 +40,40 @@ export async function runContextRun(input: {
 		fetchFn: input.fetchFn,
 		signal: input.signal,
 		...(input.workerTracker ? { workerTracker: input.workerTracker } : {}),
+		egress: egressPolicyFromGrant(input.egress ?? { mode: 'public' }),
+		...(input.hostFs ? { hostFs: input.hostFs } : {}),
+		...(hostCommands
+			? {
+					hostCommands: async (call: {
+						name: string
+						args: unknown
+						authorize: (input: Record<string, unknown>) => Promise<void>
+					}) =>
+						await hostCommands.call(call.name, call.args, {
+							runId: input.request.runId,
+							requesterUserId: input.request.requestedBy.userId,
+							// The run's signal: a cancel or deadline kills a foreground command.
+							signal: input.signal,
+							authorize: call.authorize,
+						}),
+				}
+			: {}),
+		...(input.packageGraphCache
+			? {
+					packageGraphCache: input.packageGraphCache.slot({
+						apiUrl: input.apiUrl,
+						userId: input.request.requestedBy.userId,
+						orgId: input.request.requestedBy.orgId,
+						...(input.request.conversationId
+							? { conversationId: input.request.conversationId }
+							: {}),
+						code: input.request.source.code,
+					}),
+				}
+			: {}),
+		onTiming: (value) => {
+			timing = value
+		},
 	})
 	return {
 		isError: result.isError === true,
@@ -37,5 +86,6 @@ export async function runContextRun(input: {
 					>,
 				}
 			: {}),
+		...(timing ? { timing } : {}),
 	}
 }

@@ -8,23 +8,29 @@
  * never modified (P6 inherits them exactly; price migration is separate).
  */
 import {
-	isPurchasableProSubscription,
+	getCreditsEligiblePriceIds,
 	selectKodyPlanRetainingSubscriptions,
 	type BillingEnv,
 } from './billing-config.ts'
-import { countLiveSeats, isPaidOrg } from '#worker/orgs/billing.ts'
+import { countLiveSeats, isPaidOrgBilling } from '#worker/orgs/billing.ts'
 import {
 	listSubscriptions,
-	subscriptionSeatQuantity,
+	subscriptionItemSeatQuantity,
 	updateSubscriptionItemQuantity,
 	type StripeEnv,
 	type StripeSubscription,
 } from './stripe-client.ts'
 import { sendSeatChangeEmail } from './org-billing-emails.ts'
+import {
+	recordOrgAuditEvent,
+	type OrgAuditWriter,
+} from '#worker/orgs/org-audit.ts'
 type SeatSyncEnv = BillingEnv & StripeEnv
+export const billingSeatQuantitySyncedAction = 'billing_seat_quantity_synced'
 
 type OrgBillingRow = {
 	plan: string
+	stripe_plan: string | null
 	stripe_customer_id: string | null
 	slug: string | null
 }
@@ -35,7 +41,7 @@ async function loadOrgBillingRow(
 ): Promise<OrgBillingRow | null> {
 	return await db
 		.prepare(
-			`SELECT plan, stripe_customer_id, slug
+			`SELECT plan, stripe_plan, stripe_customer_id, slug
 			 FROM orgs
 			 WHERE id = ?
 			   AND deleted_at IS NULL`,
@@ -44,12 +50,27 @@ async function loadOrgBillingRow(
 		.first<OrgBillingRow>()
 }
 
-function primarySubscriptionItemId(
-	subscription: StripeSubscription,
-): string | null {
+export function selectPurchasableSeatSubscription(
+	env: SeatSyncEnv,
+	subscriptions: ReadonlyArray<StripeSubscription>,
+): {
+	subscription: StripeSubscription
+	subscriptionItemId: string
+	seatQuantity: number
+} | null {
+	const selected = selectKodyPlanRetainingSubscriptions(env, subscriptions)
+	if (selected.length !== 1) return null
+	const subscription = selected[0]!
+	const eligiblePriceIds = new Set(getCreditsEligiblePriceIds(env))
 	for (const item of subscription.items.data) {
 		const id = item.id?.trim()
-		if (id) return id
+		if (id && eligiblePriceIds.has(item.price.id)) {
+			return {
+				subscription,
+				subscriptionItemId: id,
+				seatQuantity: subscriptionItemSeatQuantity(item),
+			}
+		}
 	}
 	return null
 }
@@ -61,31 +82,24 @@ export async function syncOrgSeatQuantity(input: {
 	now?: Date
 	notifySeatChange?: boolean
 	emailEnv?: Env
+	audit?: OrgAuditWriter | null
 }): Promise<{ previousQuantity: number; nextQuantity: number } | null> {
 	void input.now
 	const orgId = input.orgId.trim()
 	if (!orgId) return null
 
 	const billing = await loadOrgBillingRow(input.db, orgId)
-	if (!billing || !isPaidOrg(billing.plan)) return null
+	if (!billing || !isPaidOrgBilling(billing)) return null
 
 	const customerId = billing.stripe_customer_id?.trim()
 	if (!customerId) return null
 
-	const subscriptions = selectKodyPlanRetainingSubscriptions(
+	const selected = selectPurchasableSeatSubscription(
 		input.env,
 		await listSubscriptions(input.env, customerId),
 	)
-	if (subscriptions.length !== 1) return null
-
-	const subscription = subscriptions[0]!
-	// Retired Standard/Pro keep exact billing in P6 (quantity and price).
-	if (!isPurchasableProSubscription(input.env, subscription)) return null
-
-	const subscriptionItemId = primarySubscriptionItemId(subscription)
-	if (!subscriptionItemId) return null
-
-	const previousQuantity = subscriptionSeatQuantity(subscription)
+	if (!selected) return null
+	const { subscriptionItemId, seatQuantity: previousQuantity } = selected
 	const seatCount = await countLiveSeats(input.db, orgId)
 	const nextQuantity = Math.max(1, seatCount)
 	if (previousQuantity === nextQuantity) {
@@ -103,6 +117,21 @@ export async function syncOrgSeatQuantity(input: {
 		subscriptionItemId,
 		quantity: confirmedQuantity,
 	})
+	try {
+		if (input.audit) {
+			await recordOrgAuditEvent(input.audit, {
+				orgId,
+				action: billingSeatQuantitySyncedAction,
+				resourceType: 'org_subscription',
+				details: {
+					previousQuantity,
+					nextQuantity: confirmedQuantity,
+				},
+			})
+		}
+	} catch (error) {
+		console.warn('org-seat-sync-audit-failed', { orgId, error })
+	}
 	const emailEnv = input.emailEnv
 	if (input.notifySeatChange !== false && billing.slug && emailEnv) {
 		await sendSeatChangeEmail({

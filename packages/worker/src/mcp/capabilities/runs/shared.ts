@@ -1,3 +1,4 @@
+import { historyRanOn } from '#worker/execution-contexts/routing.ts'
 import { z } from 'zod'
 import {
 	type RunRecord,
@@ -73,7 +74,7 @@ export const runRecordSchema = z.object({
 				.string()
 				.nullable()
 				.describe(
-					'Optional display label such as an API token name or connection profile. Never a secret.',
+					'Optional display label such as an API token name. Never a secret.',
 				),
 		})
 		.nullable()
@@ -174,7 +175,13 @@ export function formatRunRecord(
 					label: run.startedBy.label,
 				}
 			: null,
-		metadata: run.metadata,
+		metadata:
+			run.surface === 'execute'
+				? {
+						...run.metadata,
+						ranOn: historyRanOn(run.metadata['executionContext']),
+					}
+				: run.metadata,
 		log_count: run.logCount,
 	}
 }

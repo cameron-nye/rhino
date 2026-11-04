@@ -61,14 +61,16 @@ kody execute --org acme …  # one-shot org override (also: KODY_ORG=acme)
 
 Or run via `npx @kodycodes/cli` without a global install.
 
-Each `kody login` adds an org (chosen in the browser, or via `--org`).
-Re-logging into an org that is already stored replaces only that org's
-credential. Org-scoped commands (`execute`, `search`, `whoami`, `api`, …) take
-`--org <slug>` or `KODY_ORG` (flag wins, then env, then the active org).
-`kody logout` removes the active org; `kody logout --org <slug>` removes one
-org. Git auth stays user-wide (`kody auth setup-git` once covers every repo
-across orgs). Existing single-org keychain credentials migrate silently into the
-multi-org store as the active org (no re-login).
+Each `kody login` adds an org (chosen in the browser, or via `--org`). If you do
+not have an account yet, create one on that page; login resumes the same
+authorization after signup and email verification. Re-logging into an org that
+is already stored replaces only that org's credential. Org-scoped commands
+(`execute`, `search`, `whoami`, `api`, …) take `--org <slug>` or `KODY_ORG`
+(flag wins, then env, then the active org). `kody logout` removes the active
+org; `kody logout --org <slug>` removes one org. Git auth stays user-wide
+(`kody auth setup-git` once covers every repo across orgs). Existing single-org
+keychain credentials migrate silently into the multi-org store as the active org
+(no re-login).
 
 ## Remote or headless machines
 
@@ -108,11 +110,11 @@ flow stays the default.
 | `kody auth setup-git`                             | Installs a Git credential helper for `https://kody.codes/@owner/name.git` (persistent `kody_at_…`, user-owned token with `package:read`/`package:write`). See [Git HTTPS](#git-https-setup-git).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `kody auth remove-git`                            | Inverse of `setup-git`: clears Kody HTTPS git helpers, revokes the stored API token, deletes it from the keychain. Leaves `kody login` alone.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `kody git-credential`                             | Credential helper invoked by Git after `setup-git` (`get` / `store` / `erase`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `kody whoami`                                     | Confirms the CLI MCP connection and lists tools. With a scoped API token (and no login), shows token identity via the Open API.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `kody whoami`                                     | Shows the credential commands will use (`--token`, `KODY_API_TOKEN`, stored API token, or `kody login`), its token id and scopes, and any other stored credential it outranks. See [Which credential a command uses](#which-credential-a-command-uses).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `kody search [query]`                             | Calls Kody `search` from the CLI (prefer the host MCP tool). Token-only auth uses Open API `GET /v1/search`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `kody api <operationId>`                          | Thin Open API wrapper matching the MCP `api` tool: `operationId` + flat `--params` JSON. Auth: `--token` / `KODY_API_TOKEN` / stored `auth bootstrap` token. The parsed `/openapi.json` route map is cached under the Kody cache dir keyed by the document's `ETag` and revalidated with `If-None-Match` on each run.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `kody api <operationId>`                          | Thin Open API wrapper matching the MCP `api` tool: `operationId` + flat `--params` JSON. Auth: `--token`, `KODY_API_TOKEN`, the stored API token, then `kody login` (same credential `kody whoami` reports). The parsed `/openapi.json` route map is cached under the Kody cache dir keyed by the document's `ETag` and revalidated with `If-None-Match` on each run.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `kody package publish`                            | Thin wrapper for `packagePublishExternalPush`. Optional positional `@owner/leaf`, bare leaf name, or package UUID (names are resolved to the package UUID via `packageList`); extra fields via `--params`. Same auth as `kody api`. Prints the API JSON. Exit **0** for `published`, `already_published` (including `artifacts_rebuilt: true`), and `dispatched` (poll `workflowRunList({ workflow_id })`). Exit **1** for refusal/rejection statuses (`checks_failed`, `locked`, `approval_required`, `not_fast_forward`) with the API `message` (or a checks summary) on stderr, like npm. Auth / permission / network failures also exit 1; `--json` adds `{ error, message, sent }` on stdout for network errors (`sent: false` = not sent; `sent: "unknown"` = maybe sent — prefer `kody api workflowRunList` with `workflow_id` when known, otherwise a recent list, before retry). Re-publishing the same commit is safe (durable dedupe / `already_published`). |
-| `kody package collaborators` / `grant` / `revoke` | Who can use one package, and add or remove teams and members of the org (`--org`). `<package>` is `@owner/leaf`, the name leaf, or the package id. `grant <package> --team <slug>\|--user <username> [--preset use\|contribute\|manage]` (default `use`) adds or changes a collaborator via `packageCollaboratorSet`; people outside the org are refused. `revoke <package> --team\|--user\|--grant <grant_id>` removes one via `packageCollaboratorRemove`. Needs Manage on the package and a token with `package:manage_access` (`auth bootstrap --scopes …,package:manage_access`). Prints a summary, or JSON with `--json`.                                                                                                                                                                                                                                                                                                                                         |
+| `kody package collaborators` / `grant` / `revoke` | Who can use one package, and add or remove teams and members of the org (`--org`). `<package>` is `@owner/leaf`, the name leaf, or the package id. `grant <package> --team <slug>\|--user <username> [--preset read\|use\|contribute\|manage]` (default `use`) adds or changes a collaborator via `packageCollaboratorSet`; `--preset read` shares source only (read, clone, and fork — no execute). People outside the org are refused. `revoke <package> --team\|--user\|--grant <grant_id>` removes one via `packageCollaboratorRemove`. Needs Manage on the package and a token with `package:manage_access` (`auth bootstrap --scopes …,package:manage_access`). Prints a summary, or JSON with `--json`.                                                                                                                                                                                                                                                          |
 | `kody execute`                                    | Calls Kody `execute` from the CLI (`--invoke`, `--code`, `--file`, or stdin via `--file -`). `--invoke` is client-side sugar: the CLI writes the one-export import passthrough and sends it as `code`, the only module field hosted execute accepts. With a scoped API token and no login (or with `--token`), cloud execute goes through CapabilityProxy → `kody.execute` — no `kody login`. Add `--local` to run the module (and static `kody:@…` package modules) on this machine instead. `--credential key=name` (repeatable; `org:name` / `personal:name` / empty `=` for none) picks ADR 0068 credentials for `--local` or a `kody login` MCP session. `--allow-private-network` opts local execution into private and local network access. `--target prod\|mock` (default `prod`) sends CapabilityProxy / search hops to prod or the built-in CLI mock; `--target mock` implies local workerd.                                                                 |
 | `kody dev`                                        | Local testing for unpublished packages. Serves `kody.app.entry` on localhost via workerd with hot reload. Subcommands: `fetch`, `job`, `webhook`, `emit`, `check`. Default `--target mock` (scratch storage, fake credentials). Covers exports, webhooks, schedules (run-once), and subscriptions. See [Local package testing](#local-package-testing-kody-dev).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
@@ -127,9 +129,9 @@ Agents already on Kody MCP should prefer `cliCredentialBootstrap` →
 CLI store without pasting `kody_at_…` into chat. Interactive humans can use
 `kody login`. Scoped API tokens (`kody_at_…`, from bootstrap redeem,
 `tokenCreate`, or `POST /v1/tokens`) authenticate the Open API and
-CapabilityProxy. They never replace MCP OAuth on `/mcp`. The CLI uses that token
-path when you pass `--token` / `KODY_API_TOKEN` and are not logged in (or when
-you pass `--token` explicitly):
+CapabilityProxy. They never replace MCP OAuth on `/mcp`. See
+[Which credential a command uses](#which-credential-a-command-uses) for the
+order the CLI picks them in:
 
 ```bash
 # Preferred for agents on MCP (no tokenCreate, no second OAuth):
@@ -171,6 +173,36 @@ npx @kodycodes/cli api usageGet --params '{}'
   `local-execute` feature flag. Another token does not bypass that flag.
 - Prefer the env var so the token stays out of shell history and `ps`.
 - Never scavenge host MCP OAuth tokens from disk (ADR 0053).
+
+## Which credential a command uses
+
+One resolver picks the credential for every command, and `kody whoami` reports
+the same pick:
+
+| Commands                                                                  | Order                                                                  |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `whoami`, `api`, `package`, `execute --local`, `context`, `daemon`, `dev` | `--token`, `KODY_API_TOKEN`, stored API token, `kody login`            |
+| `search`, cloud `execute` (no `--local`)                                  | `--token`, `kody login` (over MCP), `KODY_API_TOKEN`, stored API token |
+| `auth bootstrap --scopes` (minting)                                       | `--token`, `kody login`, `KODY_API_TOKEN`, stored API token            |
+
+Desktop integrations can set `KODY_CREDENTIAL_SOURCE=login` to select only the
+browser login for these commands. There is no API token fallback in this mode,
+and saved API tokens remain unchanged. Unset it for normal CLI precedence.
+
+- The stored API token comes from `kody auth bootstrap` or
+  `kody auth setup-git`. `kody login` stores a login session next to it and does
+  not replace it, so a stored token keeps winning for `api` and the other
+  first-row commands after you log in again. `kody login` prints a note when
+  that happens.
+- To change the stored token's scopes, run
+  `npx @kodycodes/cli auth bootstrap --lifetime short --scopes <every scope you need>`
+  (mints with your login and replaces the stored token). `kody logout` clears
+  both.
+- `kody whoami` prints `credential:` (which one is in use, with its token id),
+  its `scopes:`, and `also stored:` lines for credentials it outranks. With
+  `--json` the same data is under `credential` and `otherCredentials`.
+- `insufficient_scope` errors end with `Credential used: …` and, for a stored
+  token, the exact `auth bootstrap` command that replaces it.
 
 ## Opt-in scopes
 
@@ -429,9 +461,11 @@ npx @kodycodes/cli execute --local --invoke kody:@scope/pkg/export --params '{"n
   (no filesystem graph to follow).
 - **Runtime:** a pinned [workerd](https://github.com/cloudflare/workerd)
   release, downloaded once from GitHub, sha256-verified, and cached under
-  `~/.cache/kody` (Linux, or `$XDG_CACHE_HOME/kody`) or `~/Library/Caches/kody`
-  (macOS). Override with `KODY_CACHE_DIR`, or point `KODY_WORKERD_PATH` at your
-  own binary. No Docker required. Linux and macOS (x64/arm64) only for now.
+  `~/.cache/kody` (Linux, or `$XDG_CACHE_HOME/kody`), `~/Library/Caches/kody`
+  (macOS), or `%LOCALAPPDATA%\kody\cache` (Windows). Override with
+  `KODY_CACHE_DIR`, or point `KODY_WORKERD_PATH` at your own binary. No Docker
+  required. Linux, macOS, and Windows (x64/arm64; Windows on Arm uses the x64
+  workerd build).
 - **API:** `https://api.kody.codes` by default (`--api-url` or `KODY_API_URL` to
   override). The CLI calls `POST /v1/local-execute/package-graph` before
   starting workerd (it authenticates the bearer and, when the module imports
@@ -469,7 +503,49 @@ npx @kodycodes/cli execute --local --invoke kody:@scope/pkg/export --params '{"n
   cloud execute unless the downloaded package modules carry stamps. Outbound
   `fetch` is public-network-only by default. Pass `--allow-private-network` with
   `execute --local` to also allow private and local addresses; the loopback
-  bridge used for CapabilityProxy calls remains available either way.
+  bridge used for CapabilityProxy calls remains available either way. A refused
+  `fetch` throws a plain `TypeError` that names the setting, the blocked host,
+  and how to change it (for example
+  `Blocked by kody execute --local's network setting: the request to 10.0.0.1 was refused because this context allows public internet only … Re-run with --allow-private-network …`).
+  Execution context daemon runs apply the context grant's `egress` the same way
+  (`public`, `public-and-lan`, `allowlist` hosts and ports, or `none`), and the
+  message points the machine owner at `executionContextUpdate` `grant.egress`.
+
+## Execution context host folders
+
+Runs on an execution context (`kody daemon`) use workerd's virtual filesystem
+unless a host folder is allowed by **both** layers:
+
+1. The context's server grant (`grant.fs`, set with `executionContextUpdate` by
+   someone with Contribute on the context).
+2. This machine's local policy, kept by the machine owner in
+   `execution-context-policy.json` under the CLI config directory
+   (`~/.config/kody/` on Linux or `$XDG_CONFIG_HOME/kody/`,
+   `~/Library/Application Support/kody/` on macOS, `%APPDATA%\kody\` on
+   Windows). No file means no host folder access.
+
+```sh
+kody context policy                              # show allowed folders
+kody context policy allow ~/Desktop --mode rw    # ro (default) or rw
+kody context policy remove ~/Desktop
+```
+
+The daemon mounts the overlap of the two layers at its real absolute path, with
+the narrower mode (`ro` wins), and re-applies it on every `grant.update` and
+policy edit (running daemons pick up edits within a few seconds). Paths are
+canonicalized with `realpath`, so symlinks, `..` segments, and prefix tricks
+like `/Users/a/Desktop-evil` cannot reach outside a mount. A context advertises
+the `fs` capability only while at least one folder is mounted, so
+`requires: ["fs"]` routing and chains skip it otherwise (`no_fs`: the server
+grant lists no folders; `no_local_fs`: the local policy allows none of them).
+
+Inside a run, `node:fs` / `fs/promises` `readFile`, `writeFile`, `appendFile`,
+`readdir`, `stat`, `lstat`, `mkdir`, `rm`, `unlink`, `rmdir`, `rename`,
+`copyFile`, `access`, and `realpath` work on mounted paths (up to 32 MiB per
+read or write). Writes under an `ro` mount fail with `EROFS`; paths outside
+every mount fail with `EACCES` naming the layer that refused (server grant or
+local policy). Synchronous calls and streams cannot reach host folders. Other
+paths, including workerd's `/bundle`, `/tmp`, and `/dev`, stay virtual.
 
 ## Token storage
 
@@ -490,9 +566,31 @@ is always printed too, so you can paste it into a browser if no window appears.
 
 Access tokens refresh automatically on expiry or HTTP 401.
 
-`execute --local` prefers `--token` / `KODY_API_TOKEN` when set; otherwise it
-uses stored CLI credentials from `kody login`. Token-only cloud execute still
-only reads `--token` / `KODY_API_TOKEN`.
+`execute --local` prefers `--token` / `KODY_API_TOKEN` when set, then a stored
+API token, then the `kody login` session. See
+[Which credential a command uses](#which-credential-a-command-uses).
+
+## Execution context daemon performance
+
+`kody daemon` runs up to 2 context runs at once by default. Change it with
+`kody daemon --max-concurrent <n>` or `KODY_CONTEXT_MAX_CONCURRENT` (1 to 8).
+The context's grant `limits.maxConcurrent` can only lower it. Each run still
+gets its own workerd process and temp dir, so runs share no globals or virtual
+files. Granted host folders are the real folders, so concurrent runs with the
+same `rw` folder can write the same host files. The daemon caches package graphs
+(32 entries, 60 seconds, per requester, org, conversation and module source) so
+repeat runs skip that API round trip. Code that imports saved packages
+(`kody:@…`) is never cached, so package access is re-checked on every run.
+
+Every remote `execute` prints where it ran and the Worker compute units it
+charged (`Ran on my-laptop (your machine), 0 worker units.`); `--json` has them
+in `structuredContent.ranOn.workerUnits`. Execution-context runs are always 0.
+
+Every context run reports where its time went in
+`structuredContent.ranOn.timing` on `execute`: `queueMs`, `setupMs` (including
+`packageGraphMs` and `packageGraphCached`), `executeMs` and `daemonMs` on the
+machine, plus `serverMs` and `transitMs` (dispatch and return on the wire)
+measured by Kody.
 
 ## Benchmark
 

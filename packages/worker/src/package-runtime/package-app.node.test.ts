@@ -1,4 +1,7 @@
-import { ownerIdFromStored } from '@kody-internal/shared/owner-person-ids.ts'
+import {
+	ownerIdFromStored,
+	personIdFromStored,
+} from '@kody-internal/shared/owner-person-ids.ts'
 import { readFile } from 'node:fs/promises'
 import { expect, test, vi } from 'vitest'
 import { buildSecretPlaceholder } from '#mcp/secrets/placeholders.ts'
@@ -12,7 +15,6 @@ import {
 import type * as CloudflareWorkers from 'cloudflare:workers'
 import type * as ModuleGraph from './module-graph.ts'
 import type * as PackageAppAuthority from './package-app-authority.ts'
-import type * as PackageAppAuthorityFallback from './package-app-authority-fallback.ts'
 import type * as PublishedBundleArtifacts from './published-bundle-artifacts.ts'
 import type * as McpAuthUserContext from '#worker/mcp-auth-user-context.ts'
 import type * as RunRecordsServiceModule from '#worker/run-records/service.ts'
@@ -56,7 +58,7 @@ function createKodyProxyForTest(
 		'runtimeBridge',
 		'mcpServerNamesOrLoader',
 		'identity',
-		`function __kodyCurrentVisitTicket() { return null; }\n${identityOnlyAnswerSource}\n${kodyProxySource}; return createKodyProxy(runtimeBridge, mcpServerNamesOrLoader, identity);`,
+		`function __kodyCurrentVisitTicket() { return null; }\nfunction __kodyTicketNamesVisitor() { return false; }\n${identityOnlyAnswerSource}\n${kodyProxySource}; return createKodyProxy(runtimeBridge, mcpServerNamesOrLoader, identity);`,
 	)(runtimeBridge, mcpServerNames, identity) as Record<string, unknown>
 }
 
@@ -486,17 +488,21 @@ vi.mock('./package-app-authority.ts', async (importOriginal) => {
 	return {
 		...actual,
 		loadPackageAppRunsAs: async () => ({
-			status: 'unavailable',
-			reason: 'not-set',
-			message: actual.packageAppRunsAsUnavailableMessages['not-set'],
+			status: 'ready',
+			personId: personIdFromStored('user-1'),
+			source: 'publisher',
+			role: 'owner',
+			email: 'user@example.com',
+			username: 'user',
+			displayName: 'User',
+			request: {
+				org: { id: ownerIdFromStored('user-1'), slug: 'user' },
+				actor: { userId: personIdFromStored('user-1'), username: 'user' },
+				membership: { role: 'owner' },
+			},
 		}),
 	}
 })
-
-vi.mock('./package-app-authority-fallback.ts', async (importOriginal) => ({
-	...(await importOriginal<typeof PackageAppAuthorityFallback>()),
-	schedulePackageAppAuthorityFallback: () => {},
-}))
 
 vi.mock('cloudflare:workers', async (importOriginal) => {
 	const actual = await importOriginal<typeof CloudflareWorkers>()
@@ -631,8 +637,9 @@ function createPackageAppTestEnv() {
 		load: vi.fn(() => ({ getEntrypoint })),
 		get: vi.fn(() => ({ getEntrypoint })),
 	}
+	const all = async () => ({ results: [] })
 	const appDb = {
-		prepare: () => ({ bind: () => ({ first: async () => null }) }),
+		prepare: () => ({ bind: () => ({ first: async () => null, all }) }),
 	}
 	const bundleArtifactsKv = { get: async () => null }
 	return {
@@ -716,7 +723,6 @@ function appVisitorRequest(key: string) {
 			id: null,
 			orgId: id,
 			scopes: null,
-			profileName: null,
 		},
 		membership: { role: 'owner' },
 	}
@@ -851,9 +857,8 @@ test('buildPackageAppWorker serves an artifactName-null artifact hit and reuses 
 	expect(packageAppHostSource).toContain('credentialClientCall')
 	expect(packageAppHostSource).toContain('x-kody-credential-client')
 	expect(packageAppHostSource).toContain('Leave x-kody-credential-client alone')
-	// Must not statically import runtime.js at entry load: optional exports
-	// (credential) freeze from empty ALS and stay undefined forever. Preload
-	// inside ALS.run via __kodyEnsureRuntimeLoaded, then enter the runtime's
+	// No static runtime.js import at entry load (exports freeze from empty ALS).
+	// Preload inside ALS.run via __kodyEnsureRuntimeLoaded, then enter the
 	// private package-binding scope (GHSA-5fv3). No ambient getter or header.
 	expect(packageAppHostSource).not.toMatch(
 		/^import .+ from '\.\/\.__kody_virtual__\/runtime\.js'/m,
@@ -1597,9 +1602,9 @@ test('package app runtime bridge enforces packageStorage grants and raw storage 
 	await expect(
 		bridge.packageStorageGet({ packageId: 'package-1', key: 'count' }),
 	).resolves.toEqual({ value: 'granted-value' })
+	const rc = (id: string, visitor?: string) => [id, visitor, undefined]
 	expect(getStorageRunner).toHaveBeenCalledWith(
-		buildPackageStorageId('package-1'),
-		undefined,
+		...rc(buildPackageStorageId('package-1')),
 	)
 	expect(getValue).toHaveBeenCalledWith({ key: 'count' })
 
@@ -1624,7 +1629,7 @@ test('package app runtime bridge enforces packageStorage grants and raw storage 
 		}),
 	).resolves.toEqual({ ok: true })
 	expect(getStorageRunner).toHaveBeenCalledWith(
-		buildPackageStorageId('dep-package'),
+		...rc(buildPackageStorageId('dep-package'), ''),
 	)
 	expect(setValue).toHaveBeenCalledWith({ key: 'flag', value: true })
 	// The bound binding cannot be pointed at another granted bucket either.
@@ -1670,8 +1675,10 @@ test('package app runtime bridge enforces packageStorage grants and raw storage 
 			value: 1,
 		}),
 	).resolves.toEqual({ ok: true })
-	expect(getStorageRunner).toHaveBeenCalledWith('package-1:facet:main')
-	expect(getStorageRunner).toHaveBeenCalledWith('package-1:Counter:instance-a')
+	expect(getStorageRunner).toHaveBeenCalledWith(...rc('package-1:facet:main'))
+	expect(getStorageRunner).toHaveBeenCalledWith(
+		...rc('package-1:Counter:instance-a'),
+	)
 
 	const outsideNamespaceError =
 		/outside this app's namespace[\s\S]*packageStorage\(\)/
@@ -1694,10 +1701,8 @@ test('package app runtime bridge enforces packageStorage grants and raw storage 
 })
 
 test('buildPackageAppWorker mints request-bound loopback bindings on every loader callback, never from the cached build', async () => {
-	// Loopback fetchers (KODY_RUNTIME, KodyFetchGateway) are bound to the
-	// request that creates them. When the loader (re)loads the isolate from a
-	// later request, reusing the cached build's fetcher fails with "Cannot
-	// perform I/O on behalf of a different request" before app code runs.
+	// Loopback fetchers are bound to the request that creates them; a cached
+	// build's fetcher fails "Cannot perform I/O on behalf of a different request".
 	const { env, loader } = createPackageAppTestEnv()
 	packageAppRuntimeMock.loadPublishedBundleArtifactByIdentity.mockResolvedValue(
 		makeArtifact(),
@@ -1752,9 +1757,8 @@ test('buildPackageAppWorker mints request-bound loopback bindings on every loade
 })
 
 test("buildPackageAppWorker never reuses one visitor's request context or credential binding for another", async () => {
-	// Visitors share one worker per app commit per mount. Identity and the
-	// credential binding are rematerialized per request from the visit
-	// ticket, so one visitor cannot resolve another's authority.
+	// Visitors share one worker per app commit per mount; identity and binding
+	// come per request from the visit ticket, never another visitor's.
 	const { env, loader } = createPackageAppTestEnv()
 	packageAppRuntimeMock.loadPublishedBundleArtifactByIdentity.mockResolvedValue(
 		makeArtifact(),
@@ -1766,6 +1770,7 @@ test("buildPackageAppWorker never reuses one visitor's request context or creden
 		actorId: string,
 		role: 'owner' | 'member',
 		orgSlug: string = key,
+		billedOrgId?: string,
 	) =>
 		makeBuildInput(env, key, {
 			runtime: {
@@ -1784,9 +1789,9 @@ test("buildPackageAppWorker never reuses one visitor's request context or creden
 							id: null,
 							orgId,
 							scopes: null,
-							profileName: null,
 						},
-						membership: { role },
+						membership: billedOrgId ? null : { role },
+						...(billedOrgId ? { billing: { orgId: billedOrgId } } : {}),
 					},
 				},
 			} as never,
@@ -1818,14 +1823,13 @@ test("buildPackageAppWorker never reuses one visitor's request context or creden
 	await serve(visit('person-a', 'member'))
 	await serve(visit('person-a', 'owner', 'renamed-org'))
 	await serve(visit('person-a', 'owner'))
-
-	const [first, other, demoted, renamed, again] = loads
+	await serve(visit('person-c', 'member', key, 'org-visitor-c'))
+	const [first, other, demoted, renamed, again, crossOrg] = loads
+	expect(crossOrg!.bridge.props.gatewayProps).toMatchObject({
+		request: { billing: { orgId: 'org-visitor-c' } },
+	})
 	// Every visitor of this app and mount shares the isolate.
 	expect(new Set(loads.map((load) => load.id)).size).toBe(1)
-	expect(again!.id).toBe(first!.id)
-	expect(other!.id).toBe(first!.id)
-	expect(demoted!.id).toBe(first!.id)
-	expect(renamed!.id).toBe(first!.id)
 	// Per-request authority never copies another visitor's identity or binding.
 	for (const load of [other!, demoted!, renamed!, again!]) {
 		expect(load.bridge.props.credentialClientBinding).not.toBe(
@@ -1854,8 +1858,7 @@ test("buildPackageAppWorker never reuses one visitor's request context or creden
 })
 
 test('buildPackageAppWorker keeps one worker id per app commit per mount across build cache expiry', async () => {
-	// The cached build expires after a few minutes. A rebuild for the same
-	// package, commit, and mount must land on the same worker id, or every
+	// A rebuild after cache expiry must land on the same worker id, or every
 	// expiry mints another unique Dynamic Worker day and a cold isolate.
 	const { env, loader } = createPackageAppTestEnv()
 	const secretEnv = {

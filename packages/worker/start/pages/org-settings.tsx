@@ -44,6 +44,8 @@ import {
 	type OrgProfileVisibilityChoice,
 } from '../components/org-visibility-fieldset.tsx'
 import { OrgSettingsCustomDomains } from './org-settings-custom-domains.tsx'
+import { OrgSettingsMemberCreation } from './org-settings-member-creation.tsx'
+import { OrgSettingsUsageWarnings } from './org-settings-usage-warnings.tsx'
 import {
 	AccountManagementMessage,
 	AccountManagementPanel,
@@ -169,20 +171,32 @@ function OrgSettingsEditor({ data, queryKey }: OrgSettingsProps) {
 				</AccountManagementMessage>
 			) : null}
 			{data.org.personal ? (
-				<AccountManagementPanel title="Identity">
-					<p css={mutedCopyCss}>
-						This is your personal organization. Your name, photo, and handle
-						come from your{' '}
-						<SiteLink href={routes.account.href()} css={inlineLinkCss}>
-							account profile
-						</SiteLink>
-						. To delete your account, use{' '}
-						<SiteLink href={routes.accountData.href()} css={inlineLinkCss}>
-							Account → Data &amp; deletion
-						</SiteLink>
-						.
-					</p>
-				</AccountManagementPanel>
+				<>
+					<AccountManagementPanel title="Identity">
+						<p css={mutedCopyCss}>
+							This is your personal organization. Your name, photo, and handle
+							come from your{' '}
+							<SiteLink href={routes.account.href()} css={inlineLinkCss}>
+								account profile
+							</SiteLink>
+							. To delete your account, use{' '}
+							<SiteLink href={routes.accountData.href()} css={inlineLinkCss}>
+								Account → Data &amp; deletion
+							</SiteLink>
+							.
+						</p>
+					</AccountManagementPanel>
+					<OrgSettingsCustomDomains
+						key={data.org.slug}
+						data={data}
+						queryKey={queryKey}
+					/>
+					<OrgSettingsUsageWarnings
+						key={`usage-warnings:${data.org.slug}`}
+						data={data}
+						queryKey={queryKey}
+					/>
+				</>
 			) : (
 				<>
 					<AccountManagementPanel title="Profile">
@@ -320,8 +334,18 @@ function OrgSettingsEditor({ data, queryKey }: OrgSettingsProps) {
 							</>
 						)}
 					</AccountManagementPanel>
+					<OrgSettingsMemberCreation
+						key={`member-creation:${data.org.slug}`}
+						data={data}
+						queryKey={queryKey}
+					/>
 					<OrgSettingsCustomDomains
 						key={data.org.slug}
+						data={data}
+						queryKey={queryKey}
+					/>
+					<OrgSettingsUsageWarnings
+						key={`usage-warnings:${data.org.slug}`}
 						data={data}
 						queryKey={queryKey}
 					/>

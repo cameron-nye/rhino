@@ -513,7 +513,9 @@ const routeDocumentHeads = {
 	connectWebhookApply: titleOnly('Approve webhook apply destination'),
 	oauthAuthorize: titleOnly('Authorize access'),
 	device: titleOnly('Sign in on a device'),
+	agentClaim: titleOnly('Connect an agent'),
 	packageAppOauthAuthorize: titleOnly('Allow package app'),
+	packageAppDeviceSignIn: titleOnly('Sign in on another device'),
 	oauthCallback: titleOnly('OAuth callback'),
 } as const satisfies Record<string, DocumentHeadResolver>
 
@@ -542,6 +544,7 @@ const orgDocumentHeads = {
 	orgCredentials: titleOnly('Credentials'),
 	orgCredentialNew: titleOnly('Add a credential'),
 	orgExecutionContexts: titleOnly('Execution contexts'),
+	orgProfiles: titleOnly('Agent profiles'),
 	orgEmail: titleOnly('Email inbox'),
 	orgIntegrations: titleOnly('Integrations'),
 	orgJobs: titleOnly('Jobs'),

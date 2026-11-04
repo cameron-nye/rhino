@@ -1,4 +1,10 @@
 import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import {
+	knownUnmappableCredentials,
+	loadOnePackageUnmappableCredentials,
+	unmappableCredentialOwnerNotice,
+} from '#worker/credentials/package-unmappable-credentials.ts'
+import { loadPackageAppCapabilityAllowance } from '#worker/package-runtime/package-app-capability-allowances.ts'
 import { listPackageAppCustomDomainViewsForPackage } from '#worker/package-app-custom-hostnames/service.ts'
 import {
 	listPackageAppCookieWarnings,
@@ -570,42 +576,91 @@ async function toDetailWithListingState(input: {
 	username?: string
 	record: SavedPackageWithCommunityProvenanceRecord
 }): Promise<AccountPackageDetail> {
-	const [ownerIsPersonal, detailBase, customDomains, cookieWarnings] =
-		await Promise.all([
-			resolveOwnerIsPersonal(input.env.APP_DB, input.userId),
-			toDetail({
-				env: input.env,
-				requestUrl: input.requestUrl,
-				userId: input.userId,
-				username: input.username,
-				record: input.record,
-				hasCommunityListing: false,
-				listingNeedsRepublish: false,
-				ownerIsPersonal: true,
-			}),
-			// Owner-only, like credit attribution: `username` is set only for
-			// viewers who can manage the package.
-			input.username
-				? loadPackageCustomDomains(input.env, input.record.id)
-				: Promise.resolve(undefined),
-			loadPackageCookieWarningsForOwner({
-				env: input.env,
-				packageId: input.record.id,
-				ownerUsername: input.username,
-			}),
-		])
-	const listingState = await loadActiveCommunityListingState({
-		db: input.env.APP_DB,
-		userId: input.userId,
-		packageId: input.record.id,
-		publishedCommit: detailBase.publishedCommit,
-	})
+	const [
+		ownerIsPersonal,
+		detailBase,
+		customDomains,
+		cookieWarnings,
+		unmappableCredentials,
+	] = await Promise.all([
+		resolveOwnerIsPersonal(input.env.APP_DB, input.userId),
+		toDetail({
+			env: input.env,
+			requestUrl: input.requestUrl,
+			userId: input.userId,
+			username: input.username,
+			record: input.record,
+			hasCommunityListing: false,
+			listingNeedsRepublish: false,
+			ownerIsPersonal: true,
+		}),
+		// Owner-only, like credit attribution: `username` is set only for
+		// viewers who can manage the package.
+		input.username
+			? loadPackageCustomDomains(input.env, input.record.id)
+			: Promise.resolve(undefined),
+		loadPackageCookieWarningsForOwner({
+			env: input.env,
+			packageId: input.record.id,
+			ownerUsername: input.username,
+		}),
+		input.username
+			? loadOnePackageUnmappableCredentials({
+					env: input.env,
+					orgId: input.userId,
+					packageId: input.record.id,
+				}).then(knownUnmappableCredentials)
+			: Promise.resolve([]),
+	])
+	const [listingState, capabilityAllowance] = await Promise.all([
+		loadActiveCommunityListingState({
+			db: input.env.APP_DB,
+			userId: input.userId,
+			packageId: input.record.id,
+			publishedCommit: detailBase.publishedCommit,
+		}),
+		input.username
+			? loadPackageCapabilityAllowanceForOwner({
+					env: input.env,
+					packageId: input.record.id,
+					publishedCommit: detailBase.publishedCommit,
+				})
+			: Promise.resolve(undefined),
+	])
 	return {
 		...detailBase,
 		...listingState,
 		ownerIsPersonal,
+		...(capabilityAllowance?.length ? { capabilityAllowance } : {}),
 		...(customDomains?.length ? { customDomains } : {}),
 		...(cookieWarnings?.length ? { cookieWarnings } : {}),
+		...(unmappableCredentials.length > 0
+			? {
+					unmappableCredentialsNotice: unmappableCredentialOwnerNotice({
+						packageLabel: 'This package',
+						credentials: unmappableCredentials,
+					}),
+				}
+			: {}),
+	}
+}
+
+export async function loadPackageCapabilityAllowanceForOwner(input: {
+	env: Env
+	packageId: string
+	publishedCommit: string | null
+}): Promise<Array<string> | undefined> {
+	if (typeof input.env.APP_DB?.prepare !== 'function') return undefined
+	try {
+		return await loadPackageAppCapabilityAllowance(input.env.APP_DB, {
+			packageId: input.packageId,
+			publishedCommit: input.publishedCommit,
+		})
+	} catch (error) {
+		if (!/no such table/i.test(String(error))) {
+			console.warn('package-capability-allowance-load-failed', error)
+		}
+		return undefined
 	}
 }
 

@@ -15,6 +15,7 @@ import {
 import { ExecutionContextError } from './errors.ts'
 import { isExecutionContextsEnabledFor } from './flag.ts'
 import { type ExecutionContextRunMetadata, routeExecute } from './routing.ts'
+import { computeEffectivePermissions } from '#worker/authorization/authorize.ts'
 
 export type AutomationRouting = {
 	setting: AutomationExecution
@@ -84,8 +85,12 @@ export async function routeAutomationRun(input: {
 			handle: actor.username ?? null,
 			orgId: request.org.id,
 			orgSlug: request.org.slug ?? null,
-			scopes: null,
+			scopes: (request.credential.scopes as Array<string> | null) ?? null,
 			credentialKind: request.credential.kind,
+			profileAccess: request.credential.profileId
+				? await computeEffectivePermissions({ env: input.env, request })
+				: null,
+			profileId: request.credential.profileId ?? null,
 		},
 		args: {
 			...(setting.context ? { context: setting.context } : {}),

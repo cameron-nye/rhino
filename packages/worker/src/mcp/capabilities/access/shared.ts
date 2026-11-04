@@ -36,6 +36,7 @@ import {
 	normalizeUsername,
 } from '#worker/identity/username.ts'
 import { normalizeEmailAddress } from '#worker/email/address.ts'
+import { FreeOrgLimitError } from '#worker/orgs/billing.ts'
 import {
 	isGrantResourceType,
 	type GrantResourceType,
@@ -105,6 +106,15 @@ export const accessGrantSchema = z.object({
 	subject_id: z.string(),
 	preset: grantPresetSchema.nullable(),
 	permissions: z.array(z.string()),
+	expires_at: z
+		.string()
+		.nullable()
+		.describe('When the grant stops counting (ISO). Null never expires.'),
+	allow_changes_despite_unmappable_credentials: z
+		.boolean()
+		.describe(
+			'True when an org Owner let this subject change or publish the package even while it has unmappable credentials.',
+		),
 })
 
 export const inviteSchema = z.object({
@@ -129,8 +139,8 @@ function readStoredPreset(
 	grantId: string,
 ): GrantPreset | null {
 	if (value === null) return null
-	if (value === 'use' || value === 'contribute' || value === 'manage') {
-		return value
+	if ((grantPresets as ReadonlyArray<string>).includes(value)) {
+		return value as GrantPreset
 	}
 	throw new Error(`Grant ${grantId} has preset ${value}.`)
 }
@@ -150,6 +160,9 @@ export function toAccessGrantPayload(grant: GrantView) {
 		subject_id: grant.subjectId,
 		preset,
 		permissions: grant.permissions,
+		expires_at: grant.expiresAt,
+		allow_changes_despite_unmappable_credentials:
+			grant.allowUnmappableCredentialChanges,
 	}
 }
 
@@ -157,7 +170,8 @@ export function rethrowAccessError(error: unknown): never {
 	if (error instanceof McpCallerError) throw error
 	if (
 		error instanceof OrgSlugValidationError ||
-		error instanceof GrantSubjectScopeError
+		error instanceof GrantSubjectScopeError ||
+		error instanceof FreeOrgLimitError
 	) {
 		throw new McpCallerError(error.message)
 	}
@@ -445,7 +459,7 @@ export function readPermissionList(values: Array<string> | undefined) {
 }
 
 export function requirePresetOrPermissions(input: {
-	preset?: 'use' | 'contribute' | 'manage'
+	preset?: GrantPreset
 	permissions: Array<OrgPermission> | null
 }) {
 	if (input.preset && input.permissions && input.permissions.length > 0) {

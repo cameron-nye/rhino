@@ -82,17 +82,17 @@ export const featureFlagDefinitions = [
 		// admin notice), not to move a product metric.
 	},
 	{
-		key: 'connection-profiles',
+		key: 'profiles',
 		defaultEnabled: false,
 		defaultAudience: 'experiments_opt_in',
 		description:
-			'Named connection profiles on the Agents page (/@slug/-/agents): package grant allowlists (read/execute) for MCP ?profile= URLs and profile-bound API tokens. Off by default; enable with audience experiments_opt_in. Delete the flag and gate sites when the experiment ends.',
+			'Profiles (ADR 0092): scoped identities a person creates for agents and bots, with snapshot grants capped by the parent chain, shorten-only expiry, and terminal revoke. Off by default; experimenters opt in at /account/experiments. Delete the flag and gate sites when profiles graduate.',
 		successMetric: {
 			eventType: 'execute',
 			measure: 'event_count',
 			goal: 'increase',
 			hypothesis:
-				'Experimenters with connection profiles create restricted agent connections and keep executing against granted packages.',
+				'Experimenters who create profiles give their agents narrower identities and keep executing through them.',
 		},
 	},
 	{
@@ -169,12 +169,17 @@ export const featureFlagDefinitions = [
 		// Intentionally no successMetric: a security boundary, not a product
 		// metric; the readout is the codemod rescan and credential_need_undeclared errors.
 	},
+	{
+		key: 'credential-allowed-packages-safety-window',
+		defaultEnabled: true,
+		description:
+			"Global switch (audience and rollout are ignored) for the issue #4129 30-day safety window before allowed-packages enforcement cutover. While on and inside the window, nothing is refused for a self-authored or adopted package that a user credential's non-empty allowed-packages list leaves out. The use is allowed with a log line (credential_allowed_packages_safety_window_allow) and keeps its would-block marker; the allowed-packages list is never written, so an owner's removal sticks. The owner is never notified. From cutover the rule is strict whether or not this flag is on. Delete the flag and gate sites once the window has closed.",
+		// Intentionally no successMetric: a credential authority boundary, not
+		// a product experiment; the readout is the safety_window_allow log lines and would-block markers.
+	},
 ] as const satisfies ReadonlyArray<FeatureFlagDefinition>
 
 export type FeatureFlagKey = (typeof featureFlagDefinitions)[number]['key']
-
-export const connectionProfilesFlagKey =
-	'connection-profiles' satisfies FeatureFlagKey
 
 export const mcpSkillsExtensionFlagKey =
 	'mcp-skills-extension' satisfies FeatureFlagKey
@@ -190,8 +195,13 @@ export const repoPushQueueFlagKey = 'repo-push-queue' satisfies FeatureFlagKey
 export const executionContextsFlagKey =
 	'execution-contexts' satisfies FeatureFlagKey
 
+export const profilesFlagKey = 'profiles' satisfies FeatureFlagKey
+
 export const credentialNeedEnforcementFlagKey =
 	'credential-need-enforcement' satisfies FeatureFlagKey
+
+export const credentialAllowedPackagesSafetyWindowFlagKey =
+	'credential-allowed-packages-safety-window' satisfies FeatureFlagKey
 
 export const featureFlagKeys: ReadonlyArray<FeatureFlagKey> =
 	featureFlagDefinitions.map((definition) => definition.key)

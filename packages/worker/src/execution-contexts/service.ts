@@ -1,3 +1,4 @@
+import { experimentOffMessage } from '#universal/feature-flags/experiments.ts'
 import { bumpAccessEpochStatement } from '#worker/authorization/access-compile.ts'
 import {
 	ecpMaxChainContexts,
@@ -34,9 +35,13 @@ import {
 	type ContextAccess,
 	type ExecutionContextRow,
 	type UnusableReason,
+	executionContextCommandPermission,
 } from './store.ts'
 import { optInTrustNotice, sharingTrustNotice } from './trust-copy.ts'
 import { type RunHistoryRow } from './session-do.ts'
+import { kodyCloudTarget } from './routing.ts'
+import { latestCliVersion } from './latest-cli-version.ts'
+import { isOlderCliVersion } from '#universal/execution-contexts.ts'
 import { type RunRecord } from '#worker/run-records/types.ts'
 
 /** Shared logic behind the execution-context MCP capabilities and routes. */
@@ -71,8 +76,7 @@ export async function requireExecutionContextsCaller(input: {
 		throw new ExecutionContextError({
 			status: 403,
 			code: 'feature_disabled',
-			message:
-				'Execution contexts are behind the execution-contexts feature flag, which is off for this account.',
+			message: experimentOffMessage('execution-contexts'),
 		})
 	}
 	return {
@@ -139,10 +143,6 @@ export function grantSummary(grant: EcpGrant) {
 	return {
 		fs: grant.fs.length,
 		egress: { mode: grant.egress.mode },
-		credentials:
-			grant.credentials.mode === 'none'
-				? ('none' as const)
-				: { count: grant.credentials.ids.length },
 		runtime:
 			grant.runtime.mode === 'all'
 				? ('all' as const)
@@ -150,12 +150,14 @@ export function grantSummary(grant: EcpGrant) {
 					? ('none' as const)
 					: { mode: 'allowlist' as const, count: grant.runtime.paths.length },
 		timeoutMs: grant.limits.timeoutMs,
+		commands: grant.commands?.enabled === true,
 	}
 }
 
 function myPermissions(access: ContextAccess) {
 	const permissions: Array<string> = []
 	if (access.granted || access.isOperator) permissions.push('read', 'execute')
+	if (access.canRunCommands) permissions.push('command')
 	if (canWriteContext(access)) permissions.push('write')
 	if (canManageContext(access)) permissions.push('delete', 'manage_access')
 	return permissions
@@ -194,7 +196,7 @@ export async function formatContexts(
 	options: { includeSharing?: boolean } = {},
 ) {
 	const db = caller.env.APP_DB
-	const [handles, slugs, counts, chain] = await Promise.all([
+	const [handles, slugs, counts, chain, latestCli] = await Promise.all([
 		handlesFor(
 			db,
 			rows.map((row) => row.operator_user_id),
@@ -208,6 +210,9 @@ export async function formatContexts(
 			rows.map((row) => row.id),
 		),
 		getChain(db, caller),
+		rows.some((row) => row.client_version)
+			? latestCliVersion()
+			: Promise.resolve(null),
 	])
 	const inChain = new Set(
 		chain.entries.flatMap((entry) =>
@@ -233,9 +238,26 @@ export async function formatContexts(
 				acceptingRuns: live.acceptingRuns,
 				lastSeenAt: live.lastSeenAt ?? row.last_seen_at,
 				revokedAt: row.revoked_at,
-				client: { name: row.client_name, version: row.client_version },
+				client: {
+					name: row.client_name,
+					version: row.client_version,
+					latestVersion: latestCli,
+					outdated: Boolean(
+						(row.client_name === 'kody-cli' ||
+							row.client_name === '@kodycodes/cli') &&
+						latestCli &&
+						row.client_version &&
+						isOlderCliVersion(row.client_version, latestCli),
+					),
+				},
 				capabilities: {
 					os: capabilities.os ?? null,
+					service: capabilities.service ?? null,
+					autoUpdate:
+						capabilities.autoUpdate === 'on' ||
+						capabilities.autoUpdate === 'off'
+							? capabilities.autoUpdate
+							: null,
 					maxConcurrent:
 						capabilities.maxConcurrent ?? grant.limits.maxConcurrent,
 					features: capabilities.features ?? [],
@@ -369,7 +391,7 @@ function chainUpdatedBy(caller: ExecutionContextCaller) {
 	}
 	return {
 		kind: 'agent' as const,
-		label: caller.request.credential.profileName ?? kind,
+		label: kind,
 	}
 }
 
@@ -626,18 +648,35 @@ export async function updateContext(
 			message: `${row.name} was revoked.`,
 		})
 	}
+	if (input.grant?.commands?.enabled === true) {
+		throw new ExecutionContextError({
+			status: 403,
+			code: 'commands_opt_in_local',
+			message: `Host commands can only be turned on from the machine itself: run \`kody context commands on --context ${row.name}\` there, or use the Kody desktop app. Turning them off works from anywhere.`,
+		})
+	}
 	const db = caller.env.APP_DB
+	const commandsWereOn = parseGrant(row).commands?.enabled === true
 	const grant = input.grant
 		? mergeGrant(parseGrant(row), input.grant)
 		: parseGrant(row)
 	const name = input.name?.trim() ?? row.name
 	const grantVersion = input.grant ? row.grant_version + 1 : row.grant_version
-	await db
-		.prepare(
-			`UPDATE execution_contexts SET name = ?, grant_json = ?, grant_version = ? WHERE id = ?`,
-		)
-		.bind(name, JSON.stringify(grant), grantVersion, row.id)
-		.run()
+	try {
+		await db
+			.prepare(
+				`UPDATE execution_contexts SET name = ?, grant_json = ?, grant_version = ? WHERE id = ?`,
+			)
+			.bind(name, JSON.stringify(grant), grantVersion, row.id)
+			.run()
+	} catch (error) {
+		if (!String(error).includes('UNIQUE')) throw error
+		throw new ExecutionContextError({
+			status: 409,
+			code: 'invalid_request',
+			message: `Another context in this org is already named ${name}. Pick another name.`,
+		})
+	}
 	if (input.grant) {
 		await sessionStub(caller.env, row.id).updateGrant({
 			snapshot: {
@@ -654,7 +693,11 @@ export async function updateContext(
 	await recordContextAudit(
 		caller,
 		row.id,
-		input.grant ? 'grant_changed' : 'renamed',
+		input.grant?.commands && commandsWereOn
+			? 'commands_disabled'
+			: input.grant
+				? 'grant_changed'
+				: 'renamed',
 		{
 			...(input.name ? { name } : {}),
 			...(input.grant ? { grantVersion } : {}),
@@ -673,6 +716,14 @@ export function mergeGrant(
 		...patch,
 		limits: { ...current.limits, ...patch.limits },
 		payload: { ...current.payload, ...patch.payload },
+		commands: patch.commands
+			? {
+					enabled: patch.commands.enabled,
+					enabledAt: patch.commands.enabled
+						? (patch.commands.enabledAt ?? current.commands?.enabledAt ?? null)
+						: null,
+				}
+			: (current.commands ?? { enabled: false }),
 	}
 }
 
@@ -703,6 +754,150 @@ export async function revokeContext(
 	return { revoked: true, id: row.id, revokedAt: now }
 }
 
+/**
+ * A revoked context by id, or by name when exactly one revoked context in the
+ * org has it (revoking releases the name, so name lookups skip revoked rows).
+ */
+async function resolveDeletableContext(
+	caller: ExecutionContextCaller,
+	ref: string,
+) {
+	const live = await resolveExecutionContextRef(
+		caller.env.APP_DB,
+		caller.orgId,
+		ref,
+	)
+	if (live) return live
+	const trimmed = ref.trim()
+	const revoked = (
+		await listOrgExecutionContexts(caller.env.APP_DB, caller.orgId)
+	).filter((row) => row.name === trimmed && row.revoked_at)
+	if (revoked.length > 1) {
+		throw new ExecutionContextError({
+			status: 409,
+			code: 'invalid_request',
+			message: `More than one revoked context is named ${trimmed}. Delete it by id (ec_...) instead.`,
+		})
+	}
+	return revoked[0] ?? notFound()
+}
+
+/** Drops a deleted context from every chain that still lists it. */
+async function removeFromChains(
+	caller: ExecutionContextCaller,
+	contextId: string,
+) {
+	const db = caller.env.APP_DB
+	const holders = await db
+		.prepare(
+			`SELECT DISTINCT org_id, user_id FROM execution_context_chain_entries WHERE context_id = ?`,
+		)
+		.bind(contextId)
+		.all<{ org_id: string; user_id: string }>()
+	for (const holder of holders.results) {
+		const chainKey = { orgId: holder.org_id, userId: holder.user_id }
+		for (let attempt = 0; ; attempt += 1) {
+			const chain = await getChain(db, chainKey)
+			const kept = chain.entries.filter(
+				(entry) => entry.kind !== 'context' || entry.id !== contextId,
+			)
+			try {
+				await writeChain(db, {
+					...chainKey,
+					entries: kept.length > 0 ? kept : [{ kind: 'cloud' }],
+					expectedVersion: chain.version,
+					updatedBy: chainUpdatedBy(caller),
+					now: new Date().toISOString(),
+				})
+				break
+			} catch (error) {
+				if (!(error instanceof ChainConflictError) || attempt >= 2) throw error
+			}
+		}
+	}
+}
+
+/**
+ * Permanently deletes a revoked context: its row, shares, opt-ins, org
+ * attachments and chain entries. Run records keep their own copy of the
+ * context id and name, so run history still reads after the delete.
+ */
+export async function deleteContext(
+	caller: ExecutionContextCaller,
+	ref: string,
+) {
+	const row = await resolveDeletableContext(caller, ref)
+	const db = caller.env.APP_DB
+	const access = await loadContextAccess(db, row, caller)
+	if (!canManageContext(access)) {
+		throw new ExecutionContextError({
+			status: 403,
+			code: 'not_granted',
+			message: 'Deleting this context needs Manage on it.',
+		})
+	}
+	if (row.org_id !== caller.orgId) {
+		throw new ExecutionContextError({
+			status: 403,
+			code: 'not_granted',
+			message: `${row.name} belongs to another org. Delete it from the org that owns it, or detach it from this one.`,
+		})
+	}
+	if (!row.revoked_at) {
+		throw new ExecutionContextError({
+			status: 409,
+			code: 'context_not_revoked',
+			message: `${row.name} is not revoked. Revoke it first (executionContextRevoke or \`kody context revoke <name>\`), then delete it.`,
+		})
+	}
+	const attachedOrgs = await db
+		.prepare(
+			`SELECT org_id FROM execution_context_org_attachments WHERE context_id = ?`,
+		)
+		.bind(row.id)
+		.all<{ org_id: string }>()
+	const grantOrgs = await db
+		.prepare(
+			`SELECT DISTINCT org_id FROM grants WHERE resource_type = 'execution_context' AND resource_id = ? AND deleted_at IS NULL`,
+		)
+		.bind(row.id)
+		.all<{ org_id: string }>()
+	await removeFromChains(caller, row.id)
+	const now = new Date().toISOString()
+	const epochOrgs = new Set([
+		...attachedOrgs.results.map((entry) => entry.org_id),
+		...grantOrgs.results.map((entry) => entry.org_id),
+	])
+	await db.batch([
+		db
+			.prepare(
+				`UPDATE grants SET deleted_at = ?, updated_at = ? WHERE resource_type = 'execution_context' AND resource_id = ? AND deleted_at IS NULL`,
+			)
+			.bind(now, now, row.id),
+		...[...epochOrgs].map((orgId) => bumpAccessEpochStatement(db, orgId)),
+		db
+			.prepare(`DELETE FROM execution_context_opt_ins WHERE context_id = ?`)
+			.bind(row.id),
+		db
+			.prepare(
+				`DELETE FROM execution_context_org_attachments WHERE context_id = ?`,
+			)
+			.bind(row.id),
+		db
+			.prepare(
+				`DELETE FROM execution_context_chain_entries WHERE context_id = ?`,
+			)
+			.bind(row.id),
+		db
+			.prepare(
+				`DELETE FROM execution_contexts WHERE id = ? AND revoked_at IS NOT NULL`,
+			)
+			.bind(row.id),
+	])
+	await recordContextAudit(caller, row.id, 'deleted')
+	return { deleted: true, id: row.id, name: row.name }
+}
+
 // ---------- sharing ----------
 
 type ShareRow = {
@@ -714,6 +909,7 @@ type ShareRow = {
 	team_slug: string | null
 	team_name: string | null
 	is_member: number
+	command: number
 }
 
 export async function loadSharing(
@@ -721,9 +917,14 @@ export async function loadSharing(
 	row: ExecutionContextRow,
 ) {
 	const db = caller.env.APP_DB
+	const now = new Date().toISOString()
 	const grants = await db
 		.prepare(
 			`SELECT g.id, g.subject_type, g.subject_id, g.preset, u.username,
+				EXISTS (
+				  SELECT 1 FROM grant_permissions gp
+				  WHERE gp.grant_id = g.id AND gp.permission = '${executionContextCommandPermission}'
+				) AS command,
 				t.slug AS team_slug, t.name AS team_name,
 				CASE WHEN m.user_id IS NULL THEN 0 ELSE 1 END AS is_member
 			 FROM grants g
@@ -733,9 +934,11 @@ export async function loadSharing(
 				AND m.org_id = g.org_id AND m.deleted_at IS NULL
 			 WHERE g.resource_type = 'execution_context' AND g.resource_id = ?
 			   AND g.org_id = ? AND g.deleted_at IS NULL
+			   AND (g.expires_at IS NULL OR g.expires_at > ?)
+			   AND g.subject_type IN ('user', 'team')
 			 ORDER BY g.created_at`,
 		)
-		.bind(row.id, caller.orgId)
+		.bind(row.id, caller.orgId, now)
 		.all<ShareRow>()
 	const attachments = await db
 		.prepare(
@@ -765,6 +968,7 @@ export async function loadSharing(
 						outside: grant.is_member === 0,
 					},
 		preset: grant.preset,
+		commands: Number(grant.command) === 1,
 	}))
 	const level = allMembers
 		? 'org'
@@ -822,6 +1026,8 @@ export async function setSharing(
 		add?: Array<{
 			subject: { type: 'user' | 'team'; id: string }
 			preset: 'use' | 'contribute' | 'manage'
+			/** Also grant `execution_context:command` (run host commands). */
+			commands?: boolean
 		}>
 		allMembers?: boolean
 	},
@@ -858,12 +1064,16 @@ export async function setSharing(
 			subject: share.subject,
 			preset: share.preset,
 			permissions: null,
+			...(share.commands
+				? { extraPermissions: [executionContextCommandPermission] }
+				: {}),
 			createdByUserId: caller.userId,
 			audit,
 		})
 		await recordContextAudit(caller, row.id, 'share_added', {
 			subject: share.subject,
 			preset: share.preset,
+			...(share.commands ? { commands: true } : {}),
 		})
 	}
 	if (input.allMembers !== undefined) {
@@ -1026,8 +1236,82 @@ export async function listRuns(
 	return {
 		id: row.id,
 		scope: manager ? ('all' as const) : ('own' as const),
-		runs: page.rows,
+		runs: page.rows.map((run) => ({
+			...run,
+			ranOn:
+				run.fallback.ranOn === row.id
+					? {
+							kind: 'context' as const,
+							id: row.id,
+							name: row.name,
+							yours: row.operator_user_id === caller.userId,
+						}
+					: run.fallback.ranOn === 'cloud'
+						? kodyCloudTarget
+						: null,
+		})),
 		nextCursor: page.nextCursor,
+	}
+}
+
+/**
+ * Cancels one run on a context (`cancelReason: user_cancelled`). Managers
+ * cancel anyone's run in this org; everyone else only their own. A run that
+ * already ended is reported, not an error, so retries are safe.
+ */
+export async function cancelContextRun(
+	caller: ExecutionContextCaller,
+	ref: string,
+	runId: string,
+) {
+	const { row, access } = await loadVisibleContext(caller, ref)
+	if (!access.granted && !access.isOperator && !isOrgOwner(caller)) notFound()
+	const manager = canManageContext(access) || isOrgOwner(caller)
+	const result = await sessionStub(caller.env, row.id).cancelRunFor({
+		runId,
+		orgId: caller.orgId,
+		...(manager ? {} : { requesterUserId: caller.userId }),
+	})
+	if (result.status === 'not_found') {
+		throw new ExecutionContextError({
+			status: 404,
+			code: 'not_found',
+			message: manager
+				? `No run ${runId} is in this context's history or queue.`
+				: `None of your runs on this context has id ${runId}. You can cancel only your own runs unless you manage the context.`,
+		})
+	}
+	if (result.status === 'starting') {
+		throw new ExecutionContextError({
+			status: 409,
+			code: 'invalid_request',
+			message:
+				'The run is still being handed to the machine. Try again in a few seconds.',
+		})
+	}
+	if (result.status === 'finished') {
+		const state = result.state || 'finished'
+		return {
+			cancelled: false,
+			id: row.id,
+			runId,
+			state,
+			message: `The run already ended (${state}).`,
+		}
+	}
+	const queued = result.queued === true
+	await recordContextAudit(caller, row.id, 'run_cancelled', {
+		runId,
+		requesterUserId: result.requesterUserId ?? null,
+		queued,
+	})
+	return {
+		cancelled: true,
+		id: row.id,
+		runId,
+		state: 'cancelled' as const,
+		cancelReason: 'user_cancelled' as const,
+		queued,
 	}
 }
 

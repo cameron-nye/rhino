@@ -1,6 +1,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { adminUsersReadInput } from './admin-users-input.ts'
+import { planNames } from '#universal/plans.ts'
 
 async function adminContext(permission?: 'read:user:any' | 'update:user:any') {
 	const [
@@ -79,51 +80,115 @@ export const updateAdminOrgLimits = createServerFn({ method: 'POST' })
 		})
 	})
 
-export const readAdminCreditWallet = createServerFn({ method: 'GET' })
-	.inputValidator(z.object({ stableUserId: z.string().min(1) }))
-	.handler(async ({ data }) => {
-		const { env } = await adminContext('read:user:any')
-		const [{ loadAdminCreditWallet }, { parseOwnerId }] = await Promise.all([
-			import('../../src/admin/credit-grants.ts'),
-			import('@kody-internal/shared/owner-person-ids.ts'),
-		])
-		const stableUserId = parseOwnerId(data.stableUserId)
-		if (!stableUserId) throw new Error('stableUserId is required.')
-		const wallet = await loadAdminCreditWallet(env, { stableUserId })
-		if (!wallet) throw new Error('User not found.')
-		return wallet
-	})
-
-export const grantAdminCredits = createServerFn({ method: 'POST' })
+export const setAdminOrgPlan = createServerFn({ method: 'POST' })
 	.inputValidator(
 		z.object({
-			stableUserId: z.string().min(1),
-			amountCents: z.number(),
-			note: z.string().optional(),
+			orgId: z.string().min(1),
+			plan: z.enum(planNames),
+			reason: z.string(),
 		}),
 	)
 	.handler(async ({ data }) => {
 		const { withWebsiteMutation } = await import('./mutation-context.ts')
 		return withWebsiteMutation({}, async () => {
-			const { env, actor, request } = await adminContext('update:user:any')
-			const [{ grantAdminCreditsToUser }, { parseOwnerId }, { getRequestIp }] =
-				await Promise.all([
-					import('../../src/admin/credit-grants.ts'),
-					import('@kody-internal/shared/owner-person-ids.ts'),
-					import('../../src/audit-log.ts'),
-				])
-			const stableUserId = parseOwnerId(data.stableUserId)
-			if (!stableUserId) throw new Error('stableUserId is required.')
-			const result = await grantAdminCreditsToUser({
+			const { env, actor, request } = await adminContext()
+			const [
+				{ setAdminOrgPlan },
+				{ orgAuditWriterFromRequest },
+				{ getRequestIp },
+			] = await Promise.all([
+				import('../../src/admin/org-billing-mutations.ts'),
+				import('../../src/orgs/org-audit.ts'),
+				import('../../src/audit-log.ts'),
+			])
+			return setAdminOrgPlan({
 				env,
-				target: { stableUserId },
-				grantedBy: { stableUserId: actor.mcpUser.userId, email: actor.email },
-				amountCents: data.amountCents,
-				note: data.note,
-				path: '/admin/users',
-				ip: getRequestIp(request) ?? undefined,
+				audit: orgAuditWriterFromRequest(env, actor.request),
+				target: { orgId: data.orgId },
+				plan: data.plan,
+				reason: data.reason,
+				platformAudit: {
+					email: actor.email,
+					ip: getRequestIp(request) ?? undefined,
+					path: '/admin/orgs',
+				},
 			})
-			return result.wallet
+		})
+	})
+
+export const grantAdminCreditsToOrg = createServerFn({ method: 'POST' })
+	.inputValidator(
+		z.object({
+			orgId: z.string().min(1),
+			amountCents: z.number(),
+			reason: z.string(),
+		}),
+	)
+	.handler(async ({ data }) => {
+		const { withWebsiteMutation } = await import('./mutation-context.ts')
+		return withWebsiteMutation({}, async () => {
+			const { env, actor, request } = await adminContext()
+			const [
+				{ grantAdminCreditsToOrg },
+				{ orgAuditWriterFromRequest },
+				{ getRequestIp },
+			] = await Promise.all([
+				import('../../src/admin/org-billing-mutations.ts'),
+				import('../../src/orgs/org-audit.ts'),
+				import('../../src/audit-log.ts'),
+			])
+			return grantAdminCreditsToOrg({
+				env,
+				audit: orgAuditWriterFromRequest(env, actor.request),
+				target: { orgId: data.orgId },
+				grantedBy: {
+					stableUserId: actor.mcpUser.userId,
+					email: actor.email,
+				},
+				amountCents: data.amountCents,
+				reason: data.reason,
+				platformAudit: {
+					email: actor.email,
+					ip: getRequestIp(request) ?? undefined,
+					path: '/admin/orgs',
+				},
+			})
+		})
+	})
+
+export const setAdminOrgCreditEligibility = createServerFn({ method: 'POST' })
+	.inputValidator(
+		z.object({
+			orgId: z.string().min(1),
+			creditsEligible: z.boolean(),
+			reason: z.string(),
+		}),
+	)
+	.handler(async ({ data }) => {
+		const { withWebsiteMutation } = await import('./mutation-context.ts')
+		return withWebsiteMutation({}, async () => {
+			const { env, actor, request } = await adminContext()
+			const [
+				{ setAdminOrgCreditEligibility },
+				{ orgAuditWriterFromRequest },
+				{ getRequestIp },
+			] = await Promise.all([
+				import('../../src/admin/org-billing-mutations.ts'),
+				import('../../src/orgs/org-audit.ts'),
+				import('../../src/audit-log.ts'),
+			])
+			return setAdminOrgCreditEligibility({
+				env,
+				audit: orgAuditWriterFromRequest(env, actor.request),
+				target: { orgId: data.orgId },
+				creditsEligible: data.creditsEligible,
+				reason: data.reason,
+				platformAudit: {
+					email: actor.email,
+					ip: getRequestIp(request) ?? undefined,
+					path: '/admin/orgs',
+				},
+			})
 		})
 	})
 

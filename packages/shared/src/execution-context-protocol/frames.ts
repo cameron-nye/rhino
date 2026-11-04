@@ -25,6 +25,8 @@ export const ecpLivenessFreshMs = 45_000
 export const ecpDefaultAcceptWindowMs = 3_000
 /** The context discards an uncommitted request this long after `acceptBy`. */
 export const ecpCommitGraceMs = 2_000
+/** Kody cancels a committed run this long after its deadline (`deadline`). */
+export const ecpDeadlineCancelGraceMs = 5_000
 export const ecpLostAfterDeadlineMs = 30_000
 export const ecpMaxRunLogLines = 200
 export const ecpMaxConcurrentRunsCap = 8
@@ -53,6 +55,7 @@ export const ecpContextFrameTypes = [
 	'run.result',
 	'run.cancel.ack',
 	'grant.ack',
+	'command.finished',
 	'error',
 ] as const
 
@@ -72,6 +75,7 @@ export type EcpRunRejectCode = (typeof ecpRunRejectCodes)[number]
 
 export const ecpCancelReasons = [
 	'caller_cancelled',
+	'user_cancelled',
 	'deadline',
 	'revoked',
 	'grant_narrowed',
@@ -92,10 +96,16 @@ export const ecpErrorCodes = [
 ] as const
 export type EcpErrorCode = (typeof ecpErrorCodes)[number]
 
-export type EcpFsGrant = { path: string; mode: 'read' | 'write' }
+export type EcpFsGrant = { path: string; mode: 'ro' | 'rw' }
 export type EcpEgressMode = 'public' | 'public-and-lan' | 'allowlist' | 'none'
 
 /** The local access grant a context exposes to runs (ECP 8.1). */
+export type EcpCommandsGrant = {
+	enabled: boolean
+	/** ISO time the machine turned commands on (null when off). */
+	enabledAt?: string | null
+}
+
 export type EcpGrant = {
 	fs: Array<EcpFsGrant>
 	egress: {
@@ -103,8 +113,13 @@ export type EcpGrant = {
 		hosts?: Array<string>
 		ports?: Array<number>
 	}
-	credentials: { mode: 'none' } | { mode: 'list'; ids: Array<string> }
 	runtime: { mode: 'all' } | { mode: 'allowlist'; paths: Array<string> }
+	/**
+	 * Host commands (`kody.command.*`). Only a signed request from the
+	 * machine itself turns this on; anyone who can change the context can
+	 * turn it off. The daemon also requires its local policy to allow it.
+	 */
+	commands?: EcpCommandsGrant
 	limits: { timeoutMs: number; memoryMb: number; maxConcurrent: number }
 	payload: {
 		maxRequestBytes: number
@@ -116,7 +131,6 @@ export type EcpGrant = {
 export const ecpDefaultGrant: EcpGrant = {
 	fs: [],
 	egress: { mode: 'public' },
-	credentials: { mode: 'none' },
 	runtime: { mode: 'all' },
 	limits: { timeoutMs: 90_000, memoryMb: 512, maxConcurrent: 2 },
 	payload: {
@@ -124,6 +138,7 @@ export const ecpDefaultGrant: EcpGrant = {
 		maxResultBytes: 100 * 1024,
 		resultContentTypes: ['application/json', 'text/plain'],
 	},
+	commands: { enabled: false },
 }
 
 export const ecpGrantMaximums = {
@@ -143,6 +158,10 @@ export type EcpCapabilities = {
 	cpuCount?: number
 	memoryMb?: number
 	enforcement?: { memory?: string; cpu?: string }
+	/** Set when the daemon runs as a background service. */
+	service?: 'systemd' | 'launchd' | 'taskscheduler'
+	/** Daemon auto-update on this machine (`kody daemon auto-update`). */
+	autoUpdate?: 'on' | 'off'
 }
 
 export type EcpRunRequestBody = {
@@ -176,6 +195,20 @@ export type EcpRunResultBody = {
 	resultBytes: number
 	sha256?: string
 	enforced?: { memory?: 'cgroup' | 'advisory'; cpu?: string }
+	timing?: EcpRunTiming
+}
+
+/** Where a run's time went on the daemon, in ms on the daemon's clock. */
+export type EcpRunTiming = {
+	/** run.commit received until the run started. */
+	queueMs: number
+	/** Start until the module was ready (package graph + workerd start). */
+	setupMs: number
+	packageGraphMs?: number
+	packageGraphCached?: boolean
+	executeMs: number
+	/** run.commit received until the result was sent. */
+	daemonMs: number
 }
 
 export type EcpFramePayload = {

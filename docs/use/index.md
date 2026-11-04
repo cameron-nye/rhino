@@ -28,6 +28,17 @@ Start with [What is Kody?](../guides/what-is-kody.md),
 [Connect your agent](../guides/connect-your-agent.md), and
 [Local CLI execute](../guides/local-execute.md).
 
+## Links to your own pages
+
+`/@me` is a shortcut for your own account: `kody.codes/@me/-/<page>` redirects
+to `kody.codes/@<your-username>/-/<page>`, signing you in first if needed. For
+example [`/@me/-/settings`](https://kody.codes/@me/-/settings),
+[`/@me/-/secrets`](https://kody.codes/@me/-/secrets),
+[`/@me/-/agents`](https://kody.codes/@me/-/agents), and
+[`/@me/-/profiles`](https://kody.codes/@me/-/profiles). Agents can use the same
+links. Team orgs still use their own slug. Details:
+[Organizations](../guides/organizations.md#link-to-your-own-pages-with-me).
+
 ## Field reference
 
 The pages below are the MCP-level field contracts those guides link into.
@@ -44,7 +55,7 @@ The pages below are the MCP-level field contracts those guides link into.
 - [Workflows](./workflows.md)
 - [Packages](./packages.md)
 - [Public packages](./community-packages.md) — share, browse, and fork published
-  packages on the same deployment; public catalogs live at `/@username`
+  packages on the same deployment; public catalogs live at `/@handle`
 - [Plain repos](./repos.md) — Artifacts-backed live-at-HEAD storage; promote
   with `repoPromoteToPackage` when you want runtime surfaces
 - [Repo-backed editing sessions](./repo-sessions.md)
@@ -76,6 +87,15 @@ The pages below are the MCP-level field contracts those guides link into.
   [`/terms`](https://kody.codes/terms))
 - [Troubleshooting](./troubleshooting.md) — `/support` and common MCP issues
 - [Memory and conversation context](./memory.md)
+- Experiments — early features you turn on for your account at
+  [`/account/experiments`](https://kody.codes/account/experiments) or with
+  `experimentList` / `experimentSet`:
+  - [Execution contexts](./execution-contexts.md) — run execute and automations
+    on your own machine; credentials stay in Kody cloud
+  - [Profiles](./profiles.md) — scoped identities for your agents, with
+    sub-profiles, expiry, and revoke
+  - [Package skills](./package-skills.md) — serve package Agent Skills over MCP
+  - [MCP Events](./mcp-events.md) — let MCP clients subscribe to package events
 - [Community Project mark](./community-project-mark.md) — logo for unofficial
   integrations and community-built tools
 

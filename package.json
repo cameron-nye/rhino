@@ -62,6 +62,7 @@
     "feature-map:check": "node tools/control-kody.ts map --check",
     "primitives:classify": "node .agents/skills/visual-recap/scripts/classify-primitives.mjs",
     "docs:check": "node tools/run-check-group.ts docs",
+    "e2e:context-commands": "node tools/e2e/execution-context-commands.ts",
     "deps:check": "node tools/run-check-group.ts deps",
     "error-agent-prompt:check": "node tools/check-error-agent-prompt.ts",
     "slop-ratchet:check": "node tools/check-file-size-ratchet.ts && node tools/check-decorative-banners.ts",
@@ -109,7 +110,10 @@
     "nx:show-projects": "nx show projects",
     "audit:prod": "node tools/ci/audit-gate.ts",
     "soft-delete-read-filter:check": "node tools/soft-delete-read-filter.ts",
-    "typecheck:start": "tsc -p packages/worker/tsconfig-start-server.json && tsc -p packages/worker/tsconfig-start.json && tsc -p packages/worker/tsconfig-start-tests.json && tsc -p packages/worker/tsconfig-start-server-tests.json"
+    "typecheck:start": "node tools/run-tsc.ts -p packages/worker/tsconfig-start-server.json && node tools/run-tsc.ts -p packages/worker/tsconfig-start.json && node tools/run-tsc.ts -p packages/worker/tsconfig-start-tests.json && node tools/run-tsc.ts -p packages/worker/tsconfig-start-server-tests.json",
+    "desktop:dev": "npm run build --workspace @kodycodes/cli && npm start --workspace @kodycodes/desktop",
+    "desktop:pack": "npm run build --workspace @kodycodes/cli && npm run pack --workspace @kodycodes/desktop",
+    "desktop:validate": "npm run validate --workspace @kodycodes/desktop"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
@@ -214,7 +218,8 @@
     "packages/nx-cache",
     "packages/worker",
     "packages/cli",
-    "packages/mock-servers/*"
+    "packages/mock-servers/*",
+    "packages/desktop"
   ],
   "allowScripts": {
     "@sentry/cli": true,

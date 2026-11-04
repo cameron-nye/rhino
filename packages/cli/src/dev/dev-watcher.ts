@@ -178,8 +178,9 @@ async function fingerprint(path: string): Promise<string> {
 	}
 }
 
+// shouldIgnoreWatchPath compares with '/' on every platform.
 function normalizePrefix(prefix: string): string {
-	return prefix.replace(/^\.\//, '').replace(/\/+$/, '').split('/').join(sep)
+	return prefix.split(sep).join('/').replace(/^\.\//, '').replace(/\/+$/, '')
 }
 
 export function shouldIgnoreWatchPath(
@@ -188,7 +189,9 @@ export function shouldIgnoreWatchPath(
 ): boolean {
 	if (!relativePath || relativePath === '.') return false
 	if (relativePath.startsWith('..')) return true
-	const segments = relativePath.split(sep)
+	// Watchers report native separators; prefixes are written with '/'.
+	relativePath = relativePath.split(sep).join('/')
+	const segments = relativePath.split('/')
 	if (
 		segments.some(
 			(segment) => segment === 'node_modules' || segment.startsWith('.'),
@@ -199,6 +202,6 @@ export function shouldIgnoreWatchPath(
 	if (relativePath.endsWith('.map')) return true
 	return ignorePrefixes.some(
 		(prefix) =>
-			relativePath === prefix || relativePath.startsWith(`${prefix}${sep}`),
+			relativePath === prefix || relativePath.startsWith(`${prefix}/`),
 	)
 }

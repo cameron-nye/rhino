@@ -30,7 +30,7 @@ jobs:
   delete:
     name: 🧹 Delete status incident ${{ inputs.incident_id }}
     # Job-level `if` cannot read secrets. A missing bearer skips the steps.
-    runs-on: ${{ vars.CI_RUNNER || 'warp-ubuntu-latest-x64-4x' }}
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     environment: production
     env:

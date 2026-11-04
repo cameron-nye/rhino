@@ -1,3 +1,12 @@
+### Admin organization billing and seat reporting
+
+The admin user detail page is metadata-only for billing and links administrators
+to the user's personal organization. User-targeted billing tools are deprecated
+forwarders to organization mutations. Seat synchronization records
+`billing_seat_quantity_synced` organization audit events, and
+`adminOrgSeatQuantityReport` provides an aggregate, read-only report without
+exposing organization or Stripe identifiers.
+
 # Entitlements (plans and quotas)
 
 ## Contents
@@ -124,7 +133,8 @@ reserve, job interval floors) resolves limits through that pair.
 Stripe; otherwise the higher-ranked of the two is returned. Unknown or null
 `stripe_plan` values contribute nothing. Admin user list/get (page and MCP)
 expose the grant, Stripe tier, effective plan, and whether a Stripe customer is
-linked. `plan` on those records remains the grant that Manage plan edits.
+linked. `plan` on those records is the manual grant that the org admin Plan
+panel and `adminOrgPlanSet` edit.
 
 ### Second-agent Pro gift
 
@@ -379,12 +389,13 @@ and refill number.
 auto-refilled, hit the monthly cap (once per month), and balance at or below $5
 (only while auto-refill is off, once per crossing).
 
-**Admin grants.** `POST /admin/users/credits.json` (admin users page) and the
-`adminCreditGrant` capability add house-funded credits to any account, including
-the calling admin, without a Stripe charge. Each grant writes a ledger row with
-`granted_by_user_id`, amount, recipient, time, and optional note, plus an admin
-audit event. `adminCreditWalletGet` and `GET /admin/users/credits.json` read the
-balance and recent ledger.
+**Admin grants.** The Credits panel on `/admin/orgs/$orgSlug` and
+`adminOrgCreditGrant` add house-funded credits to any organization, including
+the calling admin's, without a Stripe charge. Each grant requires a nonempty
+reason, stored as the ledger note, and writes a ledger row with
+`granted_by_user_id`, amount, recipient, time, and that note, plus an admin
+audit event. `adminOrgGet` reads the wallet and recent ledger. Leftover
+`adminCreditGrant` and `adminCreditWalletGet` still forward to the personal org.
 
 **Signup welcome credits.** Every newly created person account (password signup,
 OAuth signup, admin-created) receives a one-shot house grant of
@@ -404,10 +415,10 @@ that flag is set. When Stripe later flips `stripe_credits_eligible` on,
 usage above the Pro include is not charged against the welcome balance.
 
 **Admin eligibility.** To give an account the wallet without a Stripe checkout,
-set its manual plan to `pro` (`adminUserUpdate`), fund it (`adminCreditGrant`),
-and call `adminCreditEligibilitySet` with the target (`stableUserId`, `email`,
-or `username`), `creditsEligible: true`, and an optional `note`. It writes an
-admin audit event (target, new and previous value, note), never creates Stripe
+set its personal organization's manual plan to `pro` (`adminOrgPlanSet`), fund
+it (`adminOrgCreditGrant`), and call `adminOrgCreditEligibilitySet` with the org
+handle, `creditsEligible: true`, and a required `reason`. It writes an admin
+audit event (target, new and previous value, reason), never creates Stripe
 customers or subscriptions. The steps work in either order: whichever write
 (eligibility or the manual plan) unlocks the wallet first calls
 `forgiveCreditUsageBeforeUnlock`, which advances debit progress to the unlocked
@@ -599,7 +610,10 @@ instead of one RPC per resource:
   past-include credit attribution by package (`loadCreditAttributionBreakdown` /
   account usage `whereItWent`). Meters are Worker compute and Rows read credits
   only; optional `packageId` returns that package’s slice. Does not add a
-  package axis to UserMeter.
+  package axis to UserMeter. `adHocConnections` (also under the Ad hoc row on
+  the usage page) groups Ad hoc `dynamic_worker_day` units in
+  `usage_connection_daily` by connection label (`loadAdHocConnectionUsage`),
+  since the later of the month start or the 14-day rollup retention.
 - Admin per-user usage drill-down —
   `packages/worker/src/admin/user-usage-data.ts` (via
   `readAdminEntitlementConsumption` in
@@ -647,9 +661,16 @@ instead of one RPC per resource:
   `waitUntil`, which mails the org's billing recipients and writes the same
   instance claim, so the sweep skips it (and the immediate send skips a crossing
   the sweep already mailed). Operator crossing events run even when user warning
-  sends fail. The same hourly lane also evaluates the usage-state campaign.
-  Users near stock caps enter `LimitAware` and stay campaign-silent so these
-  entitlement warnings remain the entitlement nudge. See
+  sends fail. Hosted execute also adds a one-time in-response heads-up
+  (`resolveComputeIncludeHeadsUp`, `formatComputeIncludeHeadsUp`) on the call
+  that mints a new worker while monthly Worker compute is at or past 80% of the
+  include. It is claimed once per org per UTC month in KV
+  `execute-compute-include-heads-up:v1:{orgId}:{month}` and skipped for
+  wallet-less plans. It is separate from the email claims, so it does not
+  suppress the mail. There is no per-user opt-out for these warnings today. The
+  same hourly lane also evaluates the usage-state campaign. Users near stock
+  caps enter `LimitAware` and stay campaign-silent so these entitlement warnings
+  remain the entitlement nudge. See
   [Usage metering](./usage-metering.md#usage-campaign).
 
 `readEntitlementResourceUsage` counts only APP_DB-backed row resources (`repos`,
@@ -869,26 +890,29 @@ plan-column history lives only in Git.
 
 New accounts start with `orgs.plan = 'free'`. Password and social signup write
 that default via `resolvePlanWrite`. Admin-created accounts and seed SQL follow
-the same `resolvePlanWrite` default. Admins assign or reset plans on existing
-users from `/admin/users` (validated with strict `parsePlanName`).
+the same `resolvePlanWrite` default. Admins assign or reset the manual plan
+grant on `/admin/orgs/$orgSlug` (validated with strict `parsePlanName`).
 
-Admins also assign or reset plans on existing users through two audited,
-admin-only surfaces, both backed by `updateAdminUserPlan` in
-`packages/worker/src/admin/users-data.ts`:
+Admins assign or reset that grant through two audited, admin-only surfaces, both
+writing `orgs.plan`:
 
-- **Admin UI** — the "Manage plan" panel on `/admin/users` posts
-  `{ action: 'update_plan', userId, plan }` to `POST /admin/users.json` (guarded
-  by `update:user:any`). `plan: null` maps to `free` (writers never persist
-  NULL); unknown plan strings are rejected with `400` rather than coerced.
-- **MCP** — the `adminUserUpdate` capability (`requiredRole: 'admin'`) updates
-  one user by `id` or `email` and accepts `plan: PlanName | null` (null maps to
-  `free`).
+- **Admin UI** — the Plan panel on `/admin/orgs/$orgSlug` submits
+  `setAdminOrgPlan` (`packages/worker/start/server/admin-controls.ts`). User
+  detail (`/admin/users/:id`) links to the personal org and has no billing
+  forms.
+- **MCP** — `adminOrgPlanSet` (`requiredRole: 'admin'`) updates one organization
+  by `orgId` or handle. A downgrade to free is blocked when it exceeds an
+  owner's two-free-organization cap.
 
-Both paths validate against the plan registry (`parsePlanName` / `planNames`)
-and write an `admin`-category audit event with reason `target_user_id=…;plan=…`.
-Daily counters accumulate for every user regardless of plan, so assigning a
-recognized plan later binds immediately against the usage already counted that
-day.
+Leftover `POST /admin/users.json` `update_plan` and `adminUserUpdate` still
+forward to the personal org (`updateAdminUserPlan` in
+`packages/worker/src/admin/users-data.ts`). `plan: null` maps to `free`; unknown
+plan strings are rejected with `400` rather than coerced.
+
+Org and leftover paths validate against the plan registry (`parsePlanName` /
+`planNames`) and write an `admin`-category audit event. Daily counters
+accumulate for every user regardless of plan, so assigning a recognized plan
+later binds immediately against the usage already counted that day.
 
 Paid upgrades via Stripe write `orgs.stripe_plan` (not `orgs.plan`); see
 [Billing](#billing). Effective entitlement uses the higher-ranked of the two
@@ -946,13 +970,27 @@ binds on the next counted check everywhere, with no TTL that can hide it.
   addressed by `orgId` or `org` handle (`@kody` or `kody`).
 - `adminOrgLimitOverridesSet` — set, change, or remove (`value: null`) any
   number of keys with one reason. Unchanged keys are skipped.
-- `GET` / `POST /admin/orgs/limits.json` and the "Limit overrides" panel on
-  `/admin/users` (personal orgs).
+- `adminOrgPlanSet` — change the manual plan grant for one organization with a
+  required reason; a downgrade to free is blocked when it exceeds an owner's
+  two-free-organization cap.
+- `adminOrgCreditGrant` — add positive house-funded credit to one organization
+  wallet with a required reason; clawbacks are not supported.
+- `adminOrgCreditEligibilitySet` — change one organization's admin credit
+  eligibility with a required reason.
+- `/admin/orgs/$orgSlug` — Plan, Credits, and Limit overrides panels (TanStack
+  server functions in `packages/worker/start/server/admin-controls.ts`). User
+  detail links "Open personal organization" and has no billing forms.
 
 Every set, change, or remove writes an org audit event (`limit_override.set` /
 `.changed` / `.removed`, `resource_type` `limit_override`, `resource_id` the
 key) with the acting admin, `previous` and `next` (`value`, `expiresAt`,
 `reason`, `setByUserId`), and the reason.
+
+Organization plan, credit grant, and credit-eligibility changes each write a
+platform admin audit event and an org audit event (`admin_plan_set`,
+`admin_credits_granted`, and `admin_credit_eligibility_set`). The legacy
+user-targeted `adminUserUpdate`, `adminCreditGrant`, and
+`adminCreditEligibilitySet` tools remain personal-organization operations.
 
 **What users see:** the usage page, email usage, admin consumption views, and
 execute `entitlement` metadata (`limit`, `remaining`) report the effective

@@ -1,3 +1,4 @@
+import type * as UnmappableCredentialsModule from '#worker/credentials/package-unmappable-credentials.ts'
 import { orgPermissions } from '@kody-internal/shared/org-permissions.ts'
 import {
 	ownerIdFromStored,
@@ -33,14 +34,21 @@ import {
 } from './authorize.ts'
 
 const mocks = vi.hoisted(() => ({
-	resolveConnectionProfileGrants: vi.fn(),
 	compileAccessForRequest: vi.fn(),
+	loadPackageUnmappableCredentials: vi.fn(async () => new Map()),
 }))
 
-vi.mock('#worker/connection-profiles/repo.ts', () => ({
-	resolveConnectionProfileGrants: (...args: Array<unknown>) =>
-		mocks.resolveConnectionProfileGrants(...args),
-}))
+vi.mock(
+	'#worker/credentials/package-unmappable-credentials.ts',
+	async (importOriginal) => {
+		const actual = await importOriginal<typeof UnmappableCredentialsModule>()
+		return {
+			...actual,
+			loadPackageUnmappableCredentials: (...args: Array<unknown>) =>
+				mocks.loadPackageUnmappableCredentials(...(args as [])),
+		}
+	},
+)
 
 vi.mock('./access-compile.ts', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('./access-compile.ts')>()
@@ -62,7 +70,6 @@ function access(
 		isOwner: true,
 		resourcePermissions: new Map(),
 		credentialScopes: null,
-		profileGrants: null,
 		...overrides,
 	}
 }
@@ -114,7 +121,6 @@ test('every person owns their implicit org and holds every org permission in it'
 	expect(effective.orgId).toBe(personalOrgId(personIdFromStored('user-1')))
 	expect(effective.isOwner).toBe(true)
 	expect(effective.credentialScopes).toBeNull()
-	expect(effective.profileGrants).toBeNull()
 	await expect(
 		authorize({ env, request }, 'package:write', {
 			type: 'package',
@@ -260,114 +266,6 @@ test('role denials do not suggest minting a token', () => {
 	expect(error.mintScopes).toBeNull()
 })
 
-test('a connection profile narrows the package resources it lists', () => {
-	const profiled = access({
-		profileGrants: [
-			{ resourceType: 'package', resourceId: 'pkg-1', actions: ['read'] },
-		],
-	})
-	expect(
-		checkPermission(profiled, 'package:read', packageResource()).allowed,
-	).toBe(true)
-	const executeDenied = denial(
-		checkPermission(
-			profiled,
-			'package:execute',
-			packageResource({ label: undefined }),
-		),
-	)
-	expect(executeDenied.code).toBe('connection_profile')
-	expect(
-		checkPermission(
-			profiled,
-			'package:read',
-			packageResource({ id: 'pkg-2', label: undefined }),
-		).allowed,
-	).toBe(false)
-	const writeDenied = denial(
-		checkPermission(profiled, 'package:write', packageResource()),
-	)
-	expect(writeDenied.code).toBe('connection_profile')
-	const writeGranted = access({
-		profileGrants: [
-			{
-				resourceType: 'package',
-				resourceId: 'pkg-1',
-				actions: ['read', 'write'],
-			},
-		],
-	})
-	expect(
-		checkPermission(writeGranted, 'package:write', packageResource()).allowed,
-	).toBe(true)
-	for (const permission of ['package:delete', 'package:publish'] as const) {
-		const denied = denial(
-			checkPermission(profiled, permission, packageResource()),
-		)
-		expect(denied.code).toBe('connection_profile')
-		expect(
-			checkPermission(writeGranted, permission, packageResource()).allowed,
-		).toBe(true)
-	}
-	// Org-level package:create stays open so plain repo create is unchanged.
-	expect(checkPermission(profiled, 'package:create').allowed).toBe(true)
-	// Profiles list packages only, so other resources and org-level checks
-	// are left to the role and credential.
-	expect(checkPermission(profiled, 'package:read').allowed).toBe(true)
-	expect(
-		checkPermission(profiled, 'secret:use', {
-			type: 'credential',
-			id: 'token',
-			orgId: ownerIdFromStored('org-1'),
-		}).allowed,
-	).toBe(true)
-})
-
-test('a bound profile cannot create a saved package and an unbound caller can', async () => {
-	const bound = deriveRequestContext({
-		user: { userId: personIdFromStored('user-1') },
-		source: { kind: 'mcp-oauth' },
-		profileName: 'work',
-	})
-	stubCompile(bound)
-	mocks.resolveConnectionProfileGrants.mockResolvedValueOnce([
-		{
-			resourceType: 'package',
-			resourceId: 'pkg-1',
-			actions: ['read', 'write'],
-		},
-	])
-	const error = await authorizePackageCreate({
-		env,
-		request: bound,
-	}).catch((caught: unknown) => caught)
-	expect(error).toBeInstanceOf(AuthorizationError)
-	expect(error).toMatchObject({
-		code: 'connection_profile',
-		permission: 'package:create',
-	})
-
-	const emptyGrants = deriveRequestContext({
-		user: { userId: personIdFromStored('user-1') },
-		source: { kind: 'mcp-oauth' },
-		profileName: 'empty',
-	})
-	stubCompile(emptyGrants)
-	mocks.resolveConnectionProfileGrants.mockResolvedValueOnce([])
-	await expect(
-		authorizePackageCreate({ env, request: emptyGrants }),
-	).rejects.toMatchObject({ code: 'connection_profile' })
-
-	const unbound = sessionRequestContext('user-1')
-	stubCompile(unbound)
-	await expect(
-		authorizePackageCreate({ env, request: unbound }),
-	).resolves.toBeUndefined()
-	await expect(
-		authorizePackageCreate({ env, request: null }),
-	).rejects.toMatchObject({ code: 'unauthenticated' })
-})
-
 test('a member without package:create cannot create a saved package', async () => {
 	const member = deriveRequestContext({
 		user: { userId: personIdFromStored('user-1') },
@@ -378,9 +276,15 @@ test('a member without package:create cannot create a saved package', async () =
 		},
 	})
 	stubCompile(member)
-	await expect(
-		authorizePackageCreate({ env, request: member }),
-	).rejects.toMatchObject({ permission: 'package:create' })
+	const error = await authorizePackageCreate({ env, request: member }).catch(
+		(caught: unknown) => caught,
+	)
+	expect(error).toMatchObject({ permission: 'package:create' })
+	// The denial says who controls it and where.
+	expect((error as Error).message).toContain(
+		'Members can create packages and apps',
+	)
+	expect((error as Error).message).toContain('Grants page')
 })
 
 test('a surface permission list passes when any one permission is held', async () => {
@@ -424,14 +328,6 @@ test('lists show a package when the request holds any permission on it', () => {
 		userId: ownerIdFromStored('org-1'),
 	})
 	expect(canSeeResource(access(), pkg)).toBe(true)
-	const executeOnly = access({
-		profileGrants: [
-			{ resourceType: 'package', resourceId: 'pkg-1', actions: ['execute'] },
-		],
-	})
-	expect(canSeeResource(executeOnly, pkg)).toBe(true)
-	expect(checkPermission(executeOnly, 'package:read', pkg).allowed).toBe(false)
-	expect(canSeeResource(access({ profileGrants: [] }), pkg)).toBe(false)
 	expect(
 		canSeeResource(
 			access(),
@@ -452,26 +348,6 @@ test('lists show a package when the request holds any permission on it', () => {
 	expect(canSeeResource(grantedOnly, packageResource({ id: 'pkg-2' }))).toBe(
 		false,
 	)
-})
-
-test('Automation keeps the connection profile of the credential that created it', async () => {
-	const grants = [
-		{ resourceType: 'package', resourceId: 'pkg-1', actions: ['read'] },
-	]
-	mocks.resolveConnectionProfileGrants.mockResolvedValueOnce(grants)
-	const request = deriveRequestContext({
-		user: { userId: personIdFromStored('user-1') },
-		source: { kind: 'schedule', jobId: 'job-1' },
-		profileName: ' work ',
-	})
-	stubCompile(request)
-	const effective = await computeEffectivePermissions({ env, request })
-	expect(mocks.resolveConnectionProfileGrants).toHaveBeenCalledWith({
-		db: env.APP_DB,
-		userId: ownerIdFromStored('user-1'),
-		profileName: 'work',
-	})
-	expect(effective.profileGrants).toEqual(grants)
 })
 
 test('only a person behind the request is live; a triggered run and anything it starts never are', () => {
@@ -647,4 +523,122 @@ test('deep call sites read the permissions bound for the request', async () => {
 			getRequestPermissions(),
 		),
 	).resolves.toBeUndefined()
+})
+
+const prodDb = [
+	{
+		needKey: 'rooms-db',
+		credentialName: 'Prod DB',
+		reason: 'publisher' as const,
+	},
+]
+
+function collaboratorAccess(overrides: Partial<EffectivePermissions> = {}) {
+	return access({
+		isOwner: false,
+		permissions: new Set(['org:read', 'member:read']),
+		resourcePermissions: new Map([
+			[
+				'package:pkg-1',
+				new Set([
+					'package:read',
+					'package:execute',
+					'package:write',
+					'package:publish',
+				]),
+			],
+		]),
+		unmappableCredentialLocks: new Map([['package:pkg-1', prodDb]]),
+		...overrides,
+	})
+}
+
+test('unmappable credentials make write and publish owner-only; execute is unaffected', () => {
+	const locked = collaboratorAccess()
+	for (const permission of ['package:write', 'package:publish'] as const) {
+		const error = denial(checkPermission(locked, permission, packageResource()))
+		expect(error.code).toBe('unmappable_credentials')
+		expect(error.message).toContain('"Prod DB" (need "rooms-db")')
+		expect(error.message).toContain('owner-only')
+		expect(error.message).toContain(
+			'--allow-changes-despite-unmappable-credentials',
+		)
+	}
+	expect(
+		checkPermission(locked, 'package:execute', packageResource()).allowed,
+	).toBe(true)
+	expect(
+		checkPermission(locked, 'package:read', packageResource()).allowed,
+	).toBe(true)
+	expect(
+		checkPermission(
+			collaboratorAccess({ unmappableCredentialLocks: undefined }),
+			'package:write',
+			packageResource(),
+		).allowed,
+	).toBe(true)
+})
+
+test('locks load live for non-Owner write grants, skip allowed grants, and never apply to Owners', async () => {
+	const memberRequest = () =>
+		deriveRequestContext({
+			user: { userId: personIdFromStored('user-2') },
+			source: { kind: 'mcp-oauth' },
+			orgBinding: {
+				org: { id: ownerIdFromStored('org-1'), slug: 'org-1' },
+				role: 'member',
+			},
+		})
+	const request = memberRequest()
+	const resource = {
+		type: 'package' as const,
+		id: 'pkg-1',
+		orgId: request.org.id,
+	}
+	const compiled = {
+		orgId: request.org.id,
+		epoch: 0,
+		isOwner: false,
+		orgPermissions: new Set(['org:read']),
+		resourcePermissions: new Map([
+			['package:pkg-1', new Set(['package:read', 'package:write'])],
+			['package:pkg-2', new Set(['package:read', 'package:execute'])],
+		]),
+	}
+	mocks.compileAccessForRequest.mockResolvedValue(compiled)
+	mocks.loadPackageUnmappableCredentials.mockResolvedValue(
+		new Map([['pkg-1', prodDb]]),
+	)
+	await expect(
+		authorize({ env, request: memberRequest() }, 'package:write', resource),
+	).rejects.toMatchObject({ code: 'unmappable_credentials' })
+	expect(mocks.loadPackageUnmappableCredentials).toHaveBeenLastCalledWith(
+		expect.objectContaining({ packageIds: ['pkg-1'] }),
+	)
+
+	mocks.loadPackageUnmappableCredentials.mockClear()
+	mocks.compileAccessForRequest.mockResolvedValue({
+		...compiled,
+		unmappableChangesAllowed: new Set(['package:pkg-1']),
+	})
+	await expect(
+		authorize({ env, request: memberRequest() }, 'package:write', resource),
+	).resolves.toBeUndefined()
+	expect(mocks.loadPackageUnmappableCredentials).not.toHaveBeenCalled()
+
+	mocks.compileAccessForRequest.mockResolvedValue({
+		...compiled,
+		isOwner: true,
+		orgPermissions: new Set(orgPermissions),
+	})
+	await expect(
+		authorize({ env, request: memberRequest() }, 'package:publish', resource),
+	).resolves.toBeUndefined()
+	expect(mocks.loadPackageUnmappableCredentials).not.toHaveBeenCalled()
+	mocks.loadPackageUnmappableCredentials.mockResolvedValue(new Map())
+})
+
+test('a locked package drops out of write-scoped lists but stays in execute lists', () => {
+	const locked = collaboratorAccess()
+	expect(canSeeResource(locked, packageResource())).toBe(true)
 })

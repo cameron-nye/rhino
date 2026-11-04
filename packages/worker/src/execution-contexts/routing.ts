@@ -1,17 +1,29 @@
 import {
 	type EcpCancelReason,
+	type EcpCapabilities,
 	type EcpGrant,
 	type EcpRunRequestBody,
 	sha256Base64Url,
 } from '@kody-internal/shared/execution-context-protocol/index.ts'
 import { type CredentialCallMap } from '#worker/credentials/credential-call-map.ts'
-import { findPlaceholderMatches } from '#worker/credentials/module-placeholder-scan.ts'
 import { type RunRecordHandle } from '#worker/run-records/types.ts'
+import {
+	checkPermission,
+	computeEffectivePermissions,
+	type EffectivePermissions,
+} from '#worker/authorization/authorize.ts'
+import { loadOrgBindingForOrg } from '#worker/orgs/repo.ts'
+import { deriveRequestContext } from '#worker/request-context/request-context.ts'
+import {
+	type OwnerId,
+	type PersonId,
+} from '@kody-internal/shared/owner-person-ids.ts'
 import { ExecutionContextError } from './errors.ts'
 import {
 	type ExecutionContextLease,
 	type ExecutionContextRunResult,
 } from './session-do.ts'
+import { type ExecutionContextRunTiming } from './run-timing.ts'
 import { runChainShapeError, type ExecuteRequirement } from './chain-rules.ts'
 import {
 	type ChainEntry,
@@ -20,6 +32,7 @@ import {
 	getChain,
 	getExecutionContext,
 	loadContextAccess,
+	parseCapabilities,
 	parseGrant,
 	resolveExecutionContextRef,
 	sessionStub,
@@ -61,22 +74,160 @@ export type ExecutionContextRunMetadata = {
 	name: string | null
 	attempts: Array<RoutingAttempt>
 	fellBackToCloud: boolean
+	/** The requester runs this context's daemon (their own machine). */
+	yours?: boolean
+	/** Where the run's time went, when the context reported it. */
+	timing?: ExecutionContextRunTiming
+}
+
+/** Where a run happened: Kody cloud or one execution context. */
+export type RanOnTarget =
+	| { kind: 'cloud'; id: 'cloud'; name: 'Kody cloud' }
+	| {
+			kind: 'context'
+			id: string
+			name: string
+			yours?: boolean
+			/** Where the run's time went, when the context reported it. */
+			timing?: ExecutionContextRunTiming
+	  }
+
+/** `ranOn` on every execute response: the target plus how it got there. */
+export type ExecuteRanOn = RanOnTarget & {
+	attempts: Array<RoutingAttempt>
+	fellBackToCloud: boolean
+}
+
+export const kodyCloudTarget = {
+	kind: 'cloud',
+	id: 'cloud',
+	name: 'Kody cloud',
+} as const satisfies RanOnTarget
+
+/** Run-history `ranOn`: null when a queued run expired before anything ran it. */
+export function historyRanOn(value: unknown): ExecuteRanOn | null {
+	const attempts =
+		isRecord(value) && Array.isArray(value.attempts)
+			? (value.attempts as Array<RoutingAttempt>)
+			: []
+	return attempts.at(-1)?.outcome === 'expired'
+		? null
+		: ranOnFromMetadata(value)
+}
+
+/** Reads run metadata (`executionContext`) as `ranOn`; anything else is cloud. */
+export function ranOnFromMetadata(value: unknown): ExecuteRanOn {
+	const metadata = isRecord(value) ? value : null
+	const attempts = Array.isArray(metadata?.attempts)
+		? (metadata.attempts as Array<RoutingAttempt>)
+		: []
+	const fellBackToCloud = metadata?.fellBackToCloud === true
+	if (
+		!fellBackToCloud &&
+		typeof metadata?.id === 'string' &&
+		metadata.id !== 'cloud'
+	) {
+		return {
+			kind: 'context',
+			id: metadata.id,
+			name: typeof metadata.name === 'string' ? metadata.name : metadata.id,
+			...(typeof metadata.yours === 'boolean' ? { yours: metadata.yours } : {}),
+			...(isRecord(metadata.timing)
+				? { timing: metadata.timing as ExecutionContextRunTiming }
+				: {}),
+			attempts,
+			fellBackToCloud: false,
+		}
+	}
+	return {
+		...kodyCloudTarget,
+		attempts: attempts.filter((attempt) => attempt.outcome !== 'ran'),
+		fellBackToCloud,
+	}
 }
 
 /**
- * One line telling the caller that a run meant for an execution context
- * ran on Kody cloud instead, and why each context passed on it.
+ * One line saying where a run happened, with friendly names only, e.g.
+ * "Ran on Kody cloud after build-box was offline."
  */
+export function describeRanOn(
+	ranOn: ExecuteRanOn,
+	options: { running?: boolean } = {},
+) {
+	const passed = ranOn.attempts.filter(
+		(attempt) =>
+			attempt.outcome !== 'ran' &&
+			!(ranOn.kind === 'context' && attempt.target === ranOn.id),
+	)
+	const after =
+		passed.length > 0 ? ` after ${joinList(passed.map(describePass))}` : ''
+	const where =
+		ranOn.kind === 'cloud'
+			? ranOn.name
+			: `${ranOn.name} (${ranOn.yours ? 'your machine' : 'an execution context'})`
+	const last = ranOn.attempts.at(-1)
+	if (ranOn.kind === 'context' && last?.outcome === 'queued') {
+		return `Waiting for ${where} to take this run${after}.`
+	}
+	return `${options.running ? 'Running' : 'Ran'} on ${where}${after}.`
+}
+
+/**
+ * The ran-on line with the worker units this call charged, e.g.
+ * "Ran on nautilus (your machine), 0 worker units."
+ */
+export function describeRanOnWithWorkerUnits(
+	line: string,
+	workerUnits: number,
+) {
+	const units = `${workerUnits} worker unit${workerUnits === 1 ? '' : 's'}`
+	return `${line.replace(/\.$/, '')}, ${units}.`
+}
+
+/** The cloud-fallback line (kept for callers that only have metadata). */
 export function describeCloudFallback(metadata: ExecutionContextRunMetadata) {
-	const tried = metadata.attempts
-		.map((attempt) => {
-			const label = attempt.name
-				? `${attempt.name} (${attempt.target})`
-				: attempt.target
-			return `${label}: ${attempt.outcome}${attempt.reason ? ` ${attempt.reason}` : ''}`
-		})
-		.join('; ')
-	return `Ran on Kody cloud: no execution context in your chain took this run${tried ? ` (${tried})` : ''}.`
+	return describeRanOn(ranOnFromMetadata(metadata))
+}
+
+const passPhrases: Record<RoutingAttempt['outcome'], string> = {
+	ran: 'ran it',
+	offline: 'was offline',
+	busy: 'was busy',
+	rejected: 'declined it',
+	aborted: 'stopped it before it started',
+	timeout: 'did not answer in time',
+	skipped: 'was skipped',
+	queued: 'was queued',
+	expired: 'did not take it before the queue expired',
+}
+
+function describePass(attempt: RoutingAttempt) {
+	const who =
+		(attempt.name && !looksLikeContextId(attempt.name, attempt.target)
+			? attempt.name
+			: null) ??
+		(attempt.reason === 'gone'
+			? 'a context that no longer exists'
+			: 'an execution context')
+	const reason =
+		attempt.reason && attempt.reason !== 'gone'
+			? ` (${attempt.reason.replaceAll('_', ' ')})`
+			: ''
+	return `${who} ${passPhrases[attempt.outcome] ?? attempt.outcome}${reason}`
+}
+
+/** A missing chain ref keeps the raw ref as its name; never print an id. */
+function looksLikeContextId(name: string, target: string) {
+	return name === target || /^ec_[a-z0-9]+$/i.test(name)
+}
+
+function joinList(items: Array<string>) {
+	if (items.length <= 1) return items.join('')
+	return `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export type RoutingOutcome =
@@ -127,72 +278,30 @@ export function planTargets(input: {
 	return targets
 }
 
-const credentialRuntimeExports = new Set([
-	'credential',
-	'credentials',
-	'createAuthenticatedFetch',
-])
-const runtimeNamedImportPattern =
-	/import\s*(?:type\s+)?\{([^}]*)\}\s*from\s*['"]kody:runtime['"]/g
-const runtimeWholeImportPattern =
-	/import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,\s*\{[^}]*\}\s*)?from\s*['"]kody:runtime['"]/g
-
-/**
- * True when execute code visibly needs a credential: a secret or
- * integration placeholder, or a credential helper from `kody:runtime`. A
- * cheap source check, so a context whose grant allows no credentials is
- * skipped before the run starts instead of failing there.
- */
-export function codeNeedsCredentials(code: string | null) {
-	if (!code) return false
-	if (findPlaceholderMatches(code).length > 0) return true
-	for (const match of code.matchAll(runtimeNamedImportPattern)) {
-		const names = match[1]!.split(',').map((part) =>
-			part
-				.trim()
-				.replace(/^type\s+/, '')
-				.split(/\s+as\s+/)[0]!
-				.trim(),
-		)
-		if (names.some((name) => credentialRuntimeExports.has(name))) return true
+/** Why a grant cannot meet the run's `requires`, or null when it can. */
+export function requirementRefusal(
+	grant: EcpGrant,
+	requires: ReadonlyArray<ExecuteRequirement>,
+	capabilities: EcpCapabilities,
+): string | null {
+	if (requires.includes('fs')) {
+		if (grant.fs.length === 0) return 'no_fs'
+		if (!(capabilities.features ?? []).includes('fs')) return 'no_local_fs'
 	}
-	for (const match of code.matchAll(runtimeWholeImportPattern)) {
-		const alias = match[1]!.replace(/[$]/g, '\\$')
-		if (
-			new RegExp(
-				`\\b${alias}\\s*\\.\\s*(?:credentials?|createAuthenticatedFetch)\\b`,
-			).test(code)
-		) {
-			return true
-		}
+	if (requires.includes('lan') && grant.egress.mode !== 'public-and-lan') {
+		return 'no_lan'
 	}
-	return false
+	return null
 }
 
-/** Why a grant cannot take this run, or null when it can. */
+/** Why a context cannot take this run, or null when it can. */
 export function grantRefusal(input: {
 	grant: EcpGrant
 	requires: ReadonlyArray<ExecuteRequirement>
-	credentials: CredentialCallMap | null
-	code?: string | null
+	/** What the daemon advertised; `fs` means its effective mount set is non-empty. */
+	capabilities: EcpCapabilities
 }): string | null {
-	if (input.requires.includes('fs') && input.grant.fs.length === 0) {
-		return 'no_fs'
-	}
-	if (
-		input.requires.includes('lan') &&
-		input.grant.egress.mode !== 'public-and-lan'
-	) {
-		return 'no_lan'
-	}
-	if (
-		input.grant.credentials.mode === 'none' &&
-		((input.credentials && input.credentials.size > 0) ||
-			codeNeedsCredentials(input.code ?? null))
-	) {
-		return 'credentials_not_allowed'
-	}
-	return null
+	return requirementRefusal(input.grant, input.requires, input.capabilities)
 }
 
 function noContext(attempts: Array<RoutingAttempt>, message: string): never {
@@ -219,6 +328,14 @@ export async function routeExecute(input: {
 		orgSlug: string | null
 		scopes: Array<string> | null
 		credentialKind: string
+		/**
+		 * The caller's access when it acts as a profile (ADR 0092): every
+		 * layer of its chain must hold execution_context:execute on a context,
+		 * even one the person operates.
+		 */
+		profileAccess?: EffectivePermissions | null
+		/** That profile's id, carried on the lease so callbacks stay narrowed. */
+		profileId?: string | null
 	}
 	args: ExecuteRoutingArgs
 	runId: string
@@ -231,8 +348,9 @@ export async function routeExecute(input: {
 	waitMs: number
 	signal?: AbortSignal
 	/**
-	 * Queue on the first offline context until it reconnects, instead of
-	 * failing, when nothing else can take the run (automations only).
+	 * Queue on the first offline or busy context until it can take the run,
+	 * instead of failing, when no later target can (automations only). A
+	 * cloud entry in the targets always wins over queueing.
 	 */
 	queue?: { expiresAt: number } | null
 	/** `skip` records an unknown chain entry as skipped instead of a 404. */
@@ -296,6 +414,7 @@ export async function routeExecute(input: {
 	): ExecutionContextRunMetadata => ({
 		id: row?.id ?? null,
 		name: row?.name ?? null,
+		...(row ? { yours: row.operator_user_id === input.request.userId } : {}),
 		attempts,
 		fellBackToCloud,
 	})
@@ -337,6 +456,18 @@ export async function routeExecute(input: {
 			skip('credential_scope')
 			continue
 		}
+		const profileAccess = input.request.profileAccess
+		if (
+			profileAccess &&
+			!checkPermission(profileAccess, 'execution_context:execute', {
+				type: 'execution_context',
+				id: row.id,
+				orgId: input.request.orgId as OwnerId,
+			}).allowed
+		) {
+			skip('profile_grant')
+			continue
+		}
 		const access = await loadContextAccess(db, row, {
 			userId: input.request.userId,
 			orgId: input.request.orgId,
@@ -346,12 +477,8 @@ export async function routeExecute(input: {
 			continue
 		}
 		const grant = parseGrant(row)
-		const refusal = grantRefusal({
-			grant,
-			requires,
-			credentials: input.credentials,
-			code: input.code,
-		})
+		const sharedRun = row.operator_user_id !== input.request.userId
+		const refusal = requirementRefusal(grant, requires, parseCapabilities(row))
 		if (refusal) {
 			skip(refusal)
 			continue
@@ -371,11 +498,12 @@ export async function routeExecute(input: {
 			},
 			orgId: input.request.orgId,
 			callerScopes: input.request.scopes,
-			credentialIds:
-				grant.credentials.mode === 'list' ? grant.credentials.ids : [],
+			...(input.request.profileId
+				? { profileId: input.request.profileId }
+				: {}),
 			runtime: grant.runtime,
 			deadline,
-			sharedRun: row.operator_user_id !== input.request.userId,
+			sharedRun,
 		}
 		const request: EcpRunRequestBody = {
 			runId: input.runId,
@@ -429,7 +557,13 @@ export async function routeExecute(input: {
 					dispatched.outcome === 'busy') &&
 				!firstOffline
 			) {
-				firstOffline = { row, request, lease, requires }
+				firstOffline = {
+					row,
+					request,
+					// The drain re-checks the grant, which may change while queued.
+					lease,
+					requires,
+				}
 			}
 			attempts.push({
 				target: row.id,
@@ -451,10 +585,12 @@ export async function routeExecute(input: {
 				waitMs: Math.min(input.waitMs, deadline - Date.now()),
 			})
 			if ('result' in settled) {
+				const { timing, ...result } =
+					settled.result as ExecutionContextRunResult
 				return {
 					kind: 'ran',
-					result: settled.result as ExecutionContextRunResult,
-					metadata: ran,
+					result,
+					metadata: timing ? { ...ran, timing } : ran,
 				}
 			}
 			switch (settled.state) {
@@ -490,6 +626,7 @@ export async function routeExecute(input: {
 		const queuedMetadata: ExecutionContextRunMetadata = {
 			id: row.id,
 			name: row.name,
+			yours: row.operator_user_id === input.request.userId,
 			attempts: [
 				...attempts,
 				{ target: row.id, name: row.name, outcome: 'queued' },
@@ -533,9 +670,12 @@ export async function routeExecute(input: {
 		})
 	}
 	if (named && named !== 'cloud' && input.args.fallback !== 'chain') {
+		const namedAttempt = attempts.find((a) => a.target === named.id)
 		noContext(
 			attempts,
-			`${named.name} could not take this run (${describeAttempts(attempts)}). A named context never falls back; pass fallback: "chain" to use your chain instead.`,
+			namedAttempt?.outcome === 'busy'
+				? `${named.name} is busy: it is already running as many runs as it allows at once, so it could not take this run. A named context never falls back; try again when one of its runs finishes, or pass fallback: "chain" to use your chain instead.`
+				: `${named.name} could not take this run (${describeAttempts(attempts)}). A named context never falls back; pass fallback: "chain" to use your chain instead.`,
 		)
 	}
 	noContext(
@@ -553,12 +693,23 @@ function hasContextScope(input: { request: { scopes: Array<string> | null } }) {
 	return scopes === null || scopes.includes('execution_context:execute')
 }
 
+const contextReasonText: Record<string, string> = {
+	profile_grant:
+		'profile_grant: the profile this credential acts as, or a parent profile, was not granted execution_context:execute on it',
+	no_fs: 'no_fs: its server grant lists no host folders (grant.fs)',
+	no_local_fs:
+		"no_local_fs: its server grant lists host folders, but the machine's local policy allows none of them (`kody context policy allow <folder>`)",
+}
+
 function describeAttempts(attempts: ReadonlyArray<RoutingAttempt>) {
 	return attempts
-		.map(
-			(a) =>
-				`${a.name ?? a.target}: ${a.outcome}${a.reason ? ` (${a.reason})` : ''}`,
-		)
+		.map((a) => {
+			const reason =
+				a.reason && a.target !== 'cloud'
+					? (contextReasonText[a.reason] ?? a.reason)
+					: a.reason
+			return `${a.name ?? a.target}: ${a.outcome}${reason ? ` (${reason})` : ''}`
+		})
 		.join('; ')
 }
 
@@ -632,14 +783,12 @@ export async function resolveRunChain(
 	}
 }
 
-/** A queued run that expired never ran: mark its queued attempt `expired`. */
+/** A queued run that ended unrun (expiry, revocation): mark it `expired`. */
 export function markQueuedAttemptExpired(
 	metadata: Record<string, unknown>,
+	reason = 'queue_expired',
 ): Record<string, unknown> {
-	return markQueuedAttempt(metadata, {
-		outcome: 'expired',
-		reason: 'queue_expired',
-	})
+	return markQueuedAttempt(metadata, { outcome: 'expired', reason })
 }
 
 /** A queued run that the context took after reconnecting ran there. */
@@ -647,6 +796,18 @@ export function markQueuedAttemptRan(
 	metadata: Record<string, unknown>,
 ): Record<string, unknown> {
 	return markQueuedAttempt(metadata, { outcome: 'ran' })
+}
+
+/** Records a finished context run's timing on its run-record metadata. */
+export function withRunTiming(
+	metadata: Record<string, unknown>,
+	timing: ExecutionContextRunTiming,
+): Record<string, unknown> {
+	const context = metadata.executionContext as
+		| ExecutionContextRunMetadata
+		| undefined
+	if (!context) return metadata
+	return { ...metadata, executionContext: { ...context, timing } }
 }
 
 function markQueuedAttempt(
@@ -668,4 +829,48 @@ function markQueuedAttempt(
 			),
 		},
 	}
+}
+
+/**
+ * A queued run acting as a profile waits for a reconnect; recheck its chain
+ * and `execution_context:execute` before it dispatches. Null means it may run.
+ */
+export async function queuedProfileRefusal(input: {
+	env: Env
+	lease: Pick<
+		ExecutionContextLease,
+		'profileId' | 'orgId' | 'requester' | 'ecid' | 'runId'
+	>
+	context: { id: string; org_id: string }
+}): Promise<string | null> {
+	const { lease } = input
+	if (!lease.profileId) return null
+	const binding = await loadOrgBindingForOrg(
+		input.env.APP_DB,
+		lease.requester.userId,
+		lease.orgId,
+	)
+	if (!binding) return 'the person this run acts as is no longer in the org'
+	const request = deriveRequestContext({
+		user: {
+			userId: lease.requester.userId as PersonId,
+			username: lease.requester.handle ?? lease.requester.userId,
+		},
+		source: {
+			kind: 'execution-context-run',
+			ecid: lease.ecid,
+			runId: lease.runId,
+		},
+		orgBinding: binding,
+		profileId: lease.profileId,
+	})
+	const access = await computeEffectivePermissions({ env: input.env, request })
+	const decision = checkPermission(access, 'execution_context:execute', {
+		type: 'execution_context',
+		id: input.context.id,
+		orgId: input.context.org_id as OwnerId,
+	})
+	return decision.allowed
+		? null
+		: 'the profile this run acts as, or a parent profile, is revoked, expired, or no longer granted execution_context:execute on it'
 }

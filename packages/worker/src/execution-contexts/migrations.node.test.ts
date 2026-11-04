@@ -294,3 +294,63 @@ test('execution context tables exist with their columns and unique rules', () =>
 		'execution_contexts_thumbprint',
 	])
 })
+
+test('revoking a context releases its name while live names stay unique', () => {
+	const sqlite = new DatabaseSync(':memory:', {
+		enableForeignKeyConstraints: false,
+	})
+	applyMigrations(sqlite, () => true)
+	const insert = sqlite.prepare(
+		`INSERT INTO execution_contexts (
+			id, org_id, operator_user_id, name, public_key_jwk, thumbprint, created_at, revoked_at
+		) VALUES (?, 'org_acme', 'user_1', ?, '{}', ?, '2026-10-29', ?)`,
+	)
+	insert.run('ec_old', 'coles-computer', 'thumb_old', '2026-10-29')
+	insert.run('ec_new', 'coles-computer-2', 'thumb_new', null)
+	sqlite
+		.prepare(`UPDATE execution_contexts SET name = ? WHERE id = ?`)
+		.run('coles-computer', 'ec_new')
+	insert.run('ec_live', 'laptop', 'thumb_live', null)
+	expect(() =>
+		sqlite
+			.prepare(`UPDATE execution_contexts SET name = ? WHERE id = ?`)
+			.run('laptop', 'ec_new'),
+	).toThrow(/UNIQUE/)
+	expect(() => insert.run('ec_dupe', 'laptop', 'thumb_dupe', null)).toThrow(
+		/UNIQUE/,
+	)
+})
+
+test('stored grants lose their credential mode and keep everything else', () => {
+	const migration = '0213-execution-context-grant-credentials-removed.sql'
+	const sqlite = databaseBefore(migration)
+	const insert = sqlite.prepare(
+		`INSERT INTO execution_contexts (id, org_id, operator_user_id, all_members, name,
+			public_key_jwk, thumbprint, created_at, grant_json, grant_version)
+		 VALUES (?, 'org_acme', 'user_op', 0, ?, '{}', ?, '2026-10-01', ?, 3)`,
+	)
+	const egress = { mode: 'public-and-lan' }
+	const grants = {
+		ec_list: { credentials: { mode: 'list', ids: ['cred_1'] }, egress },
+		ec_none: { credentials: { mode: 'none' }, egress },
+		ec_requester: { credentials: { mode: 'requester' }, egress },
+		ec_plain: { egress },
+	}
+	for (const [id, grant] of Object.entries(grants)) {
+		insert.run(id, id, `thumb_${id}`, JSON.stringify(grant))
+	}
+	sqlite.exec(readFileSync(new URL(migration, migrationsDirectory), 'utf8'))
+	const rows = sqlite
+		.prepare(
+			`SELECT id, grant_json, grant_version FROM execution_contexts ORDER BY id`,
+		)
+		.all() as Array<{ id: string; grant_json: string; grant_version: number }>
+	expect(
+		rows.map((row) => [row.id, JSON.parse(row.grant_json), row.grant_version]),
+	).toEqual([
+		['ec_list', { egress }, 3],
+		['ec_none', { egress }, 3],
+		['ec_plain', { egress }, 3],
+		['ec_requester', { egress }, 3],
+	])
+})

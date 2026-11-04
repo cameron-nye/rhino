@@ -25,9 +25,18 @@ meter.
 
 - The first use of a given worker id on a UTC day counts once for that user.
 - Repeating the same worker id on the same UTC day does not add another day.
-- Worker identity follows the acting user plus the **module graph** for that
-  run: the same user and published graph reuse one isolate; a different graph or
-  a different user is a different isolate.
+- The billed worker follows only what you control: the acting user, storage
+  context, your code, and your own modules (saved and published package source,
+  so a republish is a new worker). The same user and code count once per UTC
+  day; different code or a different user is a different worker.
+- Kody deploys do not start a new billed worker. A deploy that changes Kody's
+  executor or runtime can load a fresh isolate, but unchanged code that already
+  ran today does not count again.
+- Runs on an [execution context](./execution-contexts.md) (your own machine) do
+  not count: they run in workerd there, not in a Kody cloud isolate. A run that
+  falls back to Kody cloud counts like any cloud run.
+- Every `execute` response says what that call charged in `ranOn.workerUnits`
+  and its "Ran on …" line (`Ran on nautilus (your machine), 0 worker units.`).
 
 Workspace usage (`/@<slug>/-/usage` and `usageGet`) shows this meter as **Worker
 compute**, next to **Rows read** and the execute caps. The $12 Pro plan includes
@@ -41,6 +50,32 @@ On Free, Worker compute past the include is informational: it never charges the
 account or stops runs, and Kody does not email about it. Execute caps are the
 Free limit. Do not spend execute calls diagnosing a high Worker compute count on
 Free; move repeated ad hoc work into packages or triggers instead.
+
+When a hosted `execute` call starts a new worker and the workspace has used 80%
+or more of its included Worker compute this month, that response carries a
+one-time usage heads-up in `warnings` (and its text), once per workspace per UTC
+month. It goes with the 80% and 100% warning emails rather than replacing them;
+Free and other plans without a credit wallet do not get it.
+
+### Usage warnings
+
+The 80% and 100% usage emails and the execute heads-up are on by default. An
+Owner can turn all of them off for an org (personal or team) in **Organization
+settings**, **Usage warnings**, with `orgUpdate` (`PATCH /v1/orgs`), or from the
+CLI:
+
+```sh
+kody api orgUpdate --params '{"usage_warnings":false}'
+```
+
+Turning them off stops only the warnings. Limits, credits, and the usage page
+(`usageByPackageGet`) are unchanged, and Kody admins still see the crossings.
+
+To see what starts the most workers, open **Where it went** on the usage page or
+call `usageByPackageGet`. Packages are ranked by credits. The Ad hoc row also
+lists which connection (MCP agent, Kody CLI, API token, Automation) started the
+most Ad hoc workers (`adHocConnections`). That list counts Worker compute units
+(inside and past the include) for at most the last 14 days of the month.
 
 ## Rows read
 

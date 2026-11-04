@@ -14,6 +14,57 @@ import { routes } from '#universal/routes.ts'
 
 export const packageCollaboratorPresets = grantPresets
 
+/** Package permissions a collaborator grant may carry (the API's list). */
+export const packageCollaboratorPermissions = [
+	'package:read',
+	'package:execute',
+	'package:write',
+	'package:publish',
+	'package:delete',
+	'package:manage_access',
+] as const
+
+export type PackageCollaboratorPermission =
+	(typeof packageCollaboratorPermissions)[number]
+
+/** Plain labels for the advanced checklist; the UI never shows the raw ids. */
+export const packageCollaboratorPermissionOptions: ReadonlyArray<{
+	permission: PackageCollaboratorPermission
+	label: string
+	description: string
+}> = [
+	{
+		permission: 'package:read',
+		label: 'Read the source',
+		description: 'Open, clone, and fork the source.',
+	},
+	{
+		permission: 'package:execute',
+		label: 'Run the package',
+		description: 'Runs count toward your usage.',
+	},
+	{
+		permission: 'package:write',
+		label: 'Change the source',
+		description: 'Push changes from their own Kody.',
+	},
+	{
+		permission: 'package:publish',
+		label: 'Publish',
+		description: 'Make their changes live.',
+	},
+	{
+		permission: 'package:delete',
+		label: 'Delete',
+		description: 'Delete this package.',
+	},
+	{
+		permission: 'package:manage_access',
+		label: 'Manage access',
+		description: 'Choose who else has access.',
+	},
+]
+
 export type PackageCollaboratorPreset = GrantPreset
 
 export function isPackageCollaboratorPreset(
@@ -30,7 +81,12 @@ export function isPackageCollaboratorPreset(
  * is not a member (granted elsewhere); the tab can remove them but not change
  * their access.
  */
-export type PackageCollaboratorKind = 'org' | 'team' | 'member' | 'outside'
+export type PackageCollaboratorKind =
+	| 'org'
+	| 'team'
+	| 'member'
+	| 'outside'
+	| 'profile'
 
 export type PackageCollaboratorView = {
 	grantId: string
@@ -48,10 +104,30 @@ export type PackageCollaboratorView = {
 	teamSlug: string | null
 	/** Live member count for a team, or for the org subject. */
 	teamMemberCount: number | null
+	/** Set only for a profile collaborator (ADR 0092). */
+	profileName?: string
+	/** False once the profile or a parent is revoked or expired. */
+	profileActive?: boolean
 	/** Null for an advanced grant with an explicit permission list. */
 	preset: PackageCollaboratorPreset | null
 	permissions: Array<string>
 	createdAt: string
+	/** An org Owner allowed changes despite unmappable credentials on this grant. */
+	allowUnmappableCredentialChanges?: boolean
+	/**
+	 * Set while the package has unmappable credentials and this grant can
+	 * change or publish it: the share-time warning, worded for this grant.
+	 */
+	unmappableCredentialWarning?: string | null
+}
+
+/** The package's unmappable credentials, for the owner notice. */
+type PackageUnmappableCredentialsView = {
+	/** Credential names (null: the need has no credential picked yet). */
+	credentials: Array<{ needKey: string; credentialName: string | null }>
+	notice: string
+	/** True when the viewer is an org Owner and can allow changes per grant. */
+	canAllowChanges: boolean
 }
 
 /** A pending grant invite on the package (personal orgs only). */
@@ -78,7 +154,14 @@ export type PackageCollaboratorEveryoneOption = {
 	memberCount: number
 }
 
-export type PackageCollaboratorSubjectType = 'user' | 'team' | 'org'
+export type PackageCollaboratorSubjectType = 'user' | 'team' | 'org' | 'profile'
+
+/** One of the viewer's own active profiles (ADR 0092; profiles experiment). */
+type PackageCollaboratorProfileOption = {
+	id: string
+	name: string
+	depth: number
+}
 
 export type PackageCollaboratorMemberOption = {
 	userId: string
@@ -88,7 +171,14 @@ export type PackageCollaboratorMemberOption = {
 
 export type PackageCollaboratorsView = {
 	ok: true
-	package: { id: string; kodyId: string; name: string }
+	package: {
+		id: string
+		kodyId: string
+		name: string
+		/** The package serves an app (drives the who-pays note). */
+		hasApp?: boolean
+		internetVisible?: boolean
+	}
 	org: { slug: string; personal: boolean }
 	collaborators: Array<PackageCollaboratorView>
 	/** Pending grant invites on this package; always empty in a team org. */
@@ -99,7 +189,11 @@ export type PackageCollaboratorsView = {
 		everyone: PackageCollaboratorEveryoneOption | null
 		teams: Array<PackageCollaboratorTeamOption>
 		members: Array<PackageCollaboratorMemberOption>
+		/** The viewer's profiles; absent unless the profiles experiment is on. */
+		profiles?: Array<PackageCollaboratorProfileOption>
 	}
+	/** Null when the package has no unmappable credentials. */
+	unmappableCredentials?: PackageUnmappableCredentialsView | null
 }
 
 /** Shown once, right after an invite is created. */
@@ -107,7 +201,8 @@ export type PackageCollaboratorInviteCreated = {
 	id: string
 	expiresAt: string
 	inviteeLabel: string
-	preset: PackageCollaboratorPreset
+	/** Null for an advanced invite with an explicit permission list. */
+	preset: PackageCollaboratorPreset | null
 	prompt: string
 }
 
@@ -115,6 +210,8 @@ export type PackageCollaboratorInviteCreated = {
 export type PackageCollaboratorsWriteResult = {
 	ok: true
 	invite?: PackageCollaboratorInviteCreated
+	/** Share-time unmappable-credential warnings; the write still succeeded. */
+	warnings?: Array<string>
 }
 
 /**
@@ -128,10 +225,19 @@ export type PackageCollaboratorsChange =
 			intent: 'grant'
 			subjectType: PackageCollaboratorSubjectType
 			subjectId: string
-			preset: PackageCollaboratorPreset
+			/** Null with `permissions` for an advanced grant. */
+			preset: PackageCollaboratorPreset | null
+			permissions?: Array<PackageCollaboratorPermission>
+			/** Owners only; omitted keeps the grant's current choice. */
+			allowUnmappableCredentialChanges?: boolean
 	  }
 	| { intent: 'revoke'; grantId: string }
-	| { intent: 'invite'; invitee: string; preset: PackageCollaboratorPreset }
+	| {
+			intent: 'invite'
+			invitee: string
+			preset: PackageCollaboratorPreset | null
+			permissions?: Array<PackageCollaboratorPermission>
+	  }
 	| { intent: 'revoke-invite'; inviteId: string }
 
 /** An email address, or a username with or without its leading `@`. */
@@ -159,6 +265,8 @@ export function packageCollaboratorInvitePresetExplanation(
 	preset: PackageCollaboratorPreset,
 ) {
 	switch (preset) {
+		case 'read':
+			return packageCollaboratorReadDescription
 		case 'use':
 			return 'Run it and read the source. They cannot change it.'
 		case 'contribute':
@@ -172,10 +280,15 @@ export function packageCollaboratorInvitePresetExplanation(
 	}
 }
 
+const packageCollaboratorReadDescription =
+	"Read and fork the source into their own Kody. They can't run your package or open your app."
+
 export function packageCollaboratorPresetLabel(
 	preset: PackageCollaboratorPreset,
 ) {
 	switch (preset) {
+		case 'read':
+			return 'Read'
 		case 'use':
 			return 'Use'
 		case 'contribute':
@@ -193,6 +306,9 @@ export function packageCollaboratorPresetDescription(
 	preset: PackageCollaboratorPreset,
 ) {
 	switch (preset) {
+		case 'read':
+			// Rendered with a trailing period, like the other descriptions.
+			return packageCollaboratorReadDescription.replace(/\.$/, '')
 		case 'use':
 			return 'Read the source and run it'
 		case 'contribute':
@@ -216,6 +332,8 @@ export function packageCollaboratorKindLabel(kind: PackageCollaboratorKind) {
 			return 'Org member'
 		case 'outside':
 			return 'Outside collaborator'
+		case 'profile':
+			return 'Agent profile'
 		default: {
 			const exhaustive: never = kind
 			return exhaustive

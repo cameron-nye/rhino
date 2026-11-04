@@ -24,7 +24,10 @@ import {
 	type RequestSource,
 } from '#worker/request-context/request-context.ts'
 import { buildNoEnablementSkipError } from '#worker/enablements/enablement-agent-hints.ts'
-import { ensureOwnerCronEnablementForJob } from '#worker/enablements/owner-cron-enablement.ts'
+import {
+	ensureOwnerCronEnablementForJob,
+	type EnablerCredential,
+} from '#worker/enablements/owner-cron-enablement.ts'
 import {
 	planEnablementRuns,
 	type EnablementSkip,
@@ -676,6 +679,8 @@ export async function syncPackageJobsForPackage(input: {
 	manifest: Awaited<ReturnType<typeof parseAuthoredPackageJson>>
 	/** Publishing person when known; preferred enabler over earliest Owner. */
 	actorUserId?: PersonId
+	/** The publishing person's credential; their job runs stay within it. */
+	actorCredential?: EnablerCredential | null
 }) {
 	return await withAccountWriteLease({
 		db: input.env.APP_DB,
@@ -783,6 +788,7 @@ export async function syncPackageJobsForPackage(input: {
 					jobName: job.name,
 					packageId: input.packageId,
 					enablerUserId: input.actorUserId,
+					enablerCredential: input.actorCredential ?? null,
 					now,
 				})
 			}
@@ -1145,6 +1151,8 @@ export async function updateJob(input: {
 					jobId: updated.id,
 					jobName: updated.name,
 					enablerUserId: callerContext.user.userId,
+					enablerCredential: input.callerContext.request?.credential ?? null,
+					refreshEnablerCredential: existing.enabled === false,
 					now: nowIso,
 					onInserted: (enablement) =>
 						recordEnablementToggle({
@@ -1525,16 +1533,26 @@ export async function runJobNow(input: {
 					from: outcome.finishedAt,
 				}),
 			})
-			// Outcome / schedule only — keep the published package caller context.
-			await jobsData(input.env).updateJob({
+			// Outcome only: the run can take minutes, and saving the row read
+			// before it would undo a turn-off, edit, or publish made meanwhile.
+			await jobsData(input.env).recordJobRunNowOutcome({
 				userId: input.userId,
-				job: updated,
-				callerContextJson: row.callerContextJson,
+				jobId: input.jobId,
+				lastRunAt: outcome.finishedAt,
+				lastRunStatus: updated.lastRunStatus,
+				updatedAt: updated.updatedAt,
+				nextRunAt: updated.nextRunAt,
+				scheduleJson: JSON.stringify(row.record.schedule),
+				timezone: row.record.timezone,
+			})
+			const current = await jobsData(input.env).getJobById({
+				userId: input.userId,
+				jobId: input.jobId,
 			})
 			const job = await hydrateJobViewFromRunLog({
 				env: input.env,
 				userId: input.userId,
-				job: toJobView(updated),
+				job: toJobView(current?.record ?? updated),
 			})
 			return {
 				job,

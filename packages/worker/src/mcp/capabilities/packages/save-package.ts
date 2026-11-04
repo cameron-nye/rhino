@@ -1,3 +1,4 @@
+import { assertProfileCanPublishImports } from '#worker/profiles/publish-imports.ts'
 import {
 	optionalOrgAuditWriter,
 	orgAuditCauseFromCaller,
@@ -338,6 +339,13 @@ export const savePackageCapability = defineDomainCapability(
 					}),
 				)
 			}
+			await assertProfileCanPublishImports({
+				env: ctx.env,
+				request: ctx.callerContext.request,
+				ownerUserId: owner.ownerUserId,
+				packageName: lookupManifest.name,
+				dependencies: lookupManifest.kody.dependencies,
+			})
 			const canonicalExistingSource =
 				existing == null
 					? null
@@ -536,11 +544,15 @@ export const savePackageCapability = defineDomainCapability(
 				baseUrl: ctx.callerContext.baseUrl,
 				userId: owner.ownerUserId,
 				actorUserId: owner.actorUserId,
+				actorCredential: ctx.callerContext.request?.credential ?? null,
 				userEmail: packageOwnerEntitlementEmail(owner),
 				packageId,
 				sourceId: ensuredSource.id,
 				waitUntil: ctx.waitUntil,
 				firstPublish: !existing,
+				creatorUserId: owner.actorUserId,
+				creatorProfileId:
+					ctx.callerContext.request?.credential.profileId ?? null,
 				audit: optionalOrgAuditWriter(
 					ctx.env,
 					ctx.callerContext.request ?? null,

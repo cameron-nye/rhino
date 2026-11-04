@@ -1,4 +1,30 @@
+import {
+	formatLargestNonRuntimePaths,
+	type LargePathHint,
+} from './publish-size-hints.ts'
+
 const heavyWorkOffloadGuideId = 'heavy_work_offload'
+
+const isolatedCheckRunnerLimitPhrase =
+	"exceeded the isolated check runner's memory or CPU limits"
+const authoringCheckRunnerLimitPhrase =
+	'ran out of memory or CPU time in the check runner'
+
+export function isolatedCheckRunnerLimitMessage(phaseLabel: string) {
+	return `${phaseLabel} ${isolatedCheckRunnerLimitPhrase} even on its own.`
+}
+
+export function authoringCheckRunnerLimitLead(where: string) {
+	return `The publish checks ${authoringCheckRunnerLimitPhrase}${where} before they finished.`
+}
+
+/** True for a check result that only says the check runner hit its limits. */
+export function isRepoCheckResourceLimitMessage(message: string) {
+	return (
+		message.includes(isolatedCheckRunnerLimitPhrase) ||
+		message.includes(authoringCheckRunnerLimitPhrase)
+	)
+}
 
 /**
  * Shared advice appended when a throwaway check/rebuild isolate hits a
@@ -56,8 +82,19 @@ const sourceTreeAdvice =
 	'This step reads every non-test .js/.ts module under the package source ' +
 	'root, so its cost grows with the total source size even when the ' +
 	'runtime code is small. Move scripts, fixtures, generated or vendored ' +
-	'code, and examples out of the package source root (or name test-only ' +
-	'modules *.test.ts), then run `kody dev check` again.'
+	'code, and examples out of the package source root, list them in a ' +
+	'`.kodyignore` file next to package.json, or name test-only modules ' +
+	'*.test.ts, then run `kody dev check` again.'
+
+/**
+ * Isolate memory and CPU use is not exactly repeatable: garbage collection
+ * timing and other work sharing the isolate move the peak between runs.
+ */
+export const resourceLimitVarianceNote =
+	'Memory and CPU use vary between runs (garbage collection timing and ' +
+	'other work sharing the isolate), so a tree near the limit can pass on ' +
+	'one attempt and fail on the next. Shrink what the checks read instead ' +
+	'of retrying.'
 
 /** What the author can do when `step` hits the isolate memory/CPU limit. */
 export function repoCheckStepResourceLimitAdvice(step: RepoCheckStep | null) {
@@ -88,9 +125,9 @@ export function repoCheckStepResourceLimitAdvice(step: RepoCheckStep | null) {
 
 /**
  * Caller-facing copy when `packagePublishExternalPush` dies on a Durable
- * Object isolate memory/CPU reset (or DO SQLite SQLITE_NOMEM). Those resets
- * are deterministic for a given package tip, so the publish path must not
- * burn retries as if they were deploy-time code-updated blips.
+ * Object isolate memory/CPU reset (or DO SQLite SQLITE_NOMEM). A tree near
+ * the limit fails most attempts, so the publish path must not burn retries
+ * as if they were deploy-time code-updated blips.
  */
 export function externalPublishResourceLimitMessage(
 	step: RepoCheckStep | null = null,
@@ -101,9 +138,45 @@ export function externalPublishResourceLimitMessage(
 	return (
 		'packagePublishExternalPush hit the Durable Object isolate memory or ' +
 		`CPU limit ${where}, so the publish stopped instead of retrying the ` +
-		'same limit. That limit is deterministic for this package tip. ' +
+		`same limit. ${resourceLimitVarianceNote} ` +
 		`${repoCheckStepResourceLimitAdvice(step)} \`kody dev check\` runs the ` +
 		'same checks under the same limits, so use it to confirm a fix before ' +
 		'publishing again.'
+	)
+}
+
+const publishComputeLimitPhrase = 'exceeded a Kody compute limit'
+
+/**
+ * Caller-facing copy when one publish step, already running in its own
+ * throwaway isolate, still hits the Durable Object CPU time or memory limit.
+ * A plain retry of the same tree usually hits the same limit; this is never
+ * a storage outage. `largestPaths` names what the author could `.kodyignore`.
+ */
+export function publishComputeLimitMessage(
+	step: RepoCheckStep | null = null,
+	largestPaths: Array<LargePathHint> = [],
+) {
+	const where = step ? ` during ${repoCheckStepLabel(step)}` : ''
+	return [
+		`This publish ${publishComputeLimitPhrase} (Durable Object CPU time or ` +
+			`memory)${where}, so it stopped before it finished. This is not a ` +
+			`storage outage. ${resourceLimitVarianceNote}`,
+		repoCheckStepResourceLimitAdvice(step),
+		formatLargestNonRuntimePaths(largestPaths),
+		'`kody dev check` runs the same checks under the same limits, so use ' +
+			'it to confirm a fix before publishing again.',
+	]
+		.filter(Boolean)
+		.join(' ')
+}
+
+/** True for {@link publishComputeLimitMessage} and the external push copy. */
+export function isPublishComputeLimitMessage(message: string) {
+	return (
+		message.includes(publishComputeLimitPhrase) ||
+		message.includes(
+			'packagePublishExternalPush hit the Durable Object isolate memory or CPU limit',
+		)
 	)
 }

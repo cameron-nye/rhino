@@ -17,6 +17,9 @@ module in a local workerd and forwards each `kody:runtime` call through the
 CapabilityProxy. Do **not** use hosted MCP `execute` for agent work when a local
 or Open API path exists.
 
+`--local` runs a pinned workerd on Linux, macOS, and Windows (x64 or arm64;
+Windows on Arm uses the x64 workerd build). No Docker required.
+
 Auth: `--token` / `KODY_API_TOKEN` (`kody_at_…` with `org:execute`; add
 `package:execute` when the module imports `kody:@…`), or when no API token is
 set, the access token from `kody login` (MCP OAuth) as Bearer on CapabilityProxy
@@ -194,9 +197,10 @@ still auth or permission — use the Failure section below. Two workarounds for
 - `insufficient_scope` on a token means it lacks a scope. The error names the
   scope and prints both mint commands with the full list (the token's scopes
   plus the missing one); run one and retry. `--token` and `KODY_API_TOKEN` still
-  win over the stored token, so replace or unset them before retrying. Open API
-  errors carry the same list as `details.mint_scopes`. When your org role lacks
-  the permission (`denial: missing_permission`), a new token cannot help; an org
+  win over the stored token, so replace or unset them before retrying. The error
+  also says which credential was sent (`Credential used: …`). Open API errors
+  carry the same list as `details.mint_scopes`. When your org role lacks the
+  permission (`denial: missing_permission`), a new token cannot help; an org
   Owner has to grant it.
 - **Package-scoped `secretSet` / `secretSetMany` / `secretDelete` are not
   available under `--local`.** Local CapabilityProxy does not attach package
@@ -205,5 +209,8 @@ still auth or permission — use the Failure section below. Two workarounds for
   (`/connect/secret-set`) or Open API `secretSet` with a user scope / outside
   local execute. See [Secrets](./secrets.md#scopes).
 - The module imports `kody:@…`. Keep `--local`.
-- Auth priority for `--local`: `--token` / `KODY_API_TOKEN`, then the stored
-  bootstrap token, then `kody login`.
+- Auth priority for `--local`: `--token` / `KODY_API_TOKEN`, then the stored API
+  token, then `kody login`. `kody whoami` reports the same credential.
+  `kody login` does not replace a stored API token; replace it with
+  `npx @kodycodes/cli auth bootstrap --lifetime short --scopes <list>` or clear
+  it with `kody logout`.

@@ -176,7 +176,7 @@ async function setup() {
 	return { fetchInExecution, takeFlagReads }
 }
 
-test('fetches in one execution read each flag and org owner once; a new execution reads again', async () => {
+test('fetches in one execution read each flag and org owner once; a new execution rereads execution-scoped flags', async () => {
 	const t = await setup()
 	t.takeFlagReads()
 
@@ -185,14 +185,17 @@ test('fetches in one execution read each flag and org owner once; a new executio
 	expect(firstFetch.map((query) => query.match(/FROM (\w+)/)?.[1])).toEqual([
 		'feature_flags',
 		'org_memberships',
+		// Supplier flag: owner lookup, then one batch (global, user, org).
+		'feature_flags',
 		'feature_flag_user_overrides',
 		'feature_flag_org_overrides',
-		'feature_flags',
 	])
 	await t.fetchInExecution('execution-1')
 	await t.fetchInExecution('execution-1')
 	expect(t.takeFlagReads()).toEqual([])
 
+	// The supplier flag is reused across executions for its 15 s org TTL, so
+	// only the execution-scoped global flag read repeats.
 	await t.fetchInExecution('execution-2')
-	expect(t.takeFlagReads()).toEqual(firstFetch)
+	expect(t.takeFlagReads()).toEqual(firstFetch.slice(0, 1))
 })

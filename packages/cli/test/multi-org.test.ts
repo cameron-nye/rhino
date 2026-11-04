@@ -11,6 +11,7 @@ import { runCli } from '../src/cli.js'
 import { orgEnvVar, resolveOrgSlug } from '../src/org-resolve.js'
 import {
 	createFileBackend,
+	createKeyringBackend,
 	deleteCredentials,
 	listStoredOrgs,
 	loadCredentialStore,
@@ -276,12 +277,25 @@ test('promotePendingOrg does not overwrite a fresh named login or steal activeOr
 	assert.equal(afterSame?.orgs.acme?.accessToken, 'fresh-acme')
 })
 
+function clearKeyring() {
+	try {
+		createKeyringBackend(mcpUrl).delete()
+	} catch {
+		// No OS keyring here (headless Linux): the CLI uses the file store.
+	}
+}
+
 test('kody org list and org use work for agents', async () => {
 	const dir = mkdtempSync(join(tmpdir(), 'kody-org-cli-'))
 	const previousHome = process.env.HOME
 	const previousXdg = process.env.XDG_CONFIG_HOME
+	const previousAppData = process.env.APPDATA
 	process.env.HOME = dir
 	process.env.XDG_CONFIG_HOME = dir
+	process.env.APPDATA = dir
+	// Windows Credential Manager (and macOS Keychain) are per-user, not per
+	// HOME: clear any entry an earlier test left so the CLI reads this file.
+	clearKeyring()
 	try {
 		const { fileStorePath } = await import('../src/store.js')
 		const backend = createFileBackend(fileStorePath(mcpUrl, dir))
@@ -314,12 +328,16 @@ test('kody org list and org use work for agents', async () => {
 		})
 		assert.equal(useCode, 0, stdout)
 		assert.match(stdout, /Active org is now acme/)
-		assert.equal(loadCredentials(mcpUrl, backend)?.org, 'acme')
+		// The CLI may move the store into the OS keyring when it writes.
+		assert.equal(loadCredentials(mcpUrl)?.org, 'acme')
 	} finally {
+		clearKeyring()
 		if (previousHome === undefined) delete process.env.HOME
 		else process.env.HOME = previousHome
 		if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME
 		else process.env.XDG_CONFIG_HOME = previousXdg
+		if (previousAppData === undefined) delete process.env.APPDATA
+		else process.env.APPDATA = previousAppData
 	}
 })
 

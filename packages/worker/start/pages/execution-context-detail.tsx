@@ -3,7 +3,11 @@ import { css } from '@emotion/react'
 import { useQuery } from '@tanstack/react-query'
 import { useRefreshExecutionContextsPage } from '../execution-contexts-query.ts'
 import { useRef, useState } from 'react'
+import { useRouter } from '@tanstack/react-router'
+import { orgResourcePath } from '#universal/org-pages.ts'
 import {
+	cancelExecutionContextRun,
+	deleteExecutionContext,
 	loadExecutionContextAudit,
 	loadExecutionContextRuns,
 	optIntoExecutionContext,
@@ -11,6 +15,7 @@ import {
 	removeExecutionContextShare,
 	setExecutionChain,
 	shareExecutionContext,
+	turnOffExecutionContextCommands,
 } from '#start/server/execution-contexts'
 import {
 	optInCopy,
@@ -31,7 +36,9 @@ import {
 	chainHasCloud,
 	chainIsFull,
 	chainPosition,
+	commandAuditSummary,
 	contextDisplayStatus,
+	daemonRunsAsLabel,
 	displayStatusLabel,
 	durationLabel,
 	grantSummaryDetail,
@@ -44,10 +51,9 @@ import {
 	unusableReasonCopy,
 } from '#universal/execution-contexts.ts'
 import {
-	getDangerButtonCss,
+	getDangerPillCss,
 	getGhostButtonCss,
 	getPillButtonCss,
-	getSecondaryButtonCss,
 } from '#universal/styles/style-primitives.ts'
 import { colors, radius, spacing } from '#universal/styles/tokens.ts'
 import { UndoToast } from '../components/undo-toast.tsx'
@@ -58,6 +64,10 @@ import {
 } from './account-management-components.tsx'
 import { selectCss } from './package-collaborators-parts.tsx'
 import { recordBodyCss } from './record-table.tsx'
+import {
+	formatTimestamp,
+	formatTimestampDate,
+} from '../components/local-timestamp.tsx'
 
 const sectionCss = css({ display: 'grid', gap: spacing.sm })
 const mutedCss = css({ color: colors.textMuted, margin: 0 })
@@ -138,11 +148,11 @@ export function ExecutionContextDetail(props: {
 				<dt>Status</dt>
 				<dd data-testid="context-status">
 					{displayStatusLabel(status)}
-					{context.status === 'revoked' && context.revokedAt
-						? `, ${new Date(context.revokedAt).toLocaleDateString()}`
-						: context.lastSeenAt && status === 'offline'
-							? `, last seen ${new Date(context.lastSeenAt).toLocaleString()}`
-							: null}
+					{context.status === 'revoked' && context.revokedAt ? (
+						<>, {formatTimestampDate(context.revokedAt)}</>
+					) : context.lastSeenAt && status === 'offline' ? (
+						<>, last seen {formatTimestamp(context.lastSeenAt)}</>
+					) : null}
 				</dd>
 				<dt>Operator</dt>
 				<dd>{context.isOperator ? 'You' : `@${context.operator.handle}`}</dd>
@@ -158,11 +168,70 @@ export function ExecutionContextDetail(props: {
 				</dd>
 				<dt>Exposes</dt>
 				<dd>{grantSummaryDetail(context.grantSummary)}</dd>
-				{context.client ? (
+				{context.client?.version ? (
 					<>
-						<dt>Client</dt>
-						<dd>
+						<dt>Daemon</dt>
+						<dd data-testid="context-daemon-version">
 							{context.client.name} {context.client.version}
+							{context.client.outdated && context.client.latestVersion ? (
+								<span css={outdatedCss} data-testid="context-daemon-outdated">
+									Outdated: {context.client.latestVersion} is out. Run{' '}
+									<code>kody update</code> on the machine
+								</span>
+							) : null}
+						</dd>
+						<dt>Auto-update</dt>
+						<dd data-testid="context-daemon-auto-update">
+							{context.capabilities?.autoUpdate === 'on'
+								? 'On'
+								: context.capabilities?.autoUpdate === 'off'
+									? 'Off'
+									: 'Not reported'}
+							{context.isOperator && context.status !== 'revoked' ? (
+								<span css={hintCss}>
+									{context.capabilities?.autoUpdate === 'on' ? (
+										<>
+											Moves onto new CLI versions after runs finish. Turn it off
+											on the machine with{' '}
+											<code>kody daemon auto-update off</code>
+										</>
+									) : context.capabilities?.autoUpdate === 'off' ? (
+										<>
+											Turn it on on the machine with{' '}
+											<code>kody daemon auto-update on</code>
+										</>
+									) : (
+										<>
+											This daemon predates auto-update. Restart it once (or run{' '}
+											<code>kody update</code>) and it stays current
+										</>
+									)}
+								</span>
+							) : null}
+						</dd>
+						<dt>Runs as</dt>
+						<dd data-testid="context-daemon-service">
+							{daemonRunsAsLabel(context.capabilities?.service, context.status)}
+							{context.isOperator &&
+							!context.capabilities?.service &&
+							context.status !== 'revoked' ? (
+								<span css={hintCss}>
+									{context.status === 'offline' ? (
+										<>
+											Run{' '}
+											<code>kody daemon install --context {context.id}</code> to
+											keep it running
+										</>
+									) : (
+										<>
+											To keep it running, wait for in-flight runs to finish,
+											stop the terminal daemon (Ctrl+C), then run:
+											<br />
+											<code>kody daemon install --context {context.id}</code>
+										</>
+									)}
+								</span>
+							) : null}
 						</dd>
 					</>
 				) : null}
@@ -183,11 +252,291 @@ export function ExecutionContextDetail(props: {
 					})}
 				</AccountManagementMessage>
 			) : null}
+			<CommandsPanel orgSlug={orgSlug} context={context} onChanged={refresh} />
 			<OptInControls {...props} onChanged={refresh} />
 			{context.sharing ? <SharingPanel {...props} onChanged={refresh} /> : null}
 			<RunHistory orgSlug={orgSlug} context={context} nameForId={nameForId} />
 			<AuditLog orgSlug={orgSlug} context={context} />
+			<DeleteControls orgSlug={orgSlug} context={context} onDeleted={refresh} />
 		</div>
+	)
+}
+
+function DeleteControls(props: {
+	orgSlug: string
+	context: ExecutionContextListItem
+	onDeleted: () => void
+}) {
+	const { context } = props
+	const router = useRouter()
+	const dialog = useRef<HTMLDialogElement>(null)
+	const [busy, setBusy] = useState(false)
+	const [error, setError] = useState<string | null>(null)
+	const ownedHere = context.ownerOrg.slug === props.orgSlug
+	if (context.status !== 'revoked' || !context.canAddShares || !ownedHere) {
+		return null
+	}
+
+	async function remove() {
+		setBusy(true)
+		setError(null)
+		const result = (await deleteExecutionContext({
+			data: { orgSlug: props.orgSlug, contextId: context.id },
+		}).catch(() => unexpectedFailure)) as { ok: true } | Failure
+		setBusy(false)
+		if (!result.ok) return setError(failureText(result))
+		dialog.current?.close()
+		await router.navigate({
+			to: orgResourcePath(props.orgSlug, 'execution-contexts'),
+			resetScroll: false,
+		})
+		props.onDeleted()
+	}
+
+	return (
+		<section
+			css={sectionCss}
+			aria-labelledby="context-delete-title"
+			data-testid="context-delete"
+		>
+			<h3 id="context-delete-title" css={{ margin: 0 }}>
+				Delete
+			</h3>
+			<p css={mutedCss}>
+				This context is revoked. Deleting it removes it from this list for good.
+				Past runs keep its name in their history.
+			</p>
+			<div>
+				<button
+					type="button"
+					data-testid="context-delete-open"
+					css={getDangerPillCss({ size: 'sm' })}
+					onClick={() => {
+						setError(null)
+						dialog.current?.showModal()
+					}}
+				>
+					Delete context
+				</button>
+			</div>
+			<dialog
+				ref={dialog}
+				css={dialogCss}
+				aria-labelledby="context-delete-dialog-title"
+				data-testid="context-delete-dialog"
+			>
+				<h2 id="context-delete-dialog-title" css={{ marginTop: 0 }}>
+					Delete {context.name}?
+				</h2>
+				<p>
+					This permanently deletes {context.name} and removes it from every
+					chain, share and org it was in. You cannot undo this. Past runs still
+					show it in their history.
+				</p>
+				{error ? (
+					<AccountManagementMessage tone="error">
+						{error}
+					</AccountManagementMessage>
+				) : null}
+				<div css={{ display: 'flex', gap: spacing.sm, justifyContent: 'end' }}>
+					<button
+						type="button"
+						css={getGhostButtonCss({ size: 'sm' })}
+						onClick={() => dialog.current?.close()}
+					>
+						Cancel
+					</button>
+					<button
+						type="button"
+						data-testid="context-delete-confirm"
+						css={getDangerPillCss({ size: 'sm' })}
+						disabled={busy}
+						onClick={() => void remove()}
+					>
+						{busy ? 'Deleting…' : 'Delete permanently'}
+					</button>
+				</div>
+			</dialog>
+		</section>
+	)
+}
+
+/** Host commands (ADR 0093): shows the machine opt-in and the off switch. */
+function CommandsPanel(props: {
+	orgSlug: string
+	context: ExecutionContextListItem
+	onChanged: () => void
+}) {
+	const { context } = props
+	const [busy, setBusy] = useState(false)
+	const [error, setError] = useState<string | null>(null)
+	const [confirming, setConfirming] = useState(false)
+	if (context.status === 'revoked') return null
+	const on = context.grantSummary.commands === true
+	const canTurnOff =
+		context.isOperator || context.myPermissions.includes('write')
+	const canRun = context.myPermissions.includes('command')
+
+	async function turnOff() {
+		setBusy(true)
+		setError(null)
+		try {
+			const result = (await turnOffExecutionContextCommands({
+				data: { orgSlug: props.orgSlug, contextId: context.id },
+			})) as { ok: true } | Failure
+			if (!result.ok) {
+				setError(failureText(result))
+				return
+			}
+			setConfirming(false)
+			props.onChanged()
+		} catch {
+			setError(unexpectedErrorText)
+		} finally {
+			setBusy(false)
+		}
+	}
+
+	return (
+		<section
+			css={[
+				sectionCss,
+				{
+					border: `1px solid ${colors.border}`,
+					borderRadius: radius.lg,
+					padding: spacing.md,
+				},
+			]}
+			aria-labelledby="context-commands-title"
+			data-testid="context-commands"
+		>
+			<div
+				css={{
+					display: 'flex',
+					flexWrap: 'wrap',
+					gap: spacing.sm,
+					alignItems: 'center',
+					justifyContent: 'space-between',
+				}}
+			>
+				<h2 id="context-commands-title" css={{ margin: 0, fontSize: '1rem' }}>
+					Host commands
+				</h2>
+				<span
+					role="switch"
+					aria-checked={on}
+					aria-readonly
+					aria-labelledby="context-commands-title"
+					data-testid="context-commands-state"
+					css={{
+						display: 'inline-flex',
+						alignItems: 'center',
+						gap: spacing.xs,
+						fontWeight: 600,
+						color: on ? colors.text : colors.textMuted,
+					}}
+				>
+					<span
+						aria-hidden
+						css={{
+							width: 36,
+							height: 20,
+							borderRadius: 999,
+							background: on ? colors.primary : colors.borderSubtle,
+							border: `1px solid ${on ? colors.primary : colors.border}`,
+							position: 'relative',
+							'&::after': {
+								content: '""',
+								position: 'absolute',
+								top: 2,
+								left: on ? 18 : 2,
+								width: 14,
+								height: 14,
+								borderRadius: 999,
+								background: colors.surface,
+							},
+						}}
+					/>
+					{on ? 'On' : 'Off'}
+				</span>
+			</div>
+			{on ? (
+				<p css={mutedCss}>
+					Runs on {context.name} that have the command grant can run any shell
+					command as{' '}
+					{context.isOperator ? 'your' : `@${context.operator.handle}'s`} user
+					account on that machine, with no approval per command. Every command
+					is recorded in the audit log below.{' '}
+					{canRun
+						? 'You have the command grant here.'
+						: 'You do not have the command grant here.'}
+				</p>
+			) : (
+				<p css={mutedCss}>
+					Runs on {context.name} cannot run shell commands.
+					{context.isOperator ? (
+						<>
+							{' '}
+							Only the machine can turn them on: run{' '}
+							<code>
+								kody context commands on --context {context.name}
+							</code>{' '}
+							there, or choose Machine › Allow commands in the Kody desktop app.
+						</>
+					) : null}
+				</p>
+			)}
+			{error ? (
+				<AccountManagementMessage tone="error">
+					{error}
+				</AccountManagementMessage>
+			) : null}
+			{on && canTurnOff ? (
+				confirming ? (
+					<div
+						css={{
+							display: 'flex',
+							flexWrap: 'wrap',
+							gap: spacing.sm,
+							alignItems: 'center',
+						}}
+					>
+						<span>
+							Turn off commands? Background commands stop right away. Turning
+							them back on needs the machine.
+						</span>
+						<button
+							type="button"
+							css={getDangerPillCss({ size: 'sm' })}
+							disabled={busy}
+							onClick={() => void turnOff()}
+							data-testid="context-commands-off-confirm"
+						>
+							{busy ? 'Turning off…' : 'Turn off'}
+						</button>
+						<button
+							type="button"
+							css={getGhostButtonCss({ size: 'sm' })}
+							disabled={busy}
+							onClick={() => setConfirming(false)}
+						>
+							Cancel
+						</button>
+					</div>
+				) : (
+					<div>
+						<button
+							type="button"
+							css={getDangerPillCss({ size: 'sm' })}
+							onClick={() => setConfirming(true)}
+							data-testid="context-commands-off"
+						>
+							Turn off commands
+						</button>
+					</div>
+				)
+			) : null}
+		</section>
 	)
 }
 
@@ -308,14 +657,14 @@ function OptInControls(props: {
 							</span>
 							<button
 								type="button"
-								css={[getDangerButtonCss(), target]}
+								css={getDangerPillCss({ size: 'sm' })}
 								onClick={optOut}
 							>
 								Confirm leave
 							</button>
 							<button
 								type="button"
-								css={[getGhostButtonCss({ size: 'sm' }), target]}
+								css={getGhostButtonCss({ size: 'sm' })}
 								onClick={() => setConfirmLeave(false)}
 							>
 								Cancel
@@ -324,7 +673,7 @@ function OptInControls(props: {
 					) : (
 						<button
 							type="button"
-							css={[getSecondaryButtonCss(), target]}
+							css={getGhostButtonCss({ size: 'sm' })}
 							onClick={() => (inChain ? setConfirmLeave(true) : optOut())}
 						>
 							Leave
@@ -340,7 +689,7 @@ function OptInControls(props: {
 					<button
 						type="button"
 						data-testid="context-opt-in"
-						css={[getPillButtonCss({ size: 'sm' }), target]}
+						css={getPillButtonCss({ size: 'sm' })}
 						onClick={() => {
 							setAddToChain(false)
 							setError(null)
@@ -390,14 +739,14 @@ function OptInControls(props: {
 				<div css={{ display: 'flex', gap: spacing.sm, justifyContent: 'end' }}>
 					<button
 						type="button"
-						css={[getGhostButtonCss({ size: 'sm' }), target]}
+						css={getGhostButtonCss({ size: 'sm' })}
 						onClick={() => dialog.current?.close()}
 					>
 						Cancel
 					</button>
 					<button
 						type="button"
-						css={[getPillButtonCss({ size: 'sm' }), target]}
+						css={getPillButtonCss({ size: 'sm' })}
 						disabled={busy}
 						onClick={() => void optIn()}
 					>
@@ -433,6 +782,7 @@ function SharingPanel(props: {
 	const [kind, setKind] = useState<'user' | 'team' | 'org'>('user')
 	const [value, setValue] = useState('')
 	const [preset, setPreset] = useState<ExecutionContextPreset>('use')
+	const [commands, setCommands] = useState(false)
 	const [confirmRemove, setConfirmRemove] = useState<string | null>(null)
 	const [error, setError] = useState<string | null>(null)
 	const [busy, setBusy] = useState(false)
@@ -451,11 +801,13 @@ function SharingPanel(props: {
 							? { kind, slug: value }
 							: { kind },
 				preset,
+				commands: kind !== 'org' && commands,
 			},
 		}).catch(() => unexpectedFailure)) as { ok: true } | Failure
 		setBusy(false)
 		if (!result.ok) return setError(failureText(result))
 		setValue('')
+		setCommands(false)
 		props.onChanged()
 	}
 
@@ -507,14 +859,14 @@ function SharingPanel(props: {
 							</span>{' '}
 							<button
 								type="button"
-								css={[getDangerButtonCss(), target]}
+								css={getDangerPillCss({ size: 'sm' })}
 								onClick={() => void stopSharingWithEveryone()}
 							>
 								Stop sharing
 							</button>{' '}
 							<button
 								type="button"
-								css={[getGhostButtonCss({ size: 'sm' }), target]}
+								css={getGhostButtonCss({ size: 'sm' })}
 								onClick={() => setConfirmRemove(null)}
 							>
 								Cancel
@@ -523,7 +875,7 @@ function SharingPanel(props: {
 					) : (
 						<button
 							type="button"
-							css={[getGhostButtonCss({ size: 'sm' }), target]}
+							css={getGhostButtonCss({ size: 'sm' })}
 							onClick={() => setConfirmRemove(allMembersKey)}
 						>
 							Remove
@@ -542,7 +894,8 @@ function SharingPanel(props: {
 				>
 					{sharing.grants.map((grant) => (
 						<li key={grant.grantId}>
-							{subjectLabel(grant)}, {presetLabels[grant.preset]}{' '}
+							{subjectLabel(grant)}, {presetLabels[grant.preset]}
+							{grant.commands ? ' + host commands' : ''}{' '}
 							{confirmRemove === grant.grantId ? (
 								<>
 									<span css={mutedCss}>
@@ -550,14 +903,14 @@ function SharingPanel(props: {
 									</span>{' '}
 									<button
 										type="button"
-										css={[getDangerButtonCss(), target]}
+										css={getDangerPillCss({ size: 'sm' })}
 										onClick={() => void remove(grant.grantId)}
 									>
 										Stop sharing
 									</button>{' '}
 									<button
 										type="button"
-										css={[getGhostButtonCss({ size: 'sm' }), target]}
+										css={getGhostButtonCss({ size: 'sm' })}
 										onClick={() => setConfirmRemove(null)}
 									>
 										Cancel
@@ -566,7 +919,7 @@ function SharingPanel(props: {
 							) : (
 								<button
 									type="button"
-									css={[getGhostButtonCss({ size: 'sm' }), target]}
+									css={getGhostButtonCss({ size: 'sm' })}
 									onClick={() => setConfirmRemove(grant.grantId)}
 								>
 									Remove
@@ -643,9 +996,27 @@ function SharingPanel(props: {
 								))}
 							</select>
 						</label>
+						{kind !== 'org' ? (
+							<label
+								css={{
+									display: 'flex',
+									alignItems: 'center',
+									gap: spacing.sm,
+									minHeight: 44,
+								}}
+							>
+								<input
+									type="checkbox"
+									checked={commands}
+									onChange={(event) => setCommands(event.target.checked)}
+									data-testid="context-share-commands"
+								/>
+								Also allow host commands
+							</label>
+						) : null}
 						<button
 							type="submit"
-							css={[getPillButtonCss({ size: 'sm' }), target]}
+							css={getPillButtonCss({ size: 'sm' })}
 							disabled={busy}
 						>
 							Share
@@ -711,6 +1082,20 @@ function RunHistory(props: {
 	const runs = ok.flatMap((page) => page.runs)
 	const last = ok.at(-1)
 	const manager = ok[0]?.scope === 'all'
+	const [confirmCancel, setConfirmCancel] = useState<string | null>(null)
+	const [cancelling, setCancelling] = useState<string | null>(null)
+	const [cancelError, setCancelError] = useState<string | null>(null)
+	async function cancelRun(runId: string) {
+		setConfirmCancel(null)
+		setCancelling(runId)
+		setCancelError(null)
+		const result = (await cancelExecutionContextRun({
+			data: { orgSlug: props.orgSlug, contextId: props.context.id, runId },
+		}).catch(() => unexpectedFailure)) as { ok: true } | Failure
+		setCancelling(null)
+		if (!result.ok) setCancelError(failureText(result))
+		await pages.refetch()
+	}
 	return (
 		<section
 			css={sectionCss}
@@ -764,6 +1149,11 @@ function RunHistory(props: {
 					{failureText(failed)}
 				</AccountManagementMessage>
 			) : null}
+			{cancelError ? (
+				<AccountManagementMessage tone="error">
+					{cancelError}
+				</AccountManagementMessage>
+			) : null}
 			{pages.isPending ? (
 				<p css={mutedCss}>Loading runs…</p>
 			) : runs.length === 0 && !failed ? (
@@ -783,13 +1173,32 @@ function RunHistory(props: {
 						<tbody>
 							{runs.map((run) => (
 								<tr key={`${run.runId}:${run.dispatchedAt}`}>
-									<td>{new Date(run.dispatchedAt).toLocaleString()}</td>
+									<td>{formatTimestamp(run.dispatchedAt)}</td>
 									<td>@{run.requester.handle}</td>
 									<td>{durationLabel(run.durationMs)}</td>
 									<td>
-										{run.outcome
-											? runOutcomeLabels[run.outcome]
-											: 'In progress'}
+										{run.outcome ? (
+											runOutcomeLabels[run.outcome]
+										) : (
+											<span
+												css={{
+													display: 'flex',
+													flexWrap: 'wrap',
+													alignItems: 'center',
+													gap: spacing.sm,
+												}}
+											>
+												In progress
+												<RunCancelControl
+													runId={run.runId}
+													cancelling={cancelling === run.runId}
+													confirming={confirmCancel === run.runId}
+													onAsk={() => setConfirmCancel(run.runId)}
+													onConfirm={() => void cancelRun(run.runId)}
+													onKeep={() => setConfirmCancel(null)}
+												/>
+											</span>
+										)}
 									</td>
 									<td>
 										{runFallbackLabel({
@@ -808,7 +1217,7 @@ function RunHistory(props: {
 				<div>
 					<button
 						type="button"
-						css={[getSecondaryButtonCss(), target]}
+						css={getGhostButtonCss({ size: 'sm' })}
 						onClick={() =>
 							setCursors([...cursors, last.nextCursor ?? undefined])
 						}
@@ -818,6 +1227,48 @@ function RunHistory(props: {
 				</div>
 			) : null}
 		</section>
+	)
+}
+
+/** Cancel for an in-progress run, with a confirm step before it stops. */
+export function RunCancelControl(props: {
+	runId: string
+	cancelling: boolean
+	confirming: boolean
+	onAsk: () => void
+	onConfirm: () => void
+	onKeep: () => void
+}) {
+	if (props.cancelling) return <span css={mutedCss}>Cancelling…</span>
+	if (props.confirming) {
+		return (
+			<>
+				<button
+					type="button"
+					css={getGhostButtonCss({ size: 'sm' })}
+					onClick={props.onConfirm}
+				>
+					Stop run
+				</button>
+				<button
+					type="button"
+					css={getGhostButtonCss({ size: 'sm' })}
+					onClick={props.onKeep}
+				>
+					Keep running
+				</button>
+			</>
+		)
+	}
+	return (
+		<button
+			type="button"
+			css={getGhostButtonCss({ size: 'sm' })}
+			aria-label={`Cancel run ${props.runId}`}
+			onClick={props.onAsk}
+		>
+			Cancel
+		</button>
 	)
 }
 
@@ -887,9 +1338,15 @@ function AuditLog(props: {
 						<li key={event.id}>
 							{auditEventLabel(event.action)}
 							{event.actor ? ` by ${event.actor.label}` : ''},{' '}
-							<time dateTime={event.at}>
-								{new Date(event.at).toLocaleString()}
-							</time>
+							<time dateTime={event.at}>{formatTimestamp(event.at)}</time>
+							{commandAuditSummary(event.detail) ? (
+								<>
+									{': '}
+									<code css={{ overflowWrap: 'anywhere' }}>
+										{commandAuditSummary(event.detail)}
+									</code>
+								</>
+							) : null}
 						</li>
 					))}
 				</ul>
@@ -898,7 +1355,7 @@ function AuditLog(props: {
 				<div>
 					<button
 						type="button"
-						css={[getSecondaryButtonCss(), target]}
+						css={getGhostButtonCss({ size: 'sm' })}
 						onClick={() =>
 							setCursors([...cursors, last.nextCursor ?? undefined])
 						}
@@ -910,3 +1367,16 @@ function AuditLog(props: {
 		</section>
 	)
 }
+
+const outdatedCss = css({
+	display: 'block',
+	marginTop: spacing.xs,
+	color: colors.warningText,
+	fontWeight: 600,
+})
+
+const hintCss = css({
+	display: 'block',
+	marginTop: spacing.xs,
+	color: colors.textMuted,
+})

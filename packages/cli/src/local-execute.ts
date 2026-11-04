@@ -1,7 +1,24 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import {
+	createEgressGateSource,
+	egressGateModuleName,
+	egressNeedsPrivateNetwork,
+	localExecuteEgressPolicy,
+	type LocalEgressPolicy,
+} from './local-egress.js'
 import { randomBytes } from 'node:crypto'
 import { rmSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { type EffectiveFs } from './execution-context/fs-access.js'
+import {
+	type HostFsRequest,
+	handleHostFsRequest,
+} from './execution-context/host-fs-bridge.js'
+import {
+	createHostFsPromisesSource,
+	createHostFsSource,
+	hostFsShimModules,
+} from './host-fs-shim.js'
 import { request as httpRequest, type IncomingMessage } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -53,6 +70,8 @@ import {
 import { redact } from './redact.js'
 import { type ToolCallResult } from './tool-result.js'
 import { ensureWorkerdBinary } from './workerd-binary.js'
+import { raiseSignal } from './process-tree.js'
+import { type PackageGraphCacheSlot } from './execution-context/package-graph-cache.js'
 import { type LocalWorkerTracker } from './execution-context/worker-tracker.js'
 
 export {
@@ -61,8 +80,20 @@ export {
 	localPackageGraphPlatformIssueUrl,
 } from './local-package-graph.js'
 
+export type LocalExecuteTiming = {
+	/** Package-graph fetch (0 when served from the daemon's cache). */
+	packageGraphMs: number
+	packageGraphCached: boolean
+	/** From the start of the run until the module was ready in workerd. */
+	setupMs: number
+	executeMs: number
+}
+
 export type LocalExecuteInput = {
 	code: string
+	/** Daemon-scoped package-graph cache slot for this module and requester. */
+	packageGraphCache?: PackageGraphCacheSlot
+	onTiming?: (timing: LocalExecuteTiming) => void
 	/**
 	 * `--file` path when that file supplied `code`.
 	 * Bundled (relative + npm imports; `kody:*` external) before `main.js` is
@@ -96,6 +127,11 @@ export type LocalExecuteInput = {
 	workerdPath?: string
 	allowPrivateNetwork?: boolean
 	/**
+	 * Outbound network policy (execution-context runs pass the grant's egress).
+	 * Defaults to public-only, or public + LAN with `allowPrivateNetwork`.
+	 */
+	egress?: LocalEgressPolicy
+	/**
 	 * Hosts that may hit the real network under --target mock when
 	 * `.kody/mocks.ts` is active (never carries real secrets).
 	 */
@@ -107,6 +143,23 @@ export type LocalExecuteInput = {
 	onStatus?: (message: string) => void
 	/** Aborting kills workerd and ends the run with a cancelled error. */
 	signal?: AbortSignal
+	/**
+	 * Execution-context host folders (server grant ∩ local policy). When the
+	 * grant names any folder, `node:fs` resolves through the bridge-backed shim.
+	 */
+	/** Current host folders (server grant ∩ local policy), checked on every host fs call. */
+	hostFs?: () => EffectiveFs
+	/**
+	 * Serves `kody.command.<name>` on an execution context (ADR 0093).
+	 * `authorize` asks Kody (grant + opt-in + audit) before a process starts.
+	 * Absent: the call goes to Kody, which says commands need a context.
+	 */
+	hostCommands?: (call: {
+		name: string
+		args: unknown
+		signal: AbortSignal
+		authorize: (input: Record<string, unknown>) => Promise<void>
+	}) => Promise<unknown>
 	/** Told about the workerd process so a daemon can reap it after a crash. */
 	workerTracker?: LocalWorkerTracker
 }
@@ -170,6 +223,7 @@ export async function runLocalExecute(
 	assertLocalExecuteNodeEngine()
 	assertTokenSafeApiUrl(input.apiUrl)
 	const setupStartedAt = new Date()
+	const setupStartedMs = performance.now()
 	const cancelledDuringSetup = () =>
 		buildLocalExecuteResult({
 			sandbox: { error: cancelledError },
@@ -215,24 +269,33 @@ export async function runLocalExecute(
 	// Always fetch package-graph: origin returns the gateway-fetch shim even
 	// when there are no `kody:@` imports so ambient `{{secret:…}}` fetch hops
 	// (or fails closed) instead of sending a raw placeholder (kody#3020).
+	const importsSavedPackages = await hasSavedPackageImports(code)
 	input.onStatus?.(
-		(await hasSavedPackageImports(code))
+		importsSavedPackages
 			? savedPackageImportLocalResolveStatus
 			: localExecutePackageGraphResolveStatus,
 	)
 	if (input.signal?.aborted) return cancelledDuringSetup()
-	const packageGraph = await untilAborted(
-		resolveLocalPackageGraph({
-			...client,
-			code,
-			conversationId: input.conversationId,
-			...(input.depResolve ? { depResolve: input.depResolve } : {}),
-			...(input.packageRoot ? { packageRoot: input.packageRoot } : {}),
-			onStatus: input.onStatus,
-		}),
-		input.signal,
-	)
+	const graphStartedMs = performance.now()
+	// Saved package code is re-fetched every run so package access is re-checked.
+	const graphCache = importsSavedPackages ? undefined : input.packageGraphCache
+	const cachedGraph = graphCache?.get()
+	const packageGraph =
+		cachedGraph ??
+		(await untilAborted(
+			resolveLocalPackageGraph({
+				...client,
+				code,
+				conversationId: input.conversationId,
+				...(input.depResolve ? { depResolve: input.depResolve } : {}),
+				...(input.packageRoot ? { packageRoot: input.packageRoot } : {}),
+				onStatus: input.onStatus,
+			}),
+			input.signal,
+		))
 	if (packageGraph === setupCancelled) return cancelledDuringSetup()
+	if (!cachedGraph) graphCache?.set(packageGraph)
+	const packageGraphMs = performance.now() - graphStartedMs
 
 	const workerdPath =
 		input.workerdPath ??
@@ -267,9 +330,51 @@ export async function runLocalExecute(
 			allowPrivateNetwork: input.allowPrivateNetwork,
 			onStatus: input.onStatus,
 		})
+		const startFs = input.hostFs?.()
+		const hostFs =
+			input.hostFs &&
+			startFs &&
+			(startFs.mounts.length > 0 || startFs.grantRoots.length > 0)
+				? input.hostFs
+				: undefined
 		bridge = await startLocalRuntimeBridge({
 			runSecret,
 			forwardCall: async (call, signal) => {
+				if (
+					call.path.length === 3 &&
+					call.path[0] === 'kody' &&
+					call.path[1] === 'command' &&
+					call.path[2] === 'authorize'
+				) {
+					// Only the daemon's own hop (below) may authorize, so run code
+					// cannot write command_started rows for commands that never ran.
+					throw new Error(
+						'kody.command.authorize is internal; call kody.command.run or kody.command.start. (invalid_request)',
+					)
+				}
+				const hostCommands = input.hostCommands
+				if (
+					hostCommands &&
+					call.path.length === 3 &&
+					call.path[0] === 'kody' &&
+					call.path[1] === 'command' &&
+					call.path[2] !== 'authorize'
+				) {
+					return await hostCommands({
+						name: call.path[2] as string,
+						args: call.args[0],
+						signal,
+						authorize: async (authorizeInput) => {
+							await callCapabilityProxy({
+								...client,
+								path: ['kody', 'command', 'authorize'],
+								args: [authorizeInput],
+								conversationId: input.conversationId,
+								signal,
+							})
+						},
+					})
+				}
 				const mocked = tryHandleMockGatewayFetchCall({
 					gateway: mockFetchGateway,
 					path: call.path,
@@ -288,6 +393,12 @@ export async function runLocalExecute(
 					signal,
 				})
 			},
+			...(hostFs
+				? {
+						forwardHostFs: async (body: unknown) =>
+							await handleHostFsRequest(hostFs(), body as HostFsRequest),
+					}
+				: {}),
 			forwardGatewayFetchStream: async ({ request, response, signal }) => {
 				await forwardLocalGatewayFetchStream({
 					request,
@@ -311,6 +422,23 @@ export async function runLocalExecute(
 			packageModules = installed.packageModules
 			gatewayFetchShimModules = installed.sideEffectModules
 		}
+		if (hostFs) {
+			const routeRoots = [
+				...new Set([
+					...startFs!.mounts.map((mount) => mount.path),
+					...startFs!.grantRoots,
+				]),
+			]
+			await writeFile(
+				join(workDir, hostFsShimModules[0].file),
+				createHostFsSource(),
+			)
+			await writeFile(
+				join(workDir, hostFsShimModules[1].file),
+				createHostFsPromisesSource({ routeRoots }),
+			)
+			packageModules = [...packageModules, ...hostFsShimModules]
+		}
 		await writeFile(
 			join(workDir, files.entry),
 			createLocalEntrySource({ sideEffectModules: gatewayFetchShimModules }),
@@ -324,6 +452,12 @@ export async function runLocalExecute(
 			join(workDir, localWorkerModuleNames.runtimeFlatAlias),
 			createRuntimeFlatAliasSource(),
 		)
+		const egressPolicy =
+			input.egress ?? localExecuteEgressPolicy(input.allowPrivateNetwork)
+		await writeFile(
+			join(workDir, egressGateModuleName),
+			createEgressGateSource(),
+		)
 		const configPath = join(workDir, 'config.capnp')
 		await writeFile(
 			configPath,
@@ -331,7 +465,8 @@ export async function runLocalExecute(
 				bridgePort: bridge.port,
 				files,
 				packageModules,
-				allowPrivateNetwork: input.allowPrivateNetwork,
+				allowPrivateNetwork: egressNeedsPrivateNetwork(egressPolicy),
+				egress: { policy: egressPolicy, gateFile: egressGateModuleName },
 			}),
 		)
 
@@ -345,6 +480,7 @@ export async function runLocalExecute(
 			cwd: workDir,
 			env,
 			stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+			windowsHide: true,
 		})
 		const workerdPid = child.pid
 		if (workerdPid !== undefined && input.workerTracker) {
@@ -361,6 +497,7 @@ export async function runLocalExecute(
 			})
 		}
 		let response: { status: number; body: string }
+		const executeStartedMs = performance.now()
 		try {
 			response = await postToWorkerd({
 				port: started.port,
@@ -380,6 +517,12 @@ export async function runLocalExecute(
 				`Local execute run failed (${reason}).${workerd.stderr()}`,
 			)
 		}
+		input.onTiming?.({
+			packageGraphMs: Math.round(packageGraphMs),
+			packageGraphCached: cachedGraph !== undefined,
+			setupMs: Math.round(executeStartedMs - setupStartedMs),
+			executeMs: Math.round(performance.now() - executeStartedMs),
+		})
 		if (response.status !== 200) {
 			throw new Error(
 				`Local execute runtime returned HTTP ${response.status}.${workerd.stderr()}`,
@@ -391,7 +534,16 @@ export async function runLocalExecute(
 		releaseSignals()
 		stopWorkerd()
 		await bridge?.close()
-		await rm(workDir, { recursive: true, force: true })
+		// Windows keeps a dead process's files locked until it has exited.
+		if (child && child.exitCode === null && child.signalCode === null) {
+			await new Promise((resolve) => child?.once('exit', resolve))
+		}
+		await rm(workDir, {
+			recursive: true,
+			force: true,
+			maxRetries: 10,
+			retryDelay: 100,
+		})
 	}
 }
 
@@ -465,7 +617,7 @@ function cleanupOnSignal(cleanup: () => void): () => void {
 	const handler = (signal: NodeJS.Signals) => {
 		release()
 		cleanup()
-		process.kill(process.pid, signal)
+		raiseSignal(signal)
 	}
 	for (const signal of signals) process.once(signal, handler)
 	return release

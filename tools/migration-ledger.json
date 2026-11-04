@@ -747,6 +747,102 @@
 		{
 			"filename": "0206-login-credential-sessions.sql",
 			"sha256": "4f8025d5208873d7761c2f4e78233de172aa547f73b5572e606a645a8d927d6e"
+		},
+		{
+			"filename": "0207-execution-contexts-release-revoked-names.sql",
+			"sha256": "187cbb834aa580cb02572f501b3fc8672ccd0a7fe26af94a609c435038a4778d"
+		},
+		{
+			"filename": "0208-grants-origin.sql",
+			"sha256": "9cf506b9f0b61b52484698f834c6a48e83c8a5509fa86244053506cf935a859e"
+		},
+		{
+			"filename": "0209-agent-registrations.sql",
+			"sha256": "0713cbe4e214d27fa90062dadda1c18ee0aeb6e030d24a94179f4e7d1431fb4c"
+		},
+		{
+			"filename": "0210-enablement-enabler-narrowing.sql",
+			"sha256": "611d6838231313539698f202913361e2c928978f3ae4394f2037426c51967cad"
+		},
+		{
+			"filename": "0211-org-member-creation.sql",
+			"sha256": "191710d9f0786fdee465d000fb63e0680903ebb88217871d884afc3ed4e7b52e"
+		},
+		{
+			"filename": "0213-execution-context-grant-credentials-removed.sql",
+			"sha256": "026cc10018f6e1ea63788f975d3ef4a4c5132d388c8ea2420e076326477165b6"
+		},
+		{
+			"filename": "0214-grants-expiry-and-profile-subject.sql",
+			"sha256": "418ac9f8e5352de6a754fece077b91f8d85b6abb04c3c028f1f5a2e3d2421c84"
+		},
+		{
+			"filename": "0215-desktop-browser-login.sql",
+			"sha256": "e78b3f061da49bd219bc3dfe4080e9abb18f33a44688577a2da893b5189820ae"
+		},
+		{
+			"filename": "0216-login-credential-session-failures.sql",
+			"sha256": "f03eca3000bd5bccf11589889ccdbfdc141ff57b4879ac988b3f6a701b627e3b"
+		},
+		{
+			"filename": "0217-profiles.sql",
+			"sha256": "2560759567b1ddb011ff91bb9a9664eeb9e6f3a81ad4d5c9d6a2927f5d13734d"
+		},
+		{
+			"filename": "0218-read-preset-and-package-forks.sql",
+			"sha256": "436a7498c073d33b7c0448ad3126888d4cdb2573ccefd3dbd06a741e31a1e8f3"
+		},
+		{
+			"filename": "0219-email-deliverability-effects.sql",
+			"sha256": "1f2a97b2bc3a3289a90f2cef59c3f72a31d3f33c5eabdc089461ffd19f1ad759"
+		},
+		{
+			"filename": "0220-package-app-device-sign-in.sql",
+			"sha256": "bf0d240ef6db96cb0ae6a8c6d2ebeb567102244deac3881149c6810adf13d6f8"
+		},
+		{
+			"filename": "0222-profile-tokens-and-enablers.sql",
+			"sha256": "33160dee7165b61b0526bfee4eda395c89668c4b0b1f7744bcaf16a751699300"
+		},
+		{
+			"filename": "0223-package-app-visitor-billed-org.sql",
+			"sha256": "b97e24532cad33b3c88dbe4323549b6264c2ef0ef5aadd6287696c433e9b4a03"
+		},
+		{
+			"filename": "0224-drop-connection-profile-columns.sql",
+			"sha256": "35c5ad0bc4e3c57010b14aca75af6a68e543b2c9c1bebd388be55c6c3172f871"
+		},
+		{
+			"filename": "0225-drop-connection-profiles.sql",
+			"sha256": "761dab0e2cc9d1568db9c1d981c690afef51b9cdaf3a93dcdbdca19dd4a09174"
+		},
+		{
+			"filename": "0226-package-app-capability-allowances.sql",
+			"sha256": "006fbd7348590dd4d72034fbf3665e2d6372e13af8f7338e69915aed6bdea4cc"
+		},
+		{
+			"filename": "0229-users-personal-org-id-lookup-index.sql",
+			"sha256": "7f63aabddc9cc498cde6551a417cb2f5d941598b252e05ab67e0d85afa2b684a"
+		},
+		{
+			"filename": "0231-grants-allow-unmappable-credential-changes.sql",
+			"sha256": "89d2c767853b3991c35f588eff0ecd0a652d3956ac4e73abf4d1785bd2e169b4"
+		},
+		{
+			"filename": "0232-drop-package-app-authority-fallbacks.sql",
+			"sha256": "3027a0f0df7221fd7b76763d1aa2e188afdabf8dace0854b4be63481a3a40034"
+		},
+		{
+			"filename": "0233-email-mailbox-delivery-cursors.sql",
+			"sha256": "9a05ec582c855d33c266744379531016a09559cba9214447f4432dd6b0c0c163"
+		},
+		{
+			"filename": "0234-org-usage-warnings.sql",
+			"sha256": "850080fa50e86191269ae003a96197c6a5c9835a5ce7a4de9e902d0c68616037"
+		},
+		{
+			"filename": "0235-platform-feedback-resolution-history.sql",
+			"sha256": "74639db5cc16bae52c6b49835ce86c611d29a04dc51d965054af5658d2431270"
 		}
 	]
 }

@@ -272,7 +272,10 @@ export function AuthForm(
 				/>
 			</div>
 			{props.turnstileSiteKey ? (
-				<div className={turnstileWidgetClassName}></div>
+				<div
+					className={turnstileWidgetClassName}
+					data-sitekey={props.turnstileSiteKey}
+				></div>
 			) : null}
 			{!props.isSignup ? (
 				<label css={rememberCss}>
@@ -286,9 +289,16 @@ export function AuthForm(
 				</label>
 			) : null}
 			{renderStatusMessage(props.handleId, props.status, props.message)}
+			{/*
+			 * Sign-in submit works before (or without) hydration: the form posts
+			 * to `/login` as plain HTML (ADR 0094). Sign-up has no plain HTML
+			 * handler, so it waits for the page JavaScript.
+			 */}
 			<button
 				type="submit"
-				disabled={!props.isInteractive || props.isSubmitting}
+				disabled={
+					props.isSubmitting || (props.isSignup && !props.isInteractive)
+				}
 				css={authSubmitCss}
 			>
 				<span
@@ -337,6 +347,8 @@ const authVisualCss: CSSObject = {
 	justifyContent: 'space-between',
 	gap: '2rem',
 	padding: 'clamp(1.5rem, 3vw, 2.5rem)',
+	paddingTop:
+		'calc(clamp(1.5rem, 3vw, 2.5rem) + var(--desktop-corner-height, 0px))',
 	borderRight: `1px solid ${colors.border}`,
 	backgroundColor: colors.background,
 	overflow: 'hidden',
@@ -388,6 +400,7 @@ const authBrandMobileCss: CSSObject = {
 	[mobileMq]: {
 		display: 'inline-flex',
 		marginInline: 'auto',
+		marginTop: 'var(--desktop-corner-height, 0px)',
 	},
 }
 

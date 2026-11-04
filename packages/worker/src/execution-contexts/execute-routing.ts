@@ -9,6 +9,7 @@ import {
 	executeRequirements,
 	routeExecute,
 } from './routing.ts'
+import { computeEffectivePermissions } from '#worker/authorization/authorize.ts'
 
 export { type ExecuteRoutingArgs } from './routing.ts'
 
@@ -39,7 +40,7 @@ export const executeRoutingInputFields = {
 		.max(ecpMaxChainContexts + 1)
 		.optional()
 		.describe(
-			'This run\'s own ordered chain, replacing your default chain: up to 3 context ids or names, with "cloud" allowed only last. Leaving out "cloud" means the run fails instead of falling back to Kody cloud. Entries that are offline, unusable, lack `requires`, or allow no credentials while the run needs one (a credentials map, a secret or integration placeholder, or a kody:runtime credential helper) are skipped before the code starts; if none qualifies the error lists each one and why.',
+			'This run\'s own ordered chain, replacing your default chain: up to 3 context ids or names, with "cloud" allowed only last. Leaving out "cloud" means the run fails instead of falling back to Kody cloud. Entries that are offline, unusable, lack `requires`, are busy (at their concurrent-run limit), or belong to another person when the run can use credentials (a credentials map, a secret or integration placeholder, a kody:runtime credential helper or credentialed call, or any kody: package the code imports, directly or through other packages, that can use one) are skipped before the code starts; if none qualifies the error lists each one and why. On your own contexts a run uses your credentials exactly as in Kody cloud (requests leave from Kody cloud).',
 		),
 }
 
@@ -93,8 +94,8 @@ export async function routeExecuteForCaller(input: {
 		return null
 	}
 	if (request.credential.kind === 'execution-context-run') {
-		// A context run cannot start another execute (denylisted), so this
-		// is only reached by direct misuse; keep it on cloud semantics.
+		// A nested execute from the operator's own context run runs on Kody
+		// cloud, so it cannot re-enter the busy context it came from.
 		return null
 	}
 	return routeExecute({
@@ -106,6 +107,10 @@ export async function routeExecuteForCaller(input: {
 			orgSlug: request.org.slug ?? null,
 			scopes: (request.credential.scopes as Array<string> | null) ?? null,
 			credentialKind: request.credential.kind,
+			profileAccess: request.credential.profileId
+				? await computeEffectivePermissions({ env: input.env, request })
+				: null,
+			profileId: request.credential.profileId ?? null,
 		},
 		args: input.args,
 		runId: input.runRecord.id,

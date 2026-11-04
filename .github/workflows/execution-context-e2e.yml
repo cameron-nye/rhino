@@ -1,0 +1,72 @@
+name: 🖥️ Execution context e2e
+
+# Runs `kody daemon` on Ubuntu, macOS, and Windows (x64 + arm64) against a PR
+# preview: register a throwaway context, execute on it with a host folder,
+# stop, assert no workerd is left, revoke and delete. Previews only, never
+# production. Agent guide: docs/contributing/execution-context-e2e.md.
+
+on:
+  # preview.yml calls this after a labeled PR's preview deploys.
+  workflow_call:
+    inputs:
+      preview_name:
+        required: true
+        type: string
+      sha:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      preview_name:
+        description: Preview app worker name (kody-pr-<n> or kody-branch-<slug>)
+        required: true
+        type: string
+      sha:
+        description: Commit to check out (defaults to the dispatched ref)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    name: 🖥️ e2e (${{ matrix.runner }})
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace @kodycodes/cli
+      - name: Resolve preview origin
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_NAME: ${{ inputs.preview_name }}
+        run: |
+          set -euo pipefail
+          case "$PREVIEW_NAME" in
+            kody-pr-*|kody-branch-*) ;;
+            *) echo "Not a preview worker: $PREVIEW_NAME" >&2; exit 1 ;;
+          esac
+          subdomain="$(curl -fsS --retry 5 --retry-all-errors -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" |
+            node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).result?.subdomain ?? ""))')"
+          test -n "$subdomain"
+          echo "PREVIEW_ORIGIN=https://$PREVIEW_NAME.$subdomain.workers.dev" >> "$GITHUB_ENV"
+      - name: Run e2e
+        run: node tools/execution-context-e2e/run.ts

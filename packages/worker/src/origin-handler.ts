@@ -11,6 +11,10 @@ import {
 } from './oauth-handlers.ts'
 import { packageAppOauthPaths } from '#universal/package-app-oauth-paths.ts'
 import {
+	isLimitedBrowserUserAgent,
+	plainDocumentQueryParam,
+} from '#universal/limited-browser.ts'
+import {
 	createSharedOAuthProviderOptions,
 	mcpOAuthResourceUri,
 } from '#worker/oauth-provider-options.ts'
@@ -63,6 +67,7 @@ import {
 } from '#app/package-app-origin.ts'
 import { refuseNonCanonicalProductionHost } from '#app/canonical-host.ts'
 import { deliverAnonymousDocument } from '#app/anonymous-html-edge-cache.ts'
+import { handleMeHandleRedirect } from '#app/me-handle-redirect.ts'
 import { handleInboundEmail } from '#worker/email/inbound.ts'
 import { handleQueueBatch } from '#worker/queue-handler.ts'
 import { handleDrRestoreRequest } from '#worker/dr/dr-restore.ts'
@@ -88,6 +93,7 @@ import {
 import { requestSkipsAssetProbe } from './static-asset-probe.ts'
 import { handleOpenIdConfigurationRequest } from '#worker/oidc/discovery.ts'
 import { deviceCodeGrantType } from '#worker/oauth-device/device-grant.ts'
+import { agentClaimGrantType } from '#worker/agent-registration/grant-type.ts'
 import { handleOidcJwksRequest } from '#worker/oidc/jwks.ts'
 import { handleOidcUserinfoRequest } from '#worker/oidc/userinfo.ts'
 import { handleOidcLogoutRequest } from '#worker/oidc/logout.ts'
@@ -142,8 +148,19 @@ const socialLoginStartPaths = new Set([
 	'/auth/discord',
 ])
 
+// Plain HTML form posts from `/login` and `/verify` (no page JavaScript).
+const authDocumentFormPaths = new Set(['/login', '/verify'])
+
+// Sign-in documents a limited browser is sent to without the app bundle.
+const plainDocumentPaths = new Set([
+	...authDocumentFormPaths,
+	packageAppOauthPaths.authorize,
+])
+
 const rateLimitedAuthPaths = new Set([
+	'/desktop/session',
 	'/auth',
+	...authDocumentFormPaths,
 	...socialLoginStartPaths,
 	'/oauth/authorize',
 	packageAppOauthPaths.authorize,
@@ -181,6 +198,25 @@ const appHandler = withCors({
 	async handler(request, env, ctx) {
 		const url = new URL(request.url)
 
+		// Limited browsers (ADR 0094) get sign-in pages without the app bundle.
+		// The flag lives in the URL so cached documents never mix the two.
+		if (
+			(request.method === 'GET' || request.method === 'HEAD') &&
+			plainDocumentPaths.has(url.pathname) &&
+			!url.searchParams.has(plainDocumentQueryParam) &&
+			isLimitedBrowserUserAgent(request.headers.get('User-Agent'))
+		) {
+			const plainUrl = new URL(url)
+			plainUrl.searchParams.set(plainDocumentQueryParam, '1')
+			return new Response(null, {
+				status: 302,
+				headers: {
+					Location: `${plainUrl.pathname}${plainUrl.search}`,
+					'Cache-Control': 'no-store',
+				},
+			})
+		}
+
 		if (request.method === 'POST' && rateLimitedAuthPaths.has(url.pathname)) {
 			const ip = getRequestIp(request) ?? 'unknown'
 			const rateLimitKey = `auth:ip:${ip}`
@@ -194,6 +230,22 @@ const appHandler = withCors({
 					.get('Accept')
 					?.toLowerCase()
 					.includes('application/json')
+				if (authDocumentFormPaths.has(url.pathname) && !prefersJson) {
+					const pageUrl = new URL(url.pathname, url)
+					const redirectTo = normalizeRedirectTo(
+						url.searchParams.get('redirectTo'),
+					)
+					if (redirectTo) pageUrl.searchParams.set('redirectTo', redirectTo)
+					pageUrl.searchParams.set('formError', 'rate_limited')
+					await discardUnreadRequestBody(request)
+					return new Response(null, {
+						status: 303,
+						headers: {
+							Location: `${pageUrl.pathname}${pageUrl.search}`,
+							'Retry-After': String(result.retryAfterSeconds ?? 60),
+						},
+					})
+				}
 				if (socialLoginStartPaths.has(url.pathname) && !prefersJson) {
 					const loginUrl = new URL('/login', url)
 					loginUrl.searchParams.set('oauthError', 'rate-limited')
@@ -480,21 +532,36 @@ function isMcpResourceOwnedPath(pathname: string) {
 	)
 }
 
-/** The parsed form when `/oauth/token` carries the RFC 8628 device grant. */
-async function readDeviceCodeTokenForm(request: Request) {
+const internalTokenGrantTypes = new Set([
+	deviceCodeGrantType,
+	agentClaimGrantType,
+])
+
+/**
+ * The parsed form when `/oauth/token` carries a grant Kody handles itself: the
+ * RFC 8628 device grant or the auth.md claim grant (ADR 0091).
+ */
+async function readInternalTokenGrantForm(request: Request) {
 	const contentType = request.headers.get('Content-Type') ?? ''
 	if (!contentType.includes('application/x-www-form-urlencoded')) return null
 	const form = await request
 		.clone()
 		.formData()
 		.catch(() => null)
-	return form?.get('grant_type') === deviceCodeGrantType ? form : null
+	const grantType = form?.get('grant_type')
+	return form &&
+		typeof grantType === 'string' &&
+		internalTokenGrantTypes.has(grantType)
+		? { form, grantType }
+		: null
 }
 
 function isOAuthProviderOwnedPath(pathname: string) {
 	return (
 		pathname === oauthPaths.token ||
 		pathname === oauthPaths.deviceAuthorization ||
+		pathname === oauthPaths.agentIdentity ||
+		pathname === oauthPaths.agentIdentityClaim ||
 		pathname === oauthPaths.register ||
 		pathname === oauthPaths.discovery ||
 		pathname === protectedResourceMetadataPath ||
@@ -966,6 +1033,9 @@ async function handleOriginAppFetch(
 	const insecureRedirect = getInsecureOriginRedirect(appOrigin, url)
 	if (insecureRedirect) return insecureRedirect
 
+	const meHandleRedirect = await handleMeHandleRedirect(request, env, url)
+	if (meHandleRedirect) return meHandleRedirect
+
 	const resource = mcpOAuthResourceUri(appOrigin)
 	const oauthProvider = getOriginOAuthProvider(resource)
 
@@ -1004,6 +1074,16 @@ async function handleOriginAppFetch(
 	let mcpPeek: McpJsonRpcPeek = { kind: 'unknown' }
 	let mcpPeekCloned = false
 	try {
+		if (url.pathname === oauthPaths.agentIdentity) {
+			const { handleAgentIdentityRequest } =
+				await import('#worker/agent-registration/identity-endpoint.ts')
+			return await handleAgentIdentityRequest(request, env)
+		}
+		if (url.pathname === oauthPaths.agentIdentityClaim) {
+			const { handleAgentClaimRestartRequest } =
+				await import('#worker/agent-registration/identity-endpoint.ts')
+			return await handleAgentClaimRestartRequest(request, env)
+		}
 		if (url.pathname === oauthPaths.deviceAuthorization) {
 			const { handleDeviceAuthorizationRequest } =
 				await import('#worker/oauth-device/authorization-endpoint.ts')
@@ -1019,7 +1099,18 @@ async function handleOriginAppFetch(
 			)
 		}
 		if (url.pathname === oauthPaths.token && request.method === 'POST') {
-			const deviceForm = await readDeviceCodeTokenForm(request)
+			const internalGrant = await readInternalTokenGrantForm(request)
+			if (internalGrant?.grantType === agentClaimGrantType) {
+				await discardUnreadRequestBody(request)
+				const { handleAgentClaimTokenRequest } =
+					await import('#worker/agent-registration/token-grant.ts')
+				return await handleAgentClaimTokenRequest({
+					request,
+					env,
+					form: internalGrant.form,
+				})
+			}
+			const deviceForm = internalGrant?.form ?? null
 			if (deviceForm) {
 				await discardUnreadRequestBody(request)
 				const { handleDeviceCodeTokenRequest } =

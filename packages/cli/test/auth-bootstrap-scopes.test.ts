@@ -10,7 +10,10 @@ import {
 	insufficientScopeMessage,
 	readInsufficientScopeDetails,
 } from '../src/api-token.js'
-import { loadStoredApiToken } from '../src/api-token-store.js'
+import {
+	deleteStoredApiToken,
+	loadStoredApiToken,
+} from '../src/api-token-store.js'
 import {
 	parseCliScopesFlag,
 	resolveMintedRedeemLifetime,
@@ -73,12 +76,15 @@ async function withCliEnv<T>(
 	const saved = {
 		HOME: process.env.HOME,
 		XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+		APPDATA: process.env.APPDATA,
 		KODY_API_TOKEN: process.env.KODY_API_TOKEN,
 		KODY_MCP_URL: process.env.KODY_MCP_URL,
 		KODY_API_URL: process.env.KODY_API_URL,
 	}
 	process.env.HOME = home
 	process.env.XDG_CONFIG_HOME = home
+	// Windows keeps CLI config under %APPDATA%.
+	process.env.APPDATA = home
 	delete process.env.KODY_API_TOKEN
 	delete process.env.KODY_MCP_URL
 	delete process.env.KODY_API_URL
@@ -100,9 +106,13 @@ async function withCliEnv<T>(
 		})
 		return fetchStub(url, init)
 	}) as typeof fetch
+	// Windows Credential Manager (and macOS Keychain) are per-user, not per
+	// HOME, so a token an earlier test saved would leak into this one.
+	deleteStoredApiToken(apiUrl)
 	try {
 		return await run({ home, requests })
 	} finally {
+		deleteStoredApiToken(apiUrl)
 		globalThis.fetch = previousFetch
 		for (const [key, value] of Object.entries(saved)) {
 			if (value === undefined) delete process.env[key]

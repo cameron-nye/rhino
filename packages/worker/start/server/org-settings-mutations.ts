@@ -24,6 +24,48 @@ export const updateOrganizationProfile = createServerFn({ method: 'POST' })
 				),
 		)
 	})
+export const updateOrganizationMemberCreation = createServerFn({
+	method: 'POST',
+})
+	.inputValidator(
+		z.object({
+			orgSlug,
+			packages: z.boolean().optional(),
+			credentials: z.boolean().optional(),
+		}),
+	)
+	.handler(async ({ data }) => {
+		const { withWebsiteMutation } = await import('./mutation-context.ts')
+		const { updateOrganizationMemberCreation } =
+			await import('../../src/app/handlers/org-settings.ts')
+		const { requireOperationResult } =
+			await import('../../src/app/operation-result.ts')
+		return withWebsiteMutation(
+			{ scope: { orgSlug: data.orgSlug } },
+			async (context) =>
+				requireOperationResult(
+					await updateOrganizationMemberCreation({ ...context, ...data }),
+				),
+		)
+	})
+export const updateOrganizationUsageWarnings = createServerFn({
+	method: 'POST',
+})
+	.inputValidator(z.object({ orgSlug, enabled: z.boolean() }))
+	.handler(async ({ data }) => {
+		const { withWebsiteMutation } = await import('./mutation-context.ts')
+		const { updateOrganizationUsageWarnings } =
+			await import('../../src/app/handlers/org-settings.ts')
+		const { requireOperationResult } =
+			await import('../../src/app/operation-result.ts')
+		return withWebsiteMutation(
+			{ scope: { orgSlug: data.orgSlug } },
+			async (context) =>
+				requireOperationResult(
+					await updateOrganizationUsageWarnings({ ...context, ...data }),
+				),
+		)
+	})
 export const deleteOrganization = createServerFn({ method: 'POST' })
 	.inputValidator(z.object({ orgSlug, confirmation: z.string() }))
 	.handler(async ({ data }) => {

@@ -19,6 +19,12 @@ rank package-scoped secret references. Expired secrets stay in the list with
 **`ttl_ms: 0`**. Fetch placeholders and **`resolve`** treat them as missing so
 Kody stops sending the value.
 
+The `scope` in `secretList` and `secretSet` is a storage scope (`user`,
+`package`, or `session`). It is not the `org` / `personal` scope that
+`credentialList` and `credential(key).scope` report: a `user` or `package` Key
+in the run's org reads `org` there. See
+[Scope in code](../guides/credentials.md#scope-in-code).
+
 Package-scoped secrets belong to one saved package. **`packageGet`** includes
 their metadata as an FYI when you are inspecting that package. User-scoped
 secrets follow the bundler stamp: code that originates from package A authorizes
@@ -110,6 +116,15 @@ carries an approval link (`/connect/secrets?name=<key>&placement=body`; add
 `&hosts=<host>` to approve the host in the same click). Agents can mint the same
 link with **`credentialPlacementApprovalLink`** (MCP `api`); the call never
 changes placement. See [Credentials](../guides/credentials.md).
+
+### Who can add team credentials
+
+In a team org, Members can add secrets, OAuth connections, and MCP servers by
+default, and get full access to what they add. An Owner turns this off with
+**Members can create credentials** in organization settings (or grants
+`secret:create` / `integration:create` to specific people or teams on the Grants
+page instead). Changing or deleting an existing credential still needs Write on
+it. See [Organizations](../guides/organizations.md#member-permissions).
 
 ### Personal credentials in a team org
 
@@ -349,14 +364,24 @@ fetch even when package read/use is automatic.
 
 ## Package approval
 
+When the `credential-allowed-packages-safety-window` flag is on (through
+2026-11-30T00:00:00Z), a package you authored or adopted that a non-empty list
+leaves out is still allowed when it uses the credential directly, and the use is
+logged. Kody does not add it to the list, so a package you remove stays removed.
+Nested use and unadopted forks are refused as described below. After that
+cutover the rules below apply with no exception.
+
 User-scoped secrets are available automatically for **reading and using**
 (mounts, fetch placeholders, named capability lookups including `secretList`) to
-packages the user authored themselves and adopted community forks. Only the
-account owner can adopt, on the package settings page after a real source
-review; `communityForkAdopt` returns that link and agents cannot adopt.
-Unadopted community-forked packages need explicit **package** approval
-(`allowed_packages`) before those read/use paths. Approval is checked against
-the **stamped** package — the module that originated the call — not the
+packages the user authored themselves and adopted community forks, as long as
+the secret's `allowed_packages` list is empty. A non-empty list is enforced for
+every package: a package that is not on it is denied, including packages you
+authored or adopted, and the error names the credential and the package with an
+approval link. Only the account owner can adopt, on the package settings page
+after a real source review; `communityForkAdopt` returns that link and agents
+cannot adopt. Unadopted community-forked packages need explicit **package**
+approval (`allowed_packages`) before those read/use paths. Approval is checked
+against the **stamped** package — the module that originated the call — not the
 importing run. Dependents statically import the owning export; they do not need
 their own grant for secrets locked to that owner. Updating, disconnecting, or
 deleting a user secret from package code (`secretSet`, `secretDisconnect`,
@@ -374,10 +399,10 @@ token rotation (`createAuthenticatedFetch` 401 retry via
 grant.
 
 Publish and save warn when a package fills a user credential whose
-`allowed_packages` list is non-empty and does not include that package;
-publishing and saving still succeed. Approve the package on the secret's page
-(or via the approval link in the warning), or move the credential use into a
-package that is already on the list.
+`allowed_packages` list is non-empty and does not include that package, because
+that use is denied at runtime; publishing and saving still succeed. Approve the
+package on the secret's page (or via the approval link in the warning), or move
+the credential use into a package that is already on the list.
 
 **Host approval is separate and is never automatic**, including for
 self-authored and adopted packages. An empty host allowlist blocks
@@ -391,7 +416,9 @@ approval URL shaped like
 lists every pending secret and approves them in one click. A single-secret link
 grants one package on one secret. For community forks, reviewing the source and
 sending the owner the `communityForkAdopt` adoption link is an alternative to
-sending those approval links. Agents and package runtimes cannot adopt.
+sending those approval links only when the secret's `allowed_packages` list is
+empty; a non-empty list still needs the fork approved on it. Agents and package
+runtimes cannot adopt.
 
 ## Package config vs package storage
 

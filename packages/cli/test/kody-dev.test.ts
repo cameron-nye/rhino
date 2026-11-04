@@ -206,7 +206,7 @@ test('kody dev job / webhook / emit / fetch against mock', async () => {
 		process.chdir(cwd)
 		if (previous === undefined) delete process.env.KODY_CACHE_DIR
 		else process.env.KODY_CACHE_DIR = previous
-		await rm(cache, { recursive: true, force: true })
+		await rm(cache, { recursive: true, force: true, maxRetries: 10 })
 	}
 })
 
@@ -251,14 +251,14 @@ test('kody dev fetch rejects on a bundle error, prints it once, and closes the m
 					},
 				},
 			}),
-			/app\/entry\.ts:1:52/,
+			/app[\\/]entry\.ts:1:52/,
 		)
 		assert.ok(Date.now() - started < 10_000)
 		assert.equal(mockClosed, 1)
 		assert.equal(stdout, '')
 		assert.doesNotMatch(stderr, /entry\.ts:1:52/)
 	} finally {
-		await rm(root, { recursive: true, force: true })
+		await rm(root, { recursive: true, force: true, maxRetries: 10 })
 	}
 })
 
@@ -300,7 +300,7 @@ test('kody dev fetch --json writes a build_error object to stdout on bundle fail
 					stderr: () => {},
 				},
 			}),
-			/app\/entry\.ts:1:52/,
+			/app[\\/]entry\.ts:1:52/,
 		)
 		const event = JSON.parse(stdout) as {
 			type: string
@@ -308,10 +308,10 @@ test('kody dev fetch --json writes a build_error object to stdout on bundle fail
 			ts: string
 		}
 		assert.equal(event.type, 'build_error')
-		assert.match(event.message, /app\/entry\.ts:1:52/)
+		assert.match(event.message, /app[\\/]entry\.ts:1:52/)
 		assert.ok(typeof event.ts === 'string' && event.ts.length > 0)
 	} finally {
-		await rm(root, { recursive: true, force: true })
+		await rm(root, { recursive: true, force: true, maxRetries: 10 })
 	}
 })
 
@@ -345,7 +345,7 @@ export default async function main() {
 	} finally {
 		if (previous === undefined) delete process.env.KODY_CACHE_DIR
 		else process.env.KODY_CACHE_DIR = previous
-		await rm(cache, { recursive: true, force: true })
+		await rm(cache, { recursive: true, force: true, maxRetries: 10 })
 	}
 })
 
@@ -380,7 +380,7 @@ test('execute --invoke local export against mock', async () => {
 		process.chdir(cwd)
 		if (previous === undefined) delete process.env.KODY_CACHE_DIR
 		else process.env.KODY_CACHE_DIR = previous
-		await rm(cache, { recursive: true, force: true })
+		await rm(cache, { recursive: true, force: true, maxRetries: 10 })
 	}
 })
 
@@ -441,6 +441,6 @@ test('search --target mock hits the mock catalog', async () => {
 	} finally {
 		if (previous === undefined) delete process.env.KODY_CACHE_DIR
 		else process.env.KODY_CACHE_DIR = previous
-		await rm(cache, { recursive: true, force: true })
+		await rm(cache, { recursive: true, force: true, maxRetries: 10 })
 	}
 })

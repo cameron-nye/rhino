@@ -2,10 +2,20 @@ import {
 	isUnrepairablePreBindingArtifact,
 	publishedArtifactNeedsPackageBindingRebuild,
 } from './pre-binding-artifact-repair.ts'
-import { type PublishedBundleArtifact } from './published-runtime-artifacts.ts'
+import { effectivePackageAppCapabilities } from './package-app-effective-capabilities.ts'
+import {
+	hasPublishedRuntimeArtifacts,
+	type PublishedBundleArtifact,
+	readPackageAppWorkerTemplate,
+} from './published-runtime-artifacts.ts'
 import { type McpCallerContext } from '@kody-internal/shared/chat.ts'
 import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import {
+	billedOrgIdOf,
+	type RequestBilling,
+} from '@kody-internal/shared/request-context.ts'
 import { type RuntimePackageAppVisitor } from '@kody-internal/shared/runtime-worker.ts'
+import { withRequestBilling } from './package-app-billing.ts'
 import {
 	WorkerEntrypoint,
 	exports as workerExports,
@@ -19,6 +29,7 @@ import {
 import { createMcpCallerContext } from '#mcp/context.ts'
 import { requestLineage } from '#worker/request-context/request-context.ts'
 import {
+	getPackageAppClientEntryPath,
 	getPackageAppEntryPath,
 	parseAuthoredPackageJson,
 } from '#worker/package-registry/manifest.ts'
@@ -32,8 +43,12 @@ import {
 	collectPackageStorageGrantIds,
 } from '#mcp/run-kody-registry.ts'
 import { getCapabilityRegistryForContext } from '#mcp/capabilities/registry.ts'
+import { readIntegrationRuntimeConfig } from '#mcp/capabilities/integrations/integration-runtime-config.ts'
 import { listVisibleEnabledMcpServerRefsCached } from '#worker/mcp-client/settings-service.ts'
-import { createAuthenticatedFetch } from '#mcp/execute-modules/kody-runtime-utils.ts'
+import {
+	createAuthenticatedFetch,
+	INTEGRATION_RUNTIME_CONFIG_TOOL_NAME,
+} from '#mcp/execute-modules/kody-runtime-utils.ts'
 import {
 	buildKodyAppBundle,
 	createPublishedPackageAppBundleCacheKey,
@@ -89,7 +104,6 @@ import {
 	loadRunCredentialNeedEntries,
 } from '#worker/credentials/credential-client.ts'
 import { loadPublishedCredentialNeeds } from '#worker/credentials/credential-needs-closure.ts'
-import { type OwnerCredentialScope } from '#worker/credentials/owner-credential-for-visitors.ts'
 import {
 	createCredentialClientRuntimeSource,
 	credentialClientToolNames,
@@ -140,10 +154,11 @@ import {
 import { packageAppVisitorHeaderName } from './package-app-visitor-header.ts'
 import {
 	createPackageAppRequestVisit,
+	packageAppAnonymousVisitTicketPrefix,
 	packageAppVisitTicketHeaderName,
 	type PackageAppRequestVisit,
 	type PackageAppVisitAudience,
-	type PackageAppVisitClaims,
+	type PackageAppVerifiedVisit,
 	verifyPackageAppVisitTicket,
 	withPackageAppVisitTicket,
 } from './package-app-visit-ticket.ts'
@@ -151,31 +166,29 @@ import {
 	createPackageAppCredentialAuthority,
 	createPackageAppVisitorCredentialRequest,
 	loadPackageAppRunsAs,
-	packageAppRunsAsUnavailableMessages,
 	packageAppIdentityCapabilityName,
 	packageAppVisitorConsents,
 	packageAppVisitorNeedCallName,
 	PackageAppRunsAsUnavailableError,
 	PackageAppVisitorConsentError,
-	type PackageAppAuthorityMode,
 	type PackageAppAuthorityScope,
 	type PackageAppRunsAs,
+	type PackageAppRunsAsSource,
 	type PackageAppVisitorGrantScope,
 } from './package-app-authority.ts'
 import {
 	PackageAppCapabilityNotDeclaredError,
 	PackageAppCapabilityUnavailableError,
-	packageAppAuthorityFallbackKindOf,
-	packageAppAuthorityFallbackKindOfResult,
-	schedulePackageAppAuthorityFallback,
 	schedulePackageAppAuthorityRejection,
-	type PackageAppAuthorityDifferenceKind,
-} from './package-app-authority-fallback.ts'
+} from './package-app-authority-rejections.ts'
 import {
 	findLivePackageAppOauthGrant,
 	notePackageAppOauthGrantUse,
 } from '#app/package-app-oauth-grants.ts'
 import { scopesIncludeEmail } from '#app/package-app-oauth-scopes.ts'
+import { loadPackageAppCapabilityAllowance } from './package-app-capability-allowances.ts'
+import { resolveDisplayName } from '#worker/identity/username.ts'
+import { andLiveDeletedAtSql } from '#worker/soft-delete/live-sql.ts'
 import {
 	buildPackageAppAssetBasePath,
 	buildPackageAppClientModuleUrl,
@@ -271,6 +284,8 @@ const __kodyPackageBindingIds = __kodyObjectFreezeCaptured(${JSON.stringify(inpu
 const __kodyIdentityOnlyOrgSlug = ${JSON.stringify(input.identityOnlyOrgSlug)};
 const __kodyJsonParseCaptured = JSON.parse;
 const __kodyVisitTicketHeaderName = ${JSON.stringify(packageAppVisitTicketHeaderName)};
+const __kodyAnonymousVisitTicketPrefix = ${JSON.stringify(packageAppAnonymousVisitTicketPrefix)};
+const __kodyStringStartsWithCaptured = String.prototype.startsWith;
 const __kodyVisitStorage = new AsyncLocalStorage();
 
 function __kodyCurrentVisitTicket() {
@@ -278,6 +293,18 @@ function __kodyCurrentVisitTicket() {
 		return __kodyVisitStorage.getStore()?.ticket ?? null;
 	} catch {
 		return null;
+	}
+}
+// An anonymous ticket only scopes credential clients to this request; it
+// names nobody, so the identity-only shortcut below still applies.
+function __kodyTicketNamesVisitor(ticket) {
+	if (typeof ticket !== 'string' || !ticket) return false;
+	try {
+		return !__kodyReflectApplyCaptured(__kodyStringStartsWithCaptured, ticket, [
+			__kodyAnonymousVisitTicketPrefix,
+		]);
+	} catch {
+		return true;
 	}
 }
 function __kodyReadVisitTicket(request) {
@@ -294,7 +321,8 @@ function __kodyReadVisitTicket(request) {
 // (inbound X-Kody-* headers are stripped before it is set), so
 // metaGetCurrentUser can say who is visiting. That answer is the only thing
 // the header changes: it grants no storage, credentials, or capability.
-// A visit ticket means the visitor acts as themselves; skip this shortcut.
+// A ticket that names a visitor means they act as themselves; skip this
+// shortcut.
 function __kodyReadIdentityOnlyVisitor(request) {
 	if (__kodyIdentityOnlyOrgSlug === null) return null;
 	let raw = null;
@@ -373,7 +401,7 @@ function __kodyCreateAppPackageBindings(bridge, identity) {
 		const token = __kodyPackageBindingToken;
 		const boundCapability = async (callInput) => {
 			const visitTicket = __kodyCurrentVisitTicket();
-			const identityAnswer = visitTicket
+			const identityAnswer = __kodyTicketNamesVisitor(visitTicket)
 				? null
 				: __kodyIdentityOnlyAnswer(identity, callInput?.name);
 			if (identityAnswer) return identityAnswer;
@@ -635,9 +663,12 @@ function createKodyProxy(runtimeBridge, mcpServerNamesOrLoader, identity = null)
 			if (property === 'appSpendGet') {
 				return async () => await runtimeBridge.appSpendGet();
 			}
+			if (property === 'appPublisherGet') {
+				return async () => await runtimeBridge.appPublisherGet();
+			}
 			return async (args = {}) => {
 				const visitTicket = __kodyCurrentVisitTicket();
-				const identityAnswer = visitTicket
+				const identityAnswer = __kodyTicketNamesVisitor(visitTicket)
 					? null
 					: __kodyIdentityOnlyAnswer(identity, property);
 				if (identityAnswer) return identityAnswer;
@@ -844,6 +875,7 @@ function createInternalDurableObjectState(runtimeBridge, storageId) {
 	const listToMap = async (options = {}) => {
 		const result = await runtimeBridge.storageList({
 			storageId,
+			visitTicket: __kodyCurrentVisitTicket(),
 			...options,
 		});
 		return new Map((result?.entries ?? []).map((entry) => [entry.key, entry.value]));
@@ -860,22 +892,26 @@ function createInternalDurableObjectState(runtimeBridge, storageId) {
 			get: async (key) =>
 				(await runtimeBridge.storageGet({
 					storageId,
+					visitTicket: __kodyCurrentVisitTicket(),
 					key,
 				})).value,
 			put: async (key, value) =>
 				await runtimeBridge.storageSet({
 					storageId,
+					visitTicket: __kodyCurrentVisitTicket(),
 					key,
 					value,
 				}),
 			delete: async (key) =>
 				await runtimeBridge.storageDelete({
 					storageId,
+					visitTicket: __kodyCurrentVisitTicket(),
 					key,
 				}),
 			deleteAll: async () =>
 				await runtimeBridge.storageClear({
 					storageId,
+					visitTicket: __kodyCurrentVisitTicket(),
 				}),
 			list: async (options = {}) => await listToMap(options),
 			sql: {
@@ -1218,12 +1254,13 @@ export class ${packageAppEntrypointName} extends WorkerEntrypoint {
 		// Read before any package code runs. Ticket and visitor stay in ALS
 		// for this request only; they never enter module scope.
 		const visitTicket = __kodyReadVisitTicket(request);
-		const identityOnlyVisitor = visitTicket
+		const identityOnlyVisitor = __kodyTicketNamesVisitor(visitTicket)
 			? null
 			: __kodyReadIdentityOnlyVisitor(request);
 		const runtimeRun = startRuntimeRun(runtimeBridge, {
 			surface: 'app_fetch',
 			name: requestUrl.pathname,
+			visitTicket,
 			metadata: {
 				method: request.method,
 				queryParamNames: collectQueryParamNames(requestUrl),
@@ -1337,6 +1374,7 @@ export class ${packageAppEntrypointName} extends WorkerEntrypoint {
 		const runtimeRun = startRuntimeRun(runtimeBridge, {
 			surface: 'app_realtime',
 			name: buildFacetName(payload?.facet),
+			visitTicket,
 			sessionId: payload?.sessionId,
 			metadata: {
 				facet: payload?.facet,
@@ -1444,6 +1482,11 @@ type PackageAppRuntimeBridgeProps = {
 	 * app's runs-as person.
 	 */
 	declaredCapabilities: Array<string>
+	/**
+	 * Capabilities this published commit may call without declaring them
+	 * (`package_app_capability_allowances`). Never carries to a new publish.
+	 */
+	capabilityAllowance?: Array<string>
 	/** The app's package.json name and version, for not-declared errors. */
 	appPackage?: { name: string; version: string | null }
 	/**
@@ -1479,6 +1522,8 @@ function redactRunRecordError(
 	return secretRedactor.redactUnknown(error)
 }
 
+type AppStorageInput = { storageId: string; visitTicket?: string | null }
+
 export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 	Env,
 	PackageAppRuntimeBridgeProps
@@ -1498,8 +1543,9 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 	private createRunsAsCallerContext(
 		runsAs: Extract<PackageAppRunsAs, { status: 'ready' }>,
 		storageId: string | null,
+		billing: RequestBilling | null | undefined,
 	) {
-		return createMcpCallerContext({
+		const callerContext = createMcpCallerContext({
 			baseUrl: this.ctx.props.baseUrl,
 			executionOrigin: 'background',
 			user: {
@@ -1520,24 +1566,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 			},
 			source: { kind: 'package-app' },
 		})
-	}
-
-	private noteAuthorityFallback(
-		callName: string,
-		kind: PackageAppAuthorityDifferenceKind,
-		visitor: RuntimePackageAppVisitor | null,
-	) {
-		schedulePackageAppAuthorityFallback({
-			env: this.env,
-			event: {
-				ownerId: this.ctx.props.userId,
-				packageId: this.ctx.props.packageId,
-				callName,
-				kind,
-				visitorId: visitor?.userId ?? null,
-			},
-			waitUntil: (promise) => this.ctx.waitUntil(promise),
-		})
+		return withRequestBilling(callerContext, billing)
 	}
 
 	/** Never throws: an unreadable visit ticket counts as anonymous. */
@@ -1562,7 +1591,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 		})
 	}
 
-	/** A lookup failure runs the call the legacy way, never fails it. */
+	/** A lookup failure fails the call. Never runs as the visitor. */
 	private async loadRunsAs(): Promise<PackageAppRunsAs> {
 		try {
 			return await loadPackageAppRunsAs({
@@ -1577,101 +1606,45 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 					error: error instanceof Error ? error.name : 'unknown',
 				}),
 			)
-			return {
-				status: 'unavailable',
-				reason: 'not-set',
-				message: packageAppRunsAsUnavailableMessages['not-set'],
-			}
+			throw new PackageAppRunsAsUnavailableError('lookup-failed', {
+				cause: error,
+			})
 		}
+	}
+
+	private async requireRunsAs() {
+		const runsAs = await this.loadRunsAs()
+		if (runsAs.status !== 'ready') {
+			throw new PackageAppRunsAsUnavailableError(runsAs.reason)
+		}
+		return runsAs
 	}
 
 	/**
 	 * Run one bridge call as the app's runs-as person (ADR 0068 amendment
-	 * 2026-10-24). When that fails for an authority reason, the call runs the
-	 * legacy way (as the visitor, or anonymously) and, when that works,
-	 * leaves a would-break row. A call that fails both ways throws the
-	 * runs-as error; when that error is "not declared", it also leaves a
-	 * hard-rejection row. Never retries a failure that is not about authority.
+	 * 2026-10-24). Authority failures throw; a call refused as not declared
+	 * also leaves a hard-rejection row. Visitor identity and consented
+	 * visitor-data calls stay on their own paths.
 	 */
 	private async runWithAuthority<T>(input: {
 		callName: string
 		storageId: string | null
 		/** This request's visit ticket, as the wrapper passed it. */
 		visitTicket: string | null | undefined
-		run: (
-			callerContext: McpCallerContext,
-			mode: PackageAppAuthorityMode,
-		) => Promise<T>
-		/** A returned (not thrown) refusal that is about authority. */
-		refusedResultKind?: (result: T) => PackageAppAuthorityDifferenceKind | null
+		run: (callerContext: McpCallerContext) => Promise<T>
 	}): Promise<T> {
-		const runsAs = await this.loadRunsAs()
-		const runLegacy = async () =>
-			await input.run(
-				await this.createCallerContext(input.storageId, input.visitTicket),
-				'legacy',
-			)
-		const noteFallback = async (kind: PackageAppAuthorityDifferenceKind) =>
-			this.noteAuthorityFallback(
-				input.callName,
-				kind,
-				await this.visitorFor(input.visitTicket),
-			)
-		if (runsAs.status !== 'ready') {
-			let result: T
-			try {
-				result = await runLegacy()
-			} catch (error) {
-				if (
-					runsAs.reason === 'person-unavailable' &&
-					packageAppAuthorityFallbackKindOf(error)
-				) {
-					throw new PackageAppRunsAsUnavailableError(runsAs.reason, {
-						cause: error,
-					})
-				}
-				throw error
-			}
-			if (!input.refusedResultKind?.(result)) {
-				await noteFallback('runs_as_unavailable')
-			}
-			return result
-		}
-		let refusedKind: PackageAppAuthorityDifferenceKind
-		let refused: { result: T } | { error: unknown }
+		const runsAs = await this.requireRunsAs()
+		const billing = (await this.requireActingVisit(input.visitTicket))?.billing
 		try {
-			const result = await input.run(
-				this.createRunsAsCallerContext(runsAs, input.storageId),
-				'runs-as',
+			return await input.run(
+				this.createRunsAsCallerContext(runsAs, input.storageId, billing),
 			)
-			const kind = input.refusedResultKind?.(result) ?? null
-			if (!kind) return result
-			refusedKind = kind
-			refused = { result }
 		} catch (error) {
-			const kind = packageAppAuthorityFallbackKindOf(error)
-			if (!kind) throw error
-			refusedKind = kind
-			refused = { error }
-		}
-		const giveUp = async () => {
-			if ('error' in refused) {
-				if (refused.error instanceof PackageAppCapabilityNotDeclaredError) {
-					await this.noteHardRejection(input.callName, input.visitTicket)
-				}
-				throw refused.error
+			if (error instanceof PackageAppCapabilityNotDeclaredError) {
+				await this.noteHardRejection(input.callName, input.visitTicket)
 			}
-			return refused.result
+			throw error
 		}
-		let legacyResult: T
-		try {
-			legacyResult = await runLegacy()
-		} catch {
-			return await giveUp()
-		}
-		if (input.refusedResultKind?.(legacyResult)) return await giveUp()
-		await noteFallback(refusedKind)
-		return legacyResult
 	}
 
 	private async requireVisit(ticket: string | null | undefined) {
@@ -1689,15 +1662,16 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 
 	/**
 	 * The visit every path except executor credentials acts on. An
-	 * executor-only ticket (an outside-org visitor) counts as no visit, so
-	 * storage, capabilities and identity stay anonymous plus identity.
+	 * executor-only ticket (an outside-org visitor) or an anonymous ticket
+	 * counts as no visit, so storage, capabilities and identity stay
+	 * anonymous (plus identity).
 	 */
 	private async requireActingVisit(ticket: string | null | undefined) {
 		const visit = await this.requireVisit(ticket)
-		return visit?.executorOnly ? null : visit
+		return visit?.visitor && !visit.executorOnly ? visit : null
 	}
 
-	/** Who this call acts for the legacy way: the ticket's visitor, if any. */
+	/** Who is visiting this request, from the ticket. Identity, not authority. */
 	private async visitorFor(
 		ticket: string | null | undefined,
 	): Promise<RuntimePackageAppVisitor | null> {
@@ -1714,7 +1688,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 		const email = visit?.owner.email ?? this.ctx.props.email
 		const displayName = visit?.owner.displayName ?? this.ctx.props.displayName
 		const orgSlug = visit?.owner.orgSlug ?? this.ctx.props.orgSlug
-		return createMcpCallerContext({
+		const callerContext = createMcpCallerContext({
 			baseUrl: this.ctx.props.baseUrl,
 			executionOrigin: 'background',
 			user: visitor
@@ -1731,6 +1705,12 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 						role: visitor.role,
 					}
 				: undefined,
+			...(visit && 'credentialProfileId' in visit && visit.credentialProfileId
+				? {
+						profileId: visit.credentialProfileId,
+						profileChain: visit.credentialProfileChain ?? null,
+					}
+				: {}),
 			storageContext: {
 				sessionId: null,
 				appId: this.ctx.props.packageId,
@@ -1739,15 +1719,21 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 			},
 			source: { kind: 'package-app' },
 		})
+		return withRequestBilling(callerContext, visit?.billing)
 	}
 
-	private credentialBindingFor(visit: PackageAppVisitClaims | null) {
+	/**
+	 * Every ticket, anonymous included, carries this request's binding. With
+	 * no ticket there is no binding, and opening a client fails closed.
+	 */
+	private credentialBindingFor(visit: PackageAppVerifiedVisit | null) {
 		return visit?.credentialClientBinding ?? ''
 	}
 
 	private getStorageRunner(
 		storageId: string,
 		packageAppVisitorUserId?: string,
+		billedOrgId?: OwnerId,
 	) {
 		return storageRunnerRpc({
 			env: this.env,
@@ -1756,6 +1742,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 			...(packageAppVisitorUserId !== undefined
 				? { packageAppVisitorUserId }
 				: {}),
+			...(billedOrgId ? { meterUserId: billedOrgId } : {}),
 		})
 	}
 
@@ -1875,13 +1862,16 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 		name?: string | null
 		sessionId?: string | null
 		metadata?: Record<string, unknown> | null
+		visitTicket?: string | null
 	}): Promise<RunRecordHandle | null> {
-		const callerContext = await this.createCallerContext(null)
+		const callerContext = await this.createCallerContext(
+			null,
+			input.visitTicket,
+		)
 		return beginRunRecord({
 			env: this.env,
 			userId: this.ctx.props.userId,
 			request: callerContext.request,
-			startedByLabel: callerContext.request?.credential.profileName ?? null,
 			context: {
 				packageId: this.ctx.props.packageId,
 				kodyId: this.ctx.props.kodyId,
@@ -2115,24 +2105,58 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 				visitTicket,
 			)
 		}
-		const declared = new Set(this.ctx.props.declaredCapabilities)
+		if (name === INTEGRATION_RUNTIME_CONFIG_TOOL_NAME) {
+			return await this.integrationRuntimeConfig(capabilityArgs, visitTicket)
+		}
+		const declared = new Set([
+			...(this.ctx.props.declaredCapabilities ?? []),
+			...(this.ctx.props.capabilityAllowance ?? []),
+		])
 		return await this.runWithAuthority({
 			callName: name,
 			storageId: null,
 			visitTicket,
-			run: async (callerContext, mode) => {
-				if (mode === 'runs-as' && !declared.has(name)) {
+			run: async (callerContext) => {
+				if (!declared.has(name)) {
 					throw this.capabilityNotDeclared(name, boundPackageId)
 				}
 				return await this.invokeCapability(boundPackageId, callerContext, {
 					name,
 					args: capabilityArgs,
 					unavailable: (missing) =>
-						mode === 'runs-as'
-							? new PackageAppCapabilityUnavailableError(missing)
-							: new Error(
-									`Package app capability "${missing}" is not available.`,
-								),
+						new PackageAppCapabilityUnavailableError(missing),
+				})
+			},
+		})
+	}
+
+	/**
+	 * `createAuthenticatedFetch(name)` reads non-secret integration config
+	 * through this host-side helper. It is internal, not a capability, so it
+	 * needs no `kody.app.capabilities` entry.
+	 */
+	private async integrationRuntimeConfig(
+		args: Record<string, unknown>,
+		visitTicket: string | null | undefined,
+	) {
+		return await this.runWithAuthority({
+			callName: INTEGRATION_RUNTIME_CONFIG_TOOL_NAME,
+			storageId: null,
+			visitTicket,
+			run: async (callerContext) => {
+				const { capabilityMap } = await getCapabilityRegistryForContext({
+					env: this.env,
+					callerContext,
+				})
+				const integrationGet = capabilityMap.integrationGet
+				if (!integrationGet) {
+					throw new Error('Integration config is not available to this app.')
+				}
+				return await readIntegrationRuntimeConfig({
+					env: this.env,
+					callerContext,
+					integrationGet,
+					args,
 				})
 			},
 		})
@@ -2168,9 +2192,11 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 
 	/**
 	 * `metaGetCurrentUser` names the visitor, never the runs-as person:
-	 * identity is information, not authority. Members of the owning org also
-	 * get their role. Email needs the visitor's `email` consent; an answer
-	 * that carried it without consent keeps it for now and is logged.
+	 * identity is information, not authority. In a visit, "current user" is
+	 * the visitor, with their own display name and members' role. Email is
+	 * the visitor's own address, and only when they shared it (the `email`
+	 * consent scope) or the app belongs to their own personal org. Otherwise
+	 * it is empty. The publisher's identity is `kody.appPublisherGet()`.
 	 */
 	private async visitorIdentityAnswer(
 		boundPackageId: string | null,
@@ -2190,24 +2216,53 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 			}
 		}
 		const visitor = visit?.visitor ?? null
-		const legacy = (await this.invokeCapability(
+		const base = (await this.invokeCapability(
 			boundPackageId,
 			await this.createCallerContext(null, visitTicket),
 			{ name: packageAppIdentityCapabilityName, args },
 		)) as Record<string, unknown>
-		if (!visitor) return legacy
-		const answer = { ...legacy, role: visitor.role }
-		const email = typeof legacy.email === 'string' ? legacy.email : ''
-		if (!email) return answer
-		// Only decides whether to log; a failed grant read never changes the answer.
-		const grant = await this.findVisitorGrant(visitor).catch(() => null)
-		if (grant && scopesIncludeEmail(grant.scopes)) return answer
-		this.noteAuthorityFallback(
-			packageAppIdentityCapabilityName,
-			'identity_email',
-			visitor,
-		)
-		return answer
+		if (!visitor) return base
+		const person = await loadPackageAppVisitorPerson(this.env.APP_DB, visitor)
+		const ownApp = person?.personalOrgId === this.ctx.props.userId
+		const shared =
+			ownApp ||
+			Boolean(
+				person?.email &&
+				(await this.findVisitorGrant(visitor)
+					.then((grant) => grant && scopesIncludeEmail(grant.scopes))
+					.catch(() => false)),
+			)
+		return {
+			...base,
+			user_id: visitor.userId,
+			username: visitor.username,
+			email: shared ? (person?.email ?? '') : '',
+			display_name: person?.displayName ?? visitor.username,
+			role: visitor.role,
+		}
+	}
+
+	/** The app's runs-as person (the publisher unless an Owner chose someone). */
+	async appPublisherGet(): Promise<{
+		user_id: string
+		username: string
+		email: string
+		display_name: string
+		org: { slug: string }
+		source: PackageAppRunsAsSource
+	}> {
+		const runsAs = await this.loadRunsAs()
+		if (runsAs.status !== 'ready') {
+			throw new PackageAppRunsAsUnavailableError(runsAs.reason)
+		}
+		return {
+			user_id: runsAs.personId,
+			username: runsAs.username,
+			email: runsAs.email,
+			display_name: runsAs.displayName,
+			org: { slug: this.ctx.props.orgSlug ?? '' },
+			source: runsAs.source,
+		}
 	}
 
 	private async findVisitorGrant(visitor: RuntimePackageAppVisitor) {
@@ -2300,21 +2355,35 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 		return await this.createCallerContext(null, visitTicket)
 	}
 
-	async storageGet(input: { storageId: string; key: string }) {
+	/** Facet storage meters to the visit's billed org (ADR 0095). */
+	private async facetBilledOrgId(visitTicket?: string | null) {
+		return (await this.requireActingVisit(visitTicket))?.billing?.orgId
+	}
+
+	async storageGet(input: AppStorageInput & { key: string }) {
 		const storageId = this.assertAppOwnedStorageId(input.storageId)
-		return await this.getStorageRunner(storageId).getValue({
+		return await this.getStorageRunner(
+			storageId,
+			undefined,
+			await this.facetBilledOrgId(input.visitTicket),
+		).getValue({
 			key: input.key,
 		})
 	}
 
-	async storageList(input: {
-		storageId: string
-		prefix?: string | null
-		pageSize?: number
-		startAfter?: string | null
-	}) {
+	async storageList(
+		input: AppStorageInput & {
+			prefix?: string | null
+			pageSize?: number
+			startAfter?: string | null
+		},
+	) {
 		const storageId = this.assertAppOwnedStorageId(input.storageId)
-		return await this.getStorageRunner(storageId).listValues({
+		return await this.getStorageRunner(
+			storageId,
+			undefined,
+			await this.facetBilledOrgId(input.visitTicket),
+		).listValues({
 			prefix: input.prefix,
 			pageSize: input.pageSize,
 			startAfter: input.startAfter,
@@ -2327,6 +2396,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 		params?: Array<unknown>
 		writable: boolean
 		packageAppVisitorUserId?: string
+		billedOrgId?: OwnerId
 	}) {
 		// package app bridges always mark packageStorage SQL writable, so skip
 		// the all-bucket fan-out for pure SELECT/EXPLAIN/PRAGMA statements.
@@ -2342,6 +2412,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 		return await this.getStorageRunner(
 			input.storageId,
 			input.packageAppVisitorUserId,
+			input.billedOrgId,
 		).sqlQuery({
 			query: input.query,
 			params: input.params,
@@ -2354,10 +2425,12 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 		key: string
 		value: unknown
 		packageAppVisitorUserId?: string
+		billedOrgId?: OwnerId
 	}) {
 		const existing = await this.getStorageRunner(
 			input.storageId,
 			input.packageAppVisitorUserId,
+			input.billedOrgId,
 		).getValue({ key: input.key })
 		await this.assertStorageWriteAllowed({
 			storageId: input.storageId,
@@ -2375,46 +2448,61 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 							},
 			}),
 		})
-		return await this.getStorageRunner(input.storageId).setValue({
+		return await this.getStorageRunner(
+			input.storageId,
+			input.packageAppVisitorUserId,
+			input.billedOrgId,
+		).setValue({
 			key: input.key,
 			value: input.value,
 		})
 	}
 
-	async storageSql(input: {
-		storageId: string
-		query: string
-		params?: Array<unknown>
-		writable?: boolean
-	}) {
+	async storageSql(
+		input: AppStorageInput & {
+			query: string
+			params?: Array<unknown>
+			writable?: boolean
+		},
+	) {
 		const storageId = this.assertAppOwnedStorageId(input.storageId)
 		return await this.sqlQueryWithEntitlement({
 			storageId,
 			query: input.query,
 			params: input.params,
 			writable: input.writable ?? false,
+			billedOrgId: await this.facetBilledOrgId(input.visitTicket),
 		})
 	}
 
-	async storageSet(input: { storageId: string; key: string; value: unknown }) {
+	async storageSet(input: AppStorageInput & { key: string; value: unknown }) {
 		const storageId = this.assertAppOwnedStorageId(input.storageId)
 		return await this.setValueWithEntitlement({
 			storageId,
 			key: input.key,
 			value: input.value,
+			billedOrgId: await this.facetBilledOrgId(input.visitTicket),
 		})
 	}
 
-	async storageDelete(input: { storageId: string; key: string }) {
+	async storageDelete(input: AppStorageInput & { key: string }) {
 		const storageId = this.assertAppOwnedStorageId(input.storageId)
-		return await this.getStorageRunner(storageId).deleteValue({
+		return await this.getStorageRunner(
+			storageId,
+			undefined,
+			await this.facetBilledOrgId(input.visitTicket),
+		).deleteValue({
 			key: input.key,
 		})
 	}
 
-	async storageClear(input: { storageId: string }) {
+	async storageClear(input: AppStorageInput) {
 		const storageId = this.assertAppOwnedStorageId(input.storageId)
-		return await this.getStorageRunner(storageId).clearStorage()
+		return await this.getStorageRunner(
+			storageId,
+			undefined,
+			await this.facetBilledOrgId(input.visitTicket),
+		).clearStorage()
 	}
 
 	async appRateLimit(input: {
@@ -2488,8 +2576,8 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 		args: unknown,
 		visitTicket?: string | null,
 	) {
-		const packageAppVisitorUserId =
-			(await this.visitorFor(visitTicket))?.userId ?? ''
+		const visit = await this.requireActingVisit(visitTicket)
+		const packageAppVisitorUserId = visit?.visitor.userId ?? ''
 		const payload = (
 			args !== null && typeof args === 'object' && !Array.isArray(args)
 				? args
@@ -2510,8 +2598,10 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 			pageSize?: number
 			startAfter?: string | null
 			packageAppVisitorUserId?: string
+			billedOrgId?: OwnerId
 		}
 		input.packageAppVisitorUserId = packageAppVisitorUserId
+		input.billedOrgId = visit?.billing?.orgId
 		switch (method) {
 			case 'packageStorageGet':
 				return await this.packageStorageGetAs(boundPackageId, input)
@@ -2536,6 +2626,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 			packageId: string
 			key: string
 			packageAppVisitorUserId?: string
+			billedOrgId?: OwnerId
 		},
 	) {
 		const packageId = this.resolvePackageStorageOwner(
@@ -2547,6 +2638,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 		return await this.getStorageRunner(
 			buildPackageStorageId(packageId),
 			input.packageAppVisitorUserId,
+			input.billedOrgId,
 		).getValue({
 			key: input.key,
 		})
@@ -2560,6 +2652,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 			pageSize?: number
 			startAfter?: string | null
 			packageAppVisitorUserId?: string
+			billedOrgId?: OwnerId
 		},
 	) {
 		const packageId = this.resolvePackageStorageOwner(
@@ -2569,6 +2662,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 		return await this.getStorageRunner(
 			buildPackageStorageId(packageId),
 			input.packageAppVisitorUserId,
+			input.billedOrgId,
 		).listValues({
 			prefix: input.prefix,
 			pageSize: input.pageSize,
@@ -2584,6 +2678,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 			params?: Array<unknown>
 			writable?: boolean
 			packageAppVisitorUserId?: string
+			billedOrgId?: OwnerId
 		},
 	) {
 		const packageId = this.resolvePackageStorageOwner(
@@ -2596,6 +2691,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 			params: input.params,
 			writable: input.writable ?? false,
 			packageAppVisitorUserId: input.packageAppVisitorUserId,
+			billedOrgId: input.billedOrgId,
 		})
 	}
 
@@ -2606,6 +2702,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 			key: string
 			value: unknown
 			packageAppVisitorUserId?: string
+			billedOrgId?: OwnerId
 		},
 	) {
 		const packageId = this.resolvePackageStorageOwner(
@@ -2617,6 +2714,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 			key: input.key,
 			value: input.value,
 			packageAppVisitorUserId: input.packageAppVisitorUserId,
+			billedOrgId: input.billedOrgId,
 		})
 	}
 
@@ -2902,7 +3000,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 	private async getCredentialClientTools(
 		boundPackageId: string | null,
 		opener:
-			| { mode: 'legacy' }
+			| { mode: 'handle' }
 			| { mode: 'runs-as'; callerContext: McpCallerContext }
 			| {
 					mode: 'visitor-need'
@@ -2970,12 +3068,6 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 					// The app package is the entry: a bound dependency's need reads
 					// the app's mappings.
 					runEntries: async () => (await loadRunNeedEntries()).entries,
-					// Under the runs-as person every declared need is theirs, so the
-					// `ownerCredentialForVisitors` opt-in only applies the legacy way.
-					ownerCredentialScope:
-						opener.mode === 'legacy'
-							? packageAppOwnerCredentialScope(this.ctx.props)
-							: null,
 					packageAppAuthority: createPackageAppCredentialAuthority({
 						env: this.env,
 						scope: this.authorityScope(),
@@ -3042,9 +3134,9 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 			name === credentialClientToolNames.open ||
 			name === credentialClientToolNames.openAll ||
 			name === credentialClientToolNames.check
-		// Executor needs never resolve from the runs-as or legacy path. Refuse
-		// before runWithAuthority, whose legacy fallback would otherwise hand
-		// back the owner's credential.
+		// Executor needs never resolve from the runs-as path. Refuse before
+		// runWithAuthority, which would otherwise hand back the publisher's
+		// credential.
 		if (
 			opens &&
 			typeof args.key === 'string' &&
@@ -3064,7 +3156,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 			return await callTool(
 				await this.getCredentialClientTools(
 					boundPackageId,
-					{ mode: 'legacy' },
+					{ mode: 'handle' },
 					visitTicket,
 				),
 				args,
@@ -3074,18 +3166,7 @@ export class PackageAppRuntimeBridge extends WorkerEntrypoint<
 			callName: `credential:${name}`,
 			storageId: null,
 			visitTicket,
-			refusedResultKind: packageAppAuthorityFallbackKindOfResult,
-			run: async (callerContext, mode) => {
-				if (mode === 'legacy') {
-					return await callTool(
-						await this.getCredentialClientTools(
-							boundPackageId,
-							{ mode: 'legacy' },
-							visitTicket,
-						),
-						args,
-					)
-				}
+			run: async (callerContext) => {
 				if (args.name !== undefined && args.name !== null) {
 					// The runs-as person's credentials are capped to declared needs.
 					throw this.capabilityNotDeclared('credential.named', boundPackageId)
@@ -3352,6 +3433,36 @@ export function createPackageAppWorkerCacheKey(input: {
  * The visitor a package app acts as. An anonymous visitor (no request
  * context) is null; `servingUsername` then names the owning org's slug.
  */
+/** The visitor's own account row, for their identity in a visit. */
+async function loadPackageAppVisitorPerson(
+	db: D1Database,
+	visitor: RuntimePackageAppVisitor,
+) {
+	const row = await db
+		.prepare(
+			`SELECT email, username, display_name, personal_org_id FROM users
+			 WHERE stable_user_id = ?
+			   AND suspended_at IS NULL
+			   AND deleting_at IS NULL${andLiveDeletedAtSql()}
+			 LIMIT 1`,
+		)
+		.bind(visitor.userId)
+		.first<{
+			email: string | null
+			username: string
+			display_name: string | null
+			personal_org_id: string | null
+		}>()
+	if (!row) return null
+	return {
+		email: row.email?.trim() || null,
+		displayName:
+			row.display_name?.trim() ||
+			resolveDisplayName({ email: row.email ?? '', username: row.username }),
+		personalOrgId: row.personal_org_id?.trim() || null,
+	}
+}
+
 function packageAppVisitorOf(
 	callerContext: McpCallerContext,
 	servingUsername?: string,
@@ -3715,6 +3826,7 @@ async function buildPackageAppWorkerOptionsUncached(
 			hostedOrigin?: string
 			mount?: PackageAppMount
 		}
+		serverTiming?: Array<ServerTimingEntry>
 	},
 	/**
 	 * The build cache key when this build is cached under a stable worker id;
@@ -3729,25 +3841,53 @@ async function buildPackageAppWorkerOptionsUncached(
 		sourceFiles: input.sourceFiles,
 		savedPackage: input.savedPackage,
 	})
-	const [bundled, clientArtifact] = await Promise.all([
-		resolvePackageAppBundledArtifact({
-			env: input.env,
-			baseUrl: input.baseUrl,
-			userId: input.userId,
-			source: input.source,
-			manifest,
-			savedPackage: input.savedPackage,
-			loadSourceFiles: input.loadSourceFiles,
-			sourceFiles: input.sourceFiles,
-		}),
-		resolvePackageAppClientArtifact({
-			env: input.env,
-			userId: input.userId,
-			manifest,
-			savedPackage: input.savedPackage,
-			loadSourceFiles: input.loadSourceFiles,
-			sourceFiles: input.sourceFiles,
-		}),
+	// Starts before the template read so the D1 allowance row overlaps it.
+	const capabilityAllowancePending = (
+		typeof input.env.APP_DB?.prepare === 'function'
+			? loadPackageAppCapabilityAllowance(input.env.APP_DB, {
+					packageId: input.savedPackage.id,
+					publishedCommit: input.savedPackage.publishedCommit,
+				})
+			: Promise.resolve([] as Array<string>)
+	).catch((error: unknown) => {
+		if (!/no such table/i.test(String(error))) {
+			console.warn('package-app-capability-allowance-load-failed', error)
+		}
+		return [] as Array<string>
+	})
+	const published = await pushServerTiming(
+		input.serverTiming,
+		'appTemplate',
+		() =>
+			readPublishedPackageAppWorkerTemplate({
+				env: input.env,
+				manifest,
+				savedPackage: input.savedPackage,
+			}),
+	)
+	const [bundled, clientArtifact, capabilityAllowance] = await Promise.all([
+		published?.bundled ??
+			resolvePackageAppBundledArtifact({
+				env: input.env,
+				baseUrl: input.baseUrl,
+				userId: input.userId,
+				source: input.source,
+				manifest,
+				savedPackage: input.savedPackage,
+				loadSourceFiles: input.loadSourceFiles,
+				sourceFiles: input.sourceFiles,
+			}),
+		published && published.client !== undefined
+			? published.client
+			: resolvePackageAppClientArtifact({
+					env: input.env,
+					userId: input.userId,
+					manifest,
+					savedPackage: input.savedPackage,
+					loadSourceFiles: input.loadSourceFiles,
+					sourceFiles: input.sourceFiles,
+				}),
+		capabilityAllowancePending,
 	])
 	// Platform-served static surface. The client module URL carries the
 	// content hash, so pages read it from packageContext instead of
@@ -3841,11 +3981,6 @@ async function buildPackageAppWorkerOptionsUncached(
 		},
 		grantedSecretAuthorityPackageIds: packageStorageGrantIds,
 		packageSecretRefKey,
-		ownerCredentialScope: packageAppOwnerCredentialScope({
-			userId: input.userId,
-			packageId: input.savedPackage.id,
-			publishedCommit: input.savedPackage.publishedCommit,
-		}),
 		visitAudience,
 		packageAppAuthority: {
 			scope: { orgId: input.userId, packageId: input.savedPackage.id },
@@ -3892,7 +4027,11 @@ async function buildPackageAppWorkerOptionsUncached(
 			gatewayProps,
 			visitTicket: null,
 			visitAudience,
-			declaredCapabilities: [...(manifest.kody.app?.capabilities ?? [])],
+			declaredCapabilities: effectivePackageAppCapabilities({
+				manifest,
+				dependencies: bundled.dependencies,
+			}),
+			...(capabilityAllowance.length ? { capabilityAllowance } : {}),
 			appPackage: { name: manifest.name, version: manifest.version ?? null },
 			dependencyPackageNames: collectDependencyPackageNames({
 				dependencies: bundled.dependencies,
@@ -3901,6 +4040,55 @@ async function buildPackageAppWorkerOptionsUncached(
 			visitorNeeds: { ...manifest.kody.app?.visitorNeeds },
 		},
 		gatewayProps,
+	}
+}
+
+/**
+ * The publish-time template (see `readPackageAppWorkerTemplate`) for the
+ * served commit. Null when publish stored none (packages published before
+ * templates), a read fails, or the stored bundle predates lexical package
+ * `fetch`; the caller then resolves bundle and client the old way.
+ */
+async function readPublishedPackageAppWorkerTemplate(input: {
+	env: Env
+	manifest: AuthoredPackageJson
+	savedPackage: { sourceId: string; publishedCommit: string | null }
+}): Promise<{
+	bundled: ReturnType<typeof servePublishedAppArtifact> | null
+	client: { mainModule: string } | null | undefined
+} | null> {
+	const publishedCommit = input.savedPackage.publishedCommit
+	const appEntry = getPackageAppEntryPath(input.manifest)
+	if (!publishedCommit || !appEntry) return null
+	if (!hasPublishedRuntimeArtifacts(input.env)) return null
+	try {
+		const parts = await readPackageAppWorkerTemplate({
+			env: input.env,
+			sourceId: input.savedPackage.sourceId,
+			publishedCommit,
+			appEntry,
+			clientEntry: getPackageAppClientEntryPath(input.manifest),
+		})
+		const app =
+			parts.app && !isUnrepairablePreBindingArtifact(parts.app)
+				? servePublishedAppArtifact(parts.app)
+				: null
+		return { bundled: app, client: parts.client }
+	} catch (error) {
+		console.warn('package-app-template-read-failed', {
+			sourceId: input.savedPackage.sourceId,
+			error: error instanceof Error ? error.message : String(error),
+		})
+		return null
+	}
+}
+
+function servePublishedAppArtifact(artifact: PublishedBundleArtifact) {
+	return {
+		mainModule: artifact.mainModule,
+		modules: artifact.modules,
+		dependencies: artifact.dependencies,
+		dynamicDependencies: artifact.dynamicDependencies,
 	}
 }
 
@@ -3934,23 +4122,6 @@ function visitHostOf(hostedUrl: string, baseUrl: string) {
 		} catch {
 			return baseUrl
 		}
-	}
-}
-
-/**
- * Where an `ownerCredentialForVisitors` need may resolve owner credentials:
- * this app at the commit it serves. Whether the app is internet-visible and
- * that commit approved is read when a need asks, not baked into the worker.
- */
-function packageAppOwnerCredentialScope(input: {
-	userId: OwnerId
-	packageId: string
-	publishedCommit: string | null
-}): OwnerCredentialScope {
-	return {
-		orgId: input.userId,
-		packageId: input.packageId,
-		publishedCommit: input.publishedCommit,
 	}
 }
 
@@ -4004,21 +4175,25 @@ export async function buildPackageAppWorker(input: {
 	// so they take the include → credits → stop gate. The breaker runs it after
 	// the response and refuses only once a denial has opened it.
 	const request = input.runtime.callerContext.request
+	// A visit from another org to an internal app is gated on the visiting
+	// org's usage, since that org pays for its metered work (ADR 0095).
+	const billing = request?.billing ?? null
+	const billedOrgId = billedOrgIdOf(request, input.userId)
 	await pushServerTiming(input.serverTiming, 'usageGate', async () => {
 		await gatePackageAppUsage({
 			env: input.env,
-			ownerId: input.userId,
+			ownerId: billedOrgId,
 			actorId: request?.actor?.userId ?? null,
 			waitUntil: input.waitUntil ?? scheduleWorkerWaitUntil,
 			check: () =>
 				assertWithinComputeInclude({
 					db: input.env.APP_DB,
 					env: input.env,
-					userId: input.userId,
+					userId: billedOrgId,
 					orgBudget: request
 						? {
-								orgId: request.org.id,
-								orgSlug: request.org.slug,
+								orgId: billing ? billedOrgId : request.org.id,
+								orgSlug: billing ? null : request.org.slug,
 								actorUserId: request.actor?.userId ?? null,
 								actorUsername: request.actor?.username ?? null,
 							}
@@ -4034,15 +4209,17 @@ export async function buildPackageAppWorker(input: {
 		)
 		const visitorGrant =
 			visitor && orgSlug
-				? await findLivePackageAppOauthGrant({
-						db: input.env.APP_DB,
-						personId: visitor.userId,
-						orgUsername: orgSlug.toLowerCase(),
-						kodyId: input.savedPackage.kodyId,
-					}).catch((error: unknown) => {
-						console.warn('package-app-visitor-grant-lookup-failed', error)
-						return null
-					})
+				? await pushServerTiming(input.serverTiming, 'visitorGrant', () =>
+						findLivePackageAppOauthGrant({
+							db: input.env.APP_DB,
+							personId: visitor.userId,
+							orgUsername: orgSlug.toLowerCase(),
+							kodyId: input.savedPackage.kodyId,
+						}).catch((error: unknown) => {
+							console.warn('package-app-visitor-grant-lookup-failed', error)
+							return null
+						}),
+					)
 				: null
 		if (visitorGrant) {
 			await notePackageAppOauthGrantUse({
@@ -4191,9 +4368,11 @@ export async function createPackageAppCallerContext(input: {
 	}
 	visitor: RuntimePackageAppVisitor | null
 	packageId: string
+	/** Set for a visit from another org to an internal app (ADR 0095). */
+	billing?: RequestBilling | null
 }) {
 	const { visitor } = input
-	return createMcpCallerContext({
+	const callerContext = createMcpCallerContext({
 		baseUrl: input.baseUrl,
 		executionOrigin: 'background',
 		user: visitor
@@ -4218,4 +4397,5 @@ export async function createPackageAppCallerContext(input: {
 		},
 		source: { kind: 'package-app' },
 	})
+	return withRequestBilling(callerContext, input.billing)
 }

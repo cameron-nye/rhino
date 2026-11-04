@@ -119,8 +119,8 @@ export const orgTransferTables: Record<string, OrgTransferTableDisposition> = {
 	),
 	enablements: move('org_id re-pointed for triggers of moved packages.'),
 
-	grants: keep(
-		'Resource grants name source-org subjects; transfer refuses while any exist on moved resources.',
+	grants: move(
+		"Creator grants (origin 'created') re-pointed when their person is a target member, else soft-deleted; any other resource grant names source-org subjects, so transfer refuses while one exists.",
 	),
 	access_cache: keep('Compiled access; both orgs bump access_epoch.'),
 	account_write_lease_repairs: keep(personOwned),
@@ -140,7 +140,6 @@ export const orgTransferTables: Record<string, OrgTransferTableDisposition> = {
 	community_bans: keep(personOwned),
 	community_ratings: keep(personOwned),
 	community_reports: keep('Moderation history.'),
-	connection_profiles: keep(personOwned),
 	credential_inventory_items: keep(
 		'Credential inventory results stay with the run that recorded them.',
 	),
@@ -161,6 +160,9 @@ export const orgTransferTables: Record<string, OrgTransferTableDisposition> = {
 		'Org overrides of where an automation runs; the manifest declaration travels with the package and the target org sets its own override.',
 	),
 	execution_context_opt_ins: keep(personOwned),
+	profiles: keep(
+		'Profiles are identities a person acts as in one org; they stay in that org and their grants on moved resources are dropped with the other grants.',
+	),
 	execution_context_org_attachments: keep(
 		'Attachments link a context to an org by its operator; they are not resources of the transferred packages.',
 	),
@@ -178,6 +180,8 @@ export const orgTransferTables: Record<string, OrgTransferTableDisposition> = {
 	email_inboxes: keep(emailStays),
 	email_notification_destinations: keep(emailStays),
 	email_outbound_failure_tracking: keep(emailStays),
+	email_deliverability_effects: keep(emailStays),
+	email_mailbox_delivery_cursors: keep(emailStays),
 	email_outbound_provider_index: keep(emailStays),
 	email_outbound_provider_index_repair_owners: keep(emailStays),
 	email_sender_identities: keep(emailStays),
@@ -195,6 +199,7 @@ export const orgTransferTables: Record<string, OrgTransferTableDisposition> = {
 	),
 	oauth_connections: keep(personOwned),
 	oauth_device_authorizations: keep(personOwned),
+	agent_registrations: keep(personOwned),
 	org_invite_link_pending: keep(orgMembershipShape),
 	org_invite_link_redemptions: keep(orgMembershipShape),
 	org_invite_links: keep(orgMembershipShape),

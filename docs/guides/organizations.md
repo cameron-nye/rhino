@@ -18,11 +18,44 @@ belong to one org. Handles are permanent: `@slug` does not rename.
 The org is the billing and data boundary: its resources, usage, limits, and bill
 stay inside it. Inside an org, grants control access. Owners hold everything,
 Members hold the org basics (`org:read`, `member:read`, `team:read`,
-`search:read`) plus what they are granted, and an outside collaborator holds
-catalog search (`search:read`) plus their grants. See
-[Share a package](/docs/package-sharing) for presets and grants.
+`search:read`), what [member permissions](#member-permissions) allow, and what
+they are granted. An outside collaborator holds catalog search (`search:read`)
+plus their grants. See [Share a package](/docs/package-sharing) for presets and
+grants.
 
-### Org-wide read access
+## Member permissions
+
+Like a code host's "members can create repositories" setting, an Owner chooses
+what every Member of a team org can create without a grant: **Organization
+settings**, **Member permissions**, or `orgUpdate`.
+
+| Setting                              | Default | Gives every Member                                                                  |
+| ------------------------------------ | ------- | ----------------------------------------------------------------------------------- |
+| Members can create packages and apps | Off     | `package:create`, `app:create`: save, fork, and first-publish packages, repos, apps |
+| Members can create credentials       | On      | `secret:create`, `integration:create`: new secrets, OAuth connections, MCP servers  |
+
+```json
+{ "members_can_create_packages": true, "members_can_create_credentials": true }
+```
+
+Owners can always create. Whoever creates something gets full (`manage`) access
+to it. Changing an existing package or credential still needs its own write
+permission, so these settings never let a Member edit what someone else made.
+The settings are enforced on the server for every path (MCP, the API, the CLI's
+first publish and repo push, and the website). A Member who is refused gets an
+error naming the setting and the Grants page.
+
+To let only some people or teams create, leave a setting off and use **Grants**,
+**Create access** (or `accessGrant` with `resource_type: "org"` and
+`permissions: ["package:create"]`, `["secret:create"]`, or
+`["integration:create"]`). Those grants still apply when a setting is off.
+
+Owners can also turn off
+[usage warnings](/docs/platform-efficiency#usage-warnings) (the 80% and 100%
+usage emails and the monthly execute heads-up) with `orgUpdate`
+`{ "usage_warnings": false }` or **Organization settings**, **Usage warnings**.
+
+## Org-wide read access
 
 To let a Member read everything of one kind without making them an Owner, an
 Owner grants read access on the organization: **Grants** page,
@@ -38,15 +71,20 @@ Owner grants read access on the organization: **Grants** page,
 }
 ```
 
-From the CLI: `kody api accessGrant --org <slug> --params '<that JSON>'`.
+From the CLI: `kody api accessGrant --org <slug> --params '<that JSON>'`. Add
+`"expires_at": "<ISO time>"` for temporary access: the grant stops counting at
+that time. A new grant without `expires_at` never expires. Rewriting a grant
+without `expires_at` keeps a future expiry but drops one that has already
+passed; pass `null` to make it unlimited. `accessList` still shows an expired
+grant, with its past `expires_at`, until you rewrite or revoke it.
 
-| Permission         | Reads                                                     |
-| ------------------ | --------------------------------------------------------- |
-| `job:read`         | Every job, workflow, and run (`runList`, `runGet`, ...)   |
-| `app:read`         | Every package app and its sessions                        |
-| `package:read`     | Source, skills, and checks for every package and repo     |
-| `integration:read` | Which integrations and MCP servers exist, never a token   |
-| `email:read`       | Every inbox and message, including sign-in codes they get |
+| Permission         | Reads                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------------- |
+| `job:read`         | Every job, workflow, and run (`runList`, `runGet`, the Activity page, Overview run history) |
+| `app:read`         | Every package app and its sessions                                                          |
+| `package:read`     | Source, skills, and checks for every package and repo                                       |
+| `integration:read` | Which integrations and MCP servers exist, never a token                                     |
+| `email:read`       | Every inbox and message, including sign-in codes they get                                   |
 
 These are read only. Running, editing, triaging runs, sharing, and using a
 credential still need their own grant. Secret values and memories are never
@@ -64,6 +102,27 @@ grantable org-wide.
 Switch orgs from the workspace name at the top of the workspace rail (it keeps
 the section you are on), from the avatar menu's Manage group, or pick the org at
 MCP consent. Overview is `/@<slug>/-/overview`. One connection binds one org.
+
+## Link to your own pages with `/@me`
+
+`/@me` always means the signed-in person's own (personal) account. Any path
+under it redirects to the same path on your handle, so
+[`kody.codes/@me/-/profiles`](https://kody.codes/@me/-/profiles) opens
+`/@<your-username>/-/profiles`. The rest of the path and the query string are
+kept. Signed-out visitors sign in first and then land on the resolved page. `me`
+is reserved, so no person or org can claim that handle.
+
+Handy settings links: [`/@me/-/settings`](https://kody.codes/@me/-/settings),
+[`/@me/-/secrets`](https://kody.codes/@me/-/secrets),
+[`/@me/-/agents`](https://kody.codes/@me/-/agents),
+[`/@me/-/email`](https://kody.codes/@me/-/email),
+[`/@me/-/jobs`](https://kody.codes/@me/-/jobs),
+[`/@me/-/activity`](https://kody.codes/@me/-/activity), and
+[`/@me/-/waiting`](https://kody.codes/@me/-/waiting).
+
+Agents: when a doc shows `/@<slug>/-/...` for the person's personal account and
+you don't know their username, link `https://kody.codes/@me/-/...` instead. Use
+the real slug for team orgs: `/@me` never points at a team org.
 
 ## Public org page
 
@@ -238,6 +297,12 @@ Example: Jesse holds Use on `@acme/bot` and is not a member. Connected as
 `@acme`, his runs count against acme's execute pool, credits, and budgets.
 Nothing is charged to Jesse's personal plan, and acme's seat count does not
 change.
+
+Visits to an internal **package app** are billed differently: a visitor from
+outside the org pays for the metered work their visits cause from their own
+personal org, and the owning org keeps paying the app's Worker compute.
+Internet-visible apps are always paid by the owning org. See
+[Package apps: who pays for visits](/docs/package-apps#who-pays-for-visits).
 
 ## Connect one client to two orgs
 

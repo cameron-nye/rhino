@@ -1,3 +1,4 @@
+import { type SelfServeExperimentState } from '#universal/feature-flags/experiments.ts'
 import { type OAuthAuthorizeClientFailure } from '#universal/oauth-authorize-client-failure.ts'
 import {
 	type OnboardingFeaturedListing,
@@ -9,6 +10,7 @@ import {
 	type ViewerListingInstall,
 } from '#universal/community-public-types.ts'
 import { type McpOAuthClientMode } from '@kody-internal/shared/mcp-servers.ts'
+import { type GrantPreset } from '@kody-internal/shared/grant-presets.ts'
 import { type PermissionString, type RoleName } from '#universal/permissions.ts'
 import { type AdminFeatureFlag } from '#universal/feature-flags/types.ts'
 import { type OnboardingChecklistItemId } from '#universal/onboarding-checklist-types.ts'
@@ -1358,11 +1360,17 @@ export type OrgSettingsLoaderData = {
 	ok: true
 	org: OrgManagementOrg
 	canManage: boolean
+	/** `org:write` on this org, personal orgs included (custom domains). */
+	canManageDomains: boolean
 	canDelete: boolean
 	/** Who sees `/@slug`; null for personal orgs (they follow the account profile). */
 	profileVisibility: 'public' | 'private' | null
-	/** Null for personal orgs and for viewers who cannot manage the org. */
+	/** Null for viewers who cannot manage the org's domains. */
 	customDomains: OrgSettingsCustomDomainsView | null
+	/** What every Member may create without a grant; null for personal orgs. */
+	memberCreation: { packages: boolean; credentials: boolean } | null
+	/** Usage emails and the execute heads-up; personal and team orgs alike. */
+	usageWarnings: boolean
 }
 
 export type OrgMemberView = {
@@ -1436,7 +1444,7 @@ export type OrgInviteJoinOffer =
 			kind: 'resource'
 			packageName: string
 			packageHref: string
-			preset: 'use' | 'contribute' | 'manage'
+			preset: GrantPreset
 			presetLabel: string
 			presetDescription: string
 			/** The viewer is not a member, so they stay an outside collaborator. */
@@ -1572,6 +1580,8 @@ export type OrgWideReadSubjectView = {
 	label: string
 	/** Read-only permissions this subject already holds on the organization. */
 	reads: Array<string>
+	/** Create permissions this subject's own organization grant holds. */
+	creates: Array<string>
 }
 
 export type OrgCollaboratorView = {
@@ -1711,20 +1721,6 @@ export type AccountMcpOauthClientsLoaderData = {
 
 export type AccountConnectedAgentListItem = ConnectedMcpAgent & {
 	grantIds: Array<string>
-	connectionProfileName: string | null
-}
-
-export type AccountConnectionProfileView = {
-	id: string
-	name: string
-	grants: Array<{
-		resourceType: string
-		resourceId: string
-		actions: Array<'read' | 'execute' | 'write'>
-	}>
-	mcpServerUrl: string
-	createdAt: string
-	updatedAt: string
 }
 
 export type AccountConnectedAgentsLoaderData = {
@@ -1736,15 +1732,6 @@ export type AccountConnectedAgentsLoaderData = {
 	 * cannot send an unverified user into the authorize → 403 loop.
 	 */
 	mcpServerUrl: string
-	/** Experimenter-only. Absent/empty when the connection-profiles flag is off. */
-	connectionProfilesEnabled?: boolean
-	connectionProfiles?: Array<AccountConnectionProfileView>
-	/** Owned packages offered when editing profile grants (id + name). */
-	connectionProfilePackageOptions?: Array<{
-		id: string
-		name: string
-		kodyId: string
-	}>
 }
 
 type PackageWebhookVerification =
@@ -2285,6 +2272,17 @@ export type AccountPackageDetail = AccountPackageListItem & {
 	 * or empty when the package has none.
 	 */
 	customDomains?: Array<PackageAppCustomDomainView>
+	/**
+	 * Owner notice: the package has unmappable credentials, so changes and
+	 * publishes are owner-only unless a grant allows them (manager view only).
+	 */
+	unmappableCredentialsNotice?: string
+	/**
+	 * Capabilities the published version may call without declaring them,
+	 * which the next publish must add to `kody.app.capabilities` (owner view
+	 * only).
+	 */
+	capabilityAllowance?: Array<string>
 	/** Recent package-app cookie HttpOnly warnings (owner view only). */
 	cookieWarnings?: Array<{
 		cookieName: string
@@ -3074,6 +3072,20 @@ export type PackageAppOauthConsentLoaderData = {
 	}>
 	alreadyAllowedLabels: Array<string>
 	hiddenFields: Record<string, string>
+	/**
+	 * Who pays for what the app runs for this visitor (ADR 0095): the
+	 * publisher, or the visitor's own org on another org's internal app.
+	 */
+	billing?: { payer: 'publisher' } | { payer: 'visitor-org'; orgSlug: string }
+	/** Set when approving "Sign in on another device" for a limited browser. */
+	device: {
+		/** Code shown on the other device, `XXXX-XXXX`. */
+		userCode: string
+		/** Self-reported browser label, e.g. "Chrome 80 on Linux". */
+		requester: string
+		/** Unix seconds. */
+		expiresAt: number
+	} | null
 }
 
 export type DiscordPageLoaderData = {
@@ -3480,6 +3492,8 @@ export type AccountWaitingLoaderData = {
 export type AccountExperimentsLoaderData = {
 	ok: true
 	experimentsOptIn: boolean
+	/** Every self-serve experiment, from `selfServeExperiments`. */
+	experiments: Array<SelfServeExperimentState>
 }
 
 /** One package app the person signed in to with Kody. */

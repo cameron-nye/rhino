@@ -58,6 +58,7 @@ import { Route as AppAccountRouteImport } from './routes/_app.account'
 import { Route as AccountExportDotjsonRouteImport } from './routes/account_.export[.]json'
 import { Route as AccountMemoriesExportDotjsonRouteImport } from './routes/account_.memories-export[.]json'
 import { Route as AccountPackagesDotjsonRouteImport } from './routes/account_.packages[.]json'
+import { Route as AgentClaimRouteImport } from './routes/agent.claim'
 import { Route as BlogIndexRouteImport } from './routes/blog.index'
 import { Route as BlogSlugRouteImport } from './routes/blog.$slug'
 import { Route as BlogRssDotxmlRouteImport } from './routes/blog_.rss[.]xml'
@@ -70,6 +71,8 @@ import { Route as ConnectOauthRouteImport } from './routes/connect.oauth'
 import { Route as ConnectSecretSetRouteImport } from './routes/connect.secret-set'
 import { Route as ConnectSecretsRouteImport } from './routes/connect.secrets'
 import { Route as ConnectWebhookApplyRouteImport } from './routes/connect.webhook-apply'
+import { Route as DesktopLoginRouteImport } from './routes/desktop.login'
+import { Route as DesktopSessionRouteImport } from './routes/desktop.session'
 import { Route as DocsIndexRouteImport } from './routes/docs.index'
 import { Route as DocsSlugRouteImport } from './routes/docs.$slug'
 import { Route as DocsConnectRouteImport } from './routes/docs.connect'
@@ -130,6 +133,7 @@ import { Route as AppAccountMcpServersRouteImport } from './routes/_app.account_
 import { Route as AppAccountMemoriesRouteImport } from './routes/_app.account_.memories'
 import { Route as AppAccountOrganizationsRouteImport } from './routes/_app.account_.organizations'
 import { Route as AppAccountPasskeysRouteImport } from './routes/_app.account_.passkeys'
+import { Route as AppAccountProfilesRouteImport } from './routes/_app.account_.profiles'
 import { Route as AppAccountSecretProvidersRouteImport } from './routes/_app.account_.secret-providers'
 import { Route as AppAccountSecretsRouteImport } from './routes/_app.account_.secrets'
 import { Route as AppAccountSecurityRouteImport } from './routes/_app.account_.security'
@@ -160,6 +164,7 @@ import { Route as DocsSlugOgDotpngRouteImport } from './routes/docs_.$slug_.og[.
 import { Route as IntegrationsLogosIntegrationSlugRouteImport } from './routes/integrations_.logos_.$integrationSlug'
 import { Route as IntegrationsProviderMarksSlugRouteImport } from './routes/integrations_.provider-marks_.$slug'
 import { Route as OauthPackageAppAuthorizeRouteImport } from './routes/oauth.package-app.authorize'
+import { Route as OauthPackageAppDeviceRouteImport } from './routes/oauth.package-app.device'
 import { Route as OnboardingStep1AgentRouteImport } from './routes/onboarding.step-1_.$agent'
 import { Route as OnboardingStep2ServiceRouteImport } from './routes/onboarding.step-2_.$service'
 import { Route as OnboardingStep3AgentRouteImport } from './routes/onboarding.step-3_.$agent'
@@ -185,6 +190,7 @@ import { Route as AppAtChar123orgSlugChar125MembersRouteImport } from './routes/
 import { Route as AppAtChar123orgSlugChar125MemoriesRouteImport } from './routes/_app.@{$orgSlug}_.-.memories'
 import { Route as AppAtChar123orgSlugChar125OverviewRouteImport } from './routes/_app.@{$orgSlug}_.-.overview'
 import { Route as AppAtChar123orgSlugChar125PackagesRouteImport } from './routes/_app.@{$orgSlug}_.-.packages'
+import { Route as AppAtChar123orgSlugChar125ProfilesRouteImport } from './routes/_app.@{$orgSlug}_.-.profiles'
 import { Route as AppAtChar123orgSlugChar125RepositoriesRouteImport } from './routes/_app.@{$orgSlug}_.-.repositories'
 import { Route as AppAtChar123orgSlugChar125SecretProvidersRouteImport } from './routes/_app.@{$orgSlug}_.-.secret-providers'
 import { Route as AppAtChar123orgSlugChar125SecretsRouteImport } from './routes/_app.@{$orgSlug}_.-.secrets'
@@ -527,6 +533,11 @@ const AccountPackagesDotjsonRoute = AccountPackagesDotjsonRouteImport.update({
   path: '/account/packages.json',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AgentClaimRoute = AgentClaimRouteImport.update({
+  id: '/agent/claim',
+  path: '/agent/claim',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BlogIndexRoute = BlogIndexRouteImport.update({
   id: '/blog/',
   path: '/blog/',
@@ -587,6 +598,16 @@ const ConnectSecretsRoute = ConnectSecretsRouteImport.update({
 const ConnectWebhookApplyRoute = ConnectWebhookApplyRouteImport.update({
   id: '/connect/webhook-apply',
   path: '/connect/webhook-apply',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DesktopLoginRoute = DesktopLoginRouteImport.update({
+  id: '/desktop/login',
+  path: '/desktop/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DesktopSessionRoute = DesktopSessionRouteImport.update({
+  id: '/desktop/session',
+  path: '/desktop/session',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DocsIndexRoute = DocsIndexRouteImport.update({
@@ -901,6 +922,11 @@ const AppAccountPasskeysRoute = AppAccountPasskeysRouteImport.update({
   path: '/account/passkeys',
   getParentRoute: () => AppRoute,
 } as any)
+const AppAccountProfilesRoute = AppAccountProfilesRouteImport.update({
+  id: '/account_/profiles',
+  path: '/account/profiles',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppAccountSecretProvidersRoute =
   AppAccountSecretProvidersRouteImport.update({
     id: '/account_/secret-providers',
@@ -1060,6 +1086,11 @@ const OauthPackageAppAuthorizeRoute =
     path: '/oauth/package-app/authorize',
     getParentRoute: () => rootRouteImport,
   } as any)
+const OauthPackageAppDeviceRoute = OauthPackageAppDeviceRouteImport.update({
+  id: '/oauth/package-app/device',
+  path: '/oauth/package-app/device',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const OnboardingStep1AgentRoute = OnboardingStep1AgentRouteImport.update({
   id: '/step-1_/$agent',
   path: '/step-1/$agent',
@@ -1205,6 +1236,12 @@ const AppAtChar123orgSlugChar125PackagesRoute =
   AppAtChar123orgSlugChar125PackagesRouteImport.update({
     id: '/@{$orgSlug}_/-/packages',
     path: '/@{$orgSlug}/-/packages',
+    getParentRoute: () => AppRoute,
+  } as any)
+const AppAtChar123orgSlugChar125ProfilesRoute =
+  AppAtChar123orgSlugChar125ProfilesRouteImport.update({
+    id: '/@{$orgSlug}_/-/profiles',
+    path: '/@{$orgSlug}/-/profiles',
     getParentRoute: () => AppRoute,
   } as any)
 const AppAtChar123orgSlugChar125RepositoriesRoute =
@@ -1812,6 +1849,7 @@ export interface FileRoutesByFullPath {
   '/account/export.json': typeof AccountExportDotjsonRoute
   '/account/memories-export.json': typeof AccountMemoriesExportDotjsonRoute
   '/account/packages.json': typeof AccountPackagesDotjsonRoute
+  '/agent/claim': typeof AgentClaimRoute
   '/blog/$slug': typeof BlogSlugRoute
   '/blog/rss.xml': typeof BlogRssDotxmlRoute
   '/blog/{$slug}.md': typeof BlogChar123slugChar125DotmdRoute
@@ -1823,6 +1861,8 @@ export interface FileRoutesByFullPath {
   '/connect/secret-set': typeof ConnectSecretSetRoute
   '/connect/secrets': typeof ConnectSecretsRoute
   '/connect/webhook-apply': typeof ConnectWebhookApplyRoute
+  '/desktop/login': typeof DesktopLoginRoute
+  '/desktop/session': typeof DesktopSessionRoute
   '/docs/$slug': typeof DocsSlugRoute
   '/docs/connect': typeof DocsConnectRoute
   '/docs/connect.md': typeof DocsConnectDotmdRoute
@@ -1884,6 +1924,7 @@ export interface FileRoutesByFullPath {
   '/account/memories': typeof AppAccountMemoriesRoute
   '/account/organizations': typeof AppAccountOrganizationsRoute
   '/account/passkeys': typeof AppAccountPasskeysRoute
+  '/account/profiles': typeof AppAccountProfilesRoute
   '/account/secret-providers': typeof AppAccountSecretProvidersRoute
   '/account/secrets': typeof AppAccountSecretsRoute
   '/account/security': typeof AppAccountSecurityRoute
@@ -1913,6 +1954,7 @@ export interface FileRoutesByFullPath {
   '/integrations/logos/$integrationSlug': typeof IntegrationsLogosIntegrationSlugRoute
   '/integrations/provider-marks/$slug': typeof IntegrationsProviderMarksSlugRoute
   '/oauth/package-app/authorize': typeof OauthPackageAppAuthorizeRoute
+  '/oauth/package-app/device': typeof OauthPackageAppDeviceRoute
   '/onboarding/step-1/$agent': typeof OnboardingStep1AgentRoute
   '/onboarding/step-2/$service': typeof OnboardingStep2ServiceRoute
   '/onboarding/step-3/$agent': typeof OnboardingStep3AgentRoute
@@ -1939,6 +1981,7 @@ export interface FileRoutesByFullPath {
   '/@{$orgSlug}/-/memories': typeof AppAtChar123orgSlugChar125MemoriesRoute
   '/@{$orgSlug}/-/overview': typeof AppAtChar123orgSlugChar125OverviewRoute
   '/@{$orgSlug}/-/packages': typeof AppAtChar123orgSlugChar125PackagesRoute
+  '/@{$orgSlug}/-/profiles': typeof AppAtChar123orgSlugChar125ProfilesRoute
   '/@{$orgSlug}/-/repositories': typeof AppAtChar123orgSlugChar125RepositoriesRoute
   '/@{$orgSlug}/-/secret-providers': typeof AppAtChar123orgSlugChar125SecretProvidersRoute
   '/@{$orgSlug}/-/secrets': typeof AppAtChar123orgSlugChar125SecretsRoute
@@ -2081,6 +2124,7 @@ export interface FileRoutesByTo {
   '/account/export.json': typeof AccountExportDotjsonRoute
   '/account/memories-export.json': typeof AccountMemoriesExportDotjsonRoute
   '/account/packages.json': typeof AccountPackagesDotjsonRoute
+  '/agent/claim': typeof AgentClaimRoute
   '/blog/$slug': typeof BlogSlugRoute
   '/blog/rss.xml': typeof BlogRssDotxmlRoute
   '/blog/{$slug}.md': typeof BlogChar123slugChar125DotmdRoute
@@ -2092,6 +2136,8 @@ export interface FileRoutesByTo {
   '/connect/secret-set': typeof ConnectSecretSetRoute
   '/connect/secrets': typeof ConnectSecretsRoute
   '/connect/webhook-apply': typeof ConnectWebhookApplyRoute
+  '/desktop/login': typeof DesktopLoginRoute
+  '/desktop/session': typeof DesktopSessionRoute
   '/docs/$slug': typeof DocsSlugRoute
   '/docs/connect': typeof DocsConnectRoute
   '/docs/connect.md': typeof DocsConnectDotmdRoute
@@ -2153,6 +2199,7 @@ export interface FileRoutesByTo {
   '/account/memories': typeof AppAccountMemoriesRoute
   '/account/organizations': typeof AppAccountOrganizationsRoute
   '/account/passkeys': typeof AppAccountPasskeysRoute
+  '/account/profiles': typeof AppAccountProfilesRoute
   '/account/secret-providers': typeof AppAccountSecretProvidersRoute
   '/account/secrets': typeof AppAccountSecretsRoute
   '/account/security': typeof AppAccountSecurityRoute
@@ -2182,6 +2229,7 @@ export interface FileRoutesByTo {
   '/integrations/logos/$integrationSlug': typeof IntegrationsLogosIntegrationSlugRoute
   '/integrations/provider-marks/$slug': typeof IntegrationsProviderMarksSlugRoute
   '/oauth/package-app/authorize': typeof OauthPackageAppAuthorizeRoute
+  '/oauth/package-app/device': typeof OauthPackageAppDeviceRoute
   '/onboarding/step-1/$agent': typeof OnboardingStep1AgentRoute
   '/onboarding/step-2/$service': typeof OnboardingStep2ServiceRoute
   '/onboarding/step-3/$agent': typeof OnboardingStep3AgentRoute
@@ -2208,6 +2256,7 @@ export interface FileRoutesByTo {
   '/@{$orgSlug}/-/memories': typeof AppAtChar123orgSlugChar125MemoriesRoute
   '/@{$orgSlug}/-/overview': typeof AppAtChar123orgSlugChar125OverviewRoute
   '/@{$orgSlug}/-/packages': typeof AppAtChar123orgSlugChar125PackagesRoute
+  '/@{$orgSlug}/-/profiles': typeof AppAtChar123orgSlugChar125ProfilesRoute
   '/@{$orgSlug}/-/repositories': typeof AppAtChar123orgSlugChar125RepositoriesRoute
   '/@{$orgSlug}/-/secret-providers': typeof AppAtChar123orgSlugChar125SecretProvidersRoute
   '/@{$orgSlug}/-/secrets': typeof AppAtChar123orgSlugChar125SecretsRoute
@@ -2353,6 +2402,7 @@ export interface FileRoutesById {
   '/account_/export.json': typeof AccountExportDotjsonRoute
   '/account_/memories-export.json': typeof AccountMemoriesExportDotjsonRoute
   '/account_/packages.json': typeof AccountPackagesDotjsonRoute
+  '/agent/claim': typeof AgentClaimRoute
   '/blog/$slug': typeof BlogSlugRoute
   '/blog_/rss.xml': typeof BlogRssDotxmlRoute
   '/blog_/{$slug}.md': typeof BlogChar123slugChar125DotmdRoute
@@ -2364,6 +2414,8 @@ export interface FileRoutesById {
   '/connect/secret-set': typeof ConnectSecretSetRoute
   '/connect/secrets': typeof ConnectSecretsRoute
   '/connect/webhook-apply': typeof ConnectWebhookApplyRoute
+  '/desktop/login': typeof DesktopLoginRoute
+  '/desktop/session': typeof DesktopSessionRoute
   '/docs/$slug': typeof DocsSlugRoute
   '/docs/connect': typeof DocsConnectRoute
   '/docs_/connect.md': typeof DocsConnectDotmdRoute
@@ -2425,6 +2477,7 @@ export interface FileRoutesById {
   '/_app/account_/memories': typeof AppAccountMemoriesRoute
   '/_app/account_/organizations': typeof AppAccountOrganizationsRoute
   '/_app/account_/passkeys': typeof AppAccountPasskeysRoute
+  '/_app/account_/profiles': typeof AppAccountProfilesRoute
   '/_app/account_/secret-providers': typeof AppAccountSecretProvidersRoute
   '/_app/account_/secrets': typeof AppAccountSecretsRoute
   '/_app/account_/security': typeof AppAccountSecurityRoute
@@ -2454,6 +2507,7 @@ export interface FileRoutesById {
   '/integrations_/logos_/$integrationSlug': typeof IntegrationsLogosIntegrationSlugRoute
   '/integrations_/provider-marks_/$slug': typeof IntegrationsProviderMarksSlugRoute
   '/oauth/package-app/authorize': typeof OauthPackageAppAuthorizeRoute
+  '/oauth/package-app/device': typeof OauthPackageAppDeviceRoute
   '/onboarding/step-1_/$agent': typeof OnboardingStep1AgentRoute
   '/onboarding/step-2_/$service': typeof OnboardingStep2ServiceRoute
   '/onboarding/step-3_/$agent': typeof OnboardingStep3AgentRoute
@@ -2480,6 +2534,7 @@ export interface FileRoutesById {
   '/_app/@{$orgSlug}_/-/memories': typeof AppAtChar123orgSlugChar125MemoriesRoute
   '/_app/@{$orgSlug}_/-/overview': typeof AppAtChar123orgSlugChar125OverviewRoute
   '/_app/@{$orgSlug}_/-/packages': typeof AppAtChar123orgSlugChar125PackagesRoute
+  '/_app/@{$orgSlug}_/-/profiles': typeof AppAtChar123orgSlugChar125ProfilesRoute
   '/_app/@{$orgSlug}_/-/repositories': typeof AppAtChar123orgSlugChar125RepositoriesRoute
   '/_app/@{$orgSlug}_/-/secret-providers': typeof AppAtChar123orgSlugChar125SecretProvidersRoute
   '/_app/@{$orgSlug}_/-/secrets': typeof AppAtChar123orgSlugChar125SecretsRoute
@@ -2625,6 +2680,7 @@ export interface FileRouteTypes {
     | '/account/export.json'
     | '/account/memories-export.json'
     | '/account/packages.json'
+    | '/agent/claim'
     | '/blog/$slug'
     | '/blog/rss.xml'
     | '/blog/{$slug}.md'
@@ -2636,6 +2692,8 @@ export interface FileRouteTypes {
     | '/connect/secret-set'
     | '/connect/secrets'
     | '/connect/webhook-apply'
+    | '/desktop/login'
+    | '/desktop/session'
     | '/docs/$slug'
     | '/docs/connect'
     | '/docs/connect.md'
@@ -2697,6 +2755,7 @@ export interface FileRouteTypes {
     | '/account/memories'
     | '/account/organizations'
     | '/account/passkeys'
+    | '/account/profiles'
     | '/account/secret-providers'
     | '/account/secrets'
     | '/account/security'
@@ -2726,6 +2785,7 @@ export interface FileRouteTypes {
     | '/integrations/logos/$integrationSlug'
     | '/integrations/provider-marks/$slug'
     | '/oauth/package-app/authorize'
+    | '/oauth/package-app/device'
     | '/onboarding/step-1/$agent'
     | '/onboarding/step-2/$service'
     | '/onboarding/step-3/$agent'
@@ -2752,6 +2812,7 @@ export interface FileRouteTypes {
     | '/@{$orgSlug}/-/memories'
     | '/@{$orgSlug}/-/overview'
     | '/@{$orgSlug}/-/packages'
+    | '/@{$orgSlug}/-/profiles'
     | '/@{$orgSlug}/-/repositories'
     | '/@{$orgSlug}/-/secret-providers'
     | '/@{$orgSlug}/-/secrets'
@@ -2894,6 +2955,7 @@ export interface FileRouteTypes {
     | '/account/export.json'
     | '/account/memories-export.json'
     | '/account/packages.json'
+    | '/agent/claim'
     | '/blog/$slug'
     | '/blog/rss.xml'
     | '/blog/{$slug}.md'
@@ -2905,6 +2967,8 @@ export interface FileRouteTypes {
     | '/connect/secret-set'
     | '/connect/secrets'
     | '/connect/webhook-apply'
+    | '/desktop/login'
+    | '/desktop/session'
     | '/docs/$slug'
     | '/docs/connect'
     | '/docs/connect.md'
@@ -2966,6 +3030,7 @@ export interface FileRouteTypes {
     | '/account/memories'
     | '/account/organizations'
     | '/account/passkeys'
+    | '/account/profiles'
     | '/account/secret-providers'
     | '/account/secrets'
     | '/account/security'
@@ -2995,6 +3060,7 @@ export interface FileRouteTypes {
     | '/integrations/logos/$integrationSlug'
     | '/integrations/provider-marks/$slug'
     | '/oauth/package-app/authorize'
+    | '/oauth/package-app/device'
     | '/onboarding/step-1/$agent'
     | '/onboarding/step-2/$service'
     | '/onboarding/step-3/$agent'
@@ -3021,6 +3087,7 @@ export interface FileRouteTypes {
     | '/@{$orgSlug}/-/memories'
     | '/@{$orgSlug}/-/overview'
     | '/@{$orgSlug}/-/packages'
+    | '/@{$orgSlug}/-/profiles'
     | '/@{$orgSlug}/-/repositories'
     | '/@{$orgSlug}/-/secret-providers'
     | '/@{$orgSlug}/-/secrets'
@@ -3165,6 +3232,7 @@ export interface FileRouteTypes {
     | '/account_/export.json'
     | '/account_/memories-export.json'
     | '/account_/packages.json'
+    | '/agent/claim'
     | '/blog/$slug'
     | '/blog_/rss.xml'
     | '/blog_/{$slug}.md'
@@ -3176,6 +3244,8 @@ export interface FileRouteTypes {
     | '/connect/secret-set'
     | '/connect/secrets'
     | '/connect/webhook-apply'
+    | '/desktop/login'
+    | '/desktop/session'
     | '/docs/$slug'
     | '/docs/connect'
     | '/docs_/connect.md'
@@ -3237,6 +3307,7 @@ export interface FileRouteTypes {
     | '/_app/account_/memories'
     | '/_app/account_/organizations'
     | '/_app/account_/passkeys'
+    | '/_app/account_/profiles'
     | '/_app/account_/secret-providers'
     | '/_app/account_/secrets'
     | '/_app/account_/security'
@@ -3266,6 +3337,7 @@ export interface FileRouteTypes {
     | '/integrations_/logos_/$integrationSlug'
     | '/integrations_/provider-marks_/$slug'
     | '/oauth/package-app/authorize'
+    | '/oauth/package-app/device'
     | '/onboarding/step-1_/$agent'
     | '/onboarding/step-2_/$service'
     | '/onboarding/step-3_/$agent'
@@ -3292,6 +3364,7 @@ export interface FileRouteTypes {
     | '/_app/@{$orgSlug}_/-/memories'
     | '/_app/@{$orgSlug}_/-/overview'
     | '/_app/@{$orgSlug}_/-/packages'
+    | '/_app/@{$orgSlug}_/-/profiles'
     | '/_app/@{$orgSlug}_/-/repositories'
     | '/_app/@{$orgSlug}_/-/secret-providers'
     | '/_app/@{$orgSlug}_/-/secrets'
@@ -3435,6 +3508,7 @@ export interface RootRouteChildren {
   AccountExportDotjsonRoute: typeof AccountExportDotjsonRoute
   AccountMemoriesExportDotjsonRoute: typeof AccountMemoriesExportDotjsonRoute
   AccountPackagesDotjsonRoute: typeof AccountPackagesDotjsonRoute
+  AgentClaimRoute: typeof AgentClaimRoute
   BlogSlugRoute: typeof BlogSlugRoute
   BlogRssDotxmlRoute: typeof BlogRssDotxmlRoute
   BlogChar123slugChar125DotmdRoute: typeof BlogChar123slugChar125DotmdRoute
@@ -3446,6 +3520,8 @@ export interface RootRouteChildren {
   ConnectSecretSetRoute: typeof ConnectSecretSetRoute
   ConnectSecretsRoute: typeof ConnectSecretsRoute
   ConnectWebhookApplyRoute: typeof ConnectWebhookApplyRoute
+  DesktopLoginRoute: typeof DesktopLoginRoute
+  DesktopSessionRoute: typeof DesktopSessionRoute
   DocsSlugRoute: typeof DocsSlugRoute
   DocsConnectRoute: typeof DocsConnectRoute
   DocsConnectDotmdRoute: typeof DocsConnectDotmdRoute
@@ -3492,6 +3568,7 @@ export interface RootRouteChildren {
   IntegrationsLogosIntegrationSlugRoute: typeof IntegrationsLogosIntegrationSlugRoute
   IntegrationsProviderMarksSlugRoute: typeof IntegrationsProviderMarksSlugRoute
   OauthPackageAppAuthorizeRoute: typeof OauthPackageAppAuthorizeRoute
+  OauthPackageAppDeviceRoute: typeof OauthPackageAppDeviceRoute
   ProfilesUsernameOgDotpngRoute: typeof ProfilesUsernameOgDotpngRoute
   DotwellKnownAgentSkillsSkillIdSKILLDotmdRoute: typeof DotwellKnownAgentSkillsSkillIdSKILLDotmdRoute
   AtChar123orgSlugChar125ConnectionsSplatRoute: typeof AtChar123orgSlugChar125ConnectionsSplatRoute
@@ -3854,6 +3931,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AccountPackagesDotjsonRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/agent/claim': {
+      id: '/agent/claim'
+      path: '/agent/claim'
+      fullPath: '/agent/claim'
+      preLoaderRoute: typeof AgentClaimRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/blog/': {
       id: '/blog/'
       path: '/blog'
@@ -3936,6 +4020,20 @@ declare module '@tanstack/react-router' {
       path: '/connect/webhook-apply'
       fullPath: '/connect/webhook-apply'
       preLoaderRoute: typeof ConnectWebhookApplyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/desktop/login': {
+      id: '/desktop/login'
+      path: '/desktop/login'
+      fullPath: '/desktop/login'
+      preLoaderRoute: typeof DesktopLoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/desktop/session': {
+      id: '/desktop/session'
+      path: '/desktop/session'
+      fullPath: '/desktop/session'
+      preLoaderRoute: typeof DesktopSessionRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/docs/': {
@@ -4358,6 +4456,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppAccountPasskeysRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/account_/profiles': {
+      id: '/_app/account_/profiles'
+      path: '/account/profiles'
+      fullPath: '/account/profiles'
+      preLoaderRoute: typeof AppAccountProfilesRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/account_/secret-providers': {
       id: '/_app/account_/secret-providers'
       path: '/account/secret-providers'
@@ -4568,6 +4673,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OauthPackageAppAuthorizeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/oauth/package-app/device': {
+      id: '/oauth/package-app/device'
+      path: '/oauth/package-app/device'
+      fullPath: '/oauth/package-app/device'
+      preLoaderRoute: typeof OauthPackageAppDeviceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/onboarding/step-1_/$agent': {
       id: '/onboarding/step-1_/$agent'
       path: '/step-1/$agent'
@@ -4741,6 +4853,13 @@ declare module '@tanstack/react-router' {
       path: '/@{$orgSlug}/-/packages'
       fullPath: '/@{$orgSlug}/-/packages'
       preLoaderRoute: typeof AppAtChar123orgSlugChar125PackagesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/@{$orgSlug}_/-/profiles': {
+      id: '/_app/@{$orgSlug}_/-/profiles'
+      path: '/@{$orgSlug}/-/profiles'
+      fullPath: '/@{$orgSlug}/-/profiles'
+      preLoaderRoute: typeof AppAtChar123orgSlugChar125ProfilesRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/@{$orgSlug}_/-/repositories': {
@@ -5434,6 +5553,7 @@ interface AppRouteChildren {
   AppAccountMemoriesRoute: typeof AppAccountMemoriesRoute
   AppAccountOrganizationsRoute: typeof AppAccountOrganizationsRoute
   AppAccountPasskeysRoute: typeof AppAccountPasskeysRoute
+  AppAccountProfilesRoute: typeof AppAccountProfilesRoute
   AppAccountSecretProvidersRoute: typeof AppAccountSecretProvidersRoute
   AppAccountSecretsRoute: typeof AppAccountSecretsRoute
   AppAccountSecurityRoute: typeof AppAccountSecurityRoute
@@ -5473,6 +5593,7 @@ interface AppRouteChildren {
   AppAtChar123orgSlugChar125MemoriesRoute: typeof AppAtChar123orgSlugChar125MemoriesRoute
   AppAtChar123orgSlugChar125OverviewRoute: typeof AppAtChar123orgSlugChar125OverviewRoute
   AppAtChar123orgSlugChar125PackagesRoute: typeof AppAtChar123orgSlugChar125PackagesRoute
+  AppAtChar123orgSlugChar125ProfilesRoute: typeof AppAtChar123orgSlugChar125ProfilesRoute
   AppAtChar123orgSlugChar125RepositoriesRoute: typeof AppAtChar123orgSlugChar125RepositoriesRoute
   AppAtChar123orgSlugChar125SecretProvidersRoute: typeof AppAtChar123orgSlugChar125SecretProvidersRoute
   AppAtChar123orgSlugChar125SecretsRoute: typeof AppAtChar123orgSlugChar125SecretsRoute
@@ -5579,6 +5700,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppAccountMemoriesRoute: AppAccountMemoriesRoute,
   AppAccountOrganizationsRoute: AppAccountOrganizationsRoute,
   AppAccountPasskeysRoute: AppAccountPasskeysRoute,
+  AppAccountProfilesRoute: AppAccountProfilesRoute,
   AppAccountSecretProvidersRoute: AppAccountSecretProvidersRoute,
   AppAccountSecretsRoute: AppAccountSecretsRoute,
   AppAccountSecurityRoute: AppAccountSecurityRoute,
@@ -5631,6 +5753,8 @@ const AppRouteChildren: AppRouteChildren = {
     AppAtChar123orgSlugChar125OverviewRoute,
   AppAtChar123orgSlugChar125PackagesRoute:
     AppAtChar123orgSlugChar125PackagesRoute,
+  AppAtChar123orgSlugChar125ProfilesRoute:
+    AppAtChar123orgSlugChar125ProfilesRoute,
   AppAtChar123orgSlugChar125RepositoriesRoute:
     AppAtChar123orgSlugChar125RepositoriesRoute,
   AppAtChar123orgSlugChar125SecretProvidersRoute:
@@ -5852,6 +5976,7 @@ const rootRouteChildren: RootRouteChildren = {
   AccountExportDotjsonRoute: AccountExportDotjsonRoute,
   AccountMemoriesExportDotjsonRoute: AccountMemoriesExportDotjsonRoute,
   AccountPackagesDotjsonRoute: AccountPackagesDotjsonRoute,
+  AgentClaimRoute: AgentClaimRoute,
   BlogSlugRoute: BlogSlugRoute,
   BlogRssDotxmlRoute: BlogRssDotxmlRoute,
   BlogChar123slugChar125DotmdRoute: BlogChar123slugChar125DotmdRoute,
@@ -5863,6 +5988,8 @@ const rootRouteChildren: RootRouteChildren = {
   ConnectSecretSetRoute: ConnectSecretSetRoute,
   ConnectSecretsRoute: ConnectSecretsRoute,
   ConnectWebhookApplyRoute: ConnectWebhookApplyRoute,
+  DesktopLoginRoute: DesktopLoginRoute,
+  DesktopSessionRoute: DesktopSessionRoute,
   DocsSlugRoute: DocsSlugRoute,
   DocsConnectRoute: DocsConnectRoute,
   DocsConnectDotmdRoute: DocsConnectDotmdRoute,
@@ -5911,6 +6038,7 @@ const rootRouteChildren: RootRouteChildren = {
   IntegrationsLogosIntegrationSlugRoute: IntegrationsLogosIntegrationSlugRoute,
   IntegrationsProviderMarksSlugRoute: IntegrationsProviderMarksSlugRoute,
   OauthPackageAppAuthorizeRoute: OauthPackageAppAuthorizeRoute,
+  OauthPackageAppDeviceRoute: OauthPackageAppDeviceRoute,
   ProfilesUsernameOgDotpngRoute: ProfilesUsernameOgDotpngRoute,
   DotwellKnownAgentSkillsSkillIdSKILLDotmdRoute:
     DotwellKnownAgentSkillsSkillIdSKILLDotmdRoute,

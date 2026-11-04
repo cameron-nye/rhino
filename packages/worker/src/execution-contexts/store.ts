@@ -5,10 +5,15 @@ import {
 	type EcpGrant,
 	type Ed25519PublicJwk,
 } from '@kody-internal/shared/execution-context-protocol/index.ts'
+import {
+	type GrantSubjectChoices,
+	grantSubjectMatchSql,
+} from '#worker/authorization/grant-subjects.ts'
 
 /** D1 access for execution contexts (tables from migrations 0189 and 0190). */
 
 export const executionContextIdPrefix = 'ec_'
+export const executionContextCommandPermission = 'execution_context:command'
 export const registrationChallengeTtlMs = 5 * 60_000
 export const unutilizedNamedMax = 3
 export const revokedVisibleMs = 30 * 24 * 60 * 60_000
@@ -45,6 +50,12 @@ export type ContextAccess = {
 	granted: boolean
 	optedIn: boolean
 	preset: 'use' | 'contribute' | 'manage' | null
+	/**
+	 * May run host commands (`execution_context:command`, ADR 0093): the
+	 * operator, or a live grant on this context that lists the permission.
+	 * Never from all_members, an org role, or a preset.
+	 */
+	canRunCommands: boolean
 	usable: boolean
 	unusableReason: UnusableReason | null
 }
@@ -158,6 +169,24 @@ export async function resolveExecutionContextRef(
 }
 
 /**
+ * Context grants reach a person directly or through a team. Everyone in the
+ * org is the attachment's `all_members` flag instead: access-writes refuses an
+ * `org` subject on resource_type execution_context.
+ */
+export const contextGrantSubjects = {
+	user: 'include',
+	team: 'include',
+	org: {
+		exclude:
+			'access-writes refuses org subjects on execution_context; all_members covers everyone in the org.',
+	},
+	profile: {
+		exclude:
+			'Profile grants narrow a profile; they never grant the person behind it.',
+	},
+} as const satisfies GrantSubjectChoices
+
+/**
  * Execute authority (protocol 8.5): the operator, a live grant on this
  * context in the run's org (directly or through a team), or a live member
  * when `all_members` is set. Compiled access and org roles never confer it.
@@ -168,6 +197,11 @@ export async function loadContextAccess(
 	input: { userId: string; orgId: string },
 ): Promise<ContextAccess> {
 	const isOperator = context.operator_user_id === input.userId
+	const subjectMatch = grantSubjectMatchSql({
+		subjects: contextGrantSubjects,
+		personId: input.userId,
+		boundOrgId: input.orgId,
+	})
 	const [attachment, grant, membership, optIn] = await db.batch<
 		Record<string, unknown>
 	>([
@@ -178,16 +212,23 @@ export async function loadContextAccess(
 			.bind(context.id, input.orgId),
 		db
 			.prepare(
-				`SELECT g.preset AS preset FROM grants g
-				 WHERE g.resource_type = 'execution_context' AND g.resource_id = ?1
-				   AND g.org_id = ?2 AND g.deleted_at IS NULL
-				   AND ((g.subject_type = 'user' AND g.subject_id = ?3)
-				     OR (g.subject_type = 'team' AND g.subject_id IN (
-				       SELECT tm.team_id FROM team_members tm
-				       JOIN teams t ON t.id = tm.team_id AND t.deleted_at IS NULL
-				       WHERE tm.user_id = ?3 AND tm.deleted_at IS NULL)))`,
+				`SELECT g.preset AS preset,
+				        EXISTS (
+				          SELECT 1 FROM grant_permissions gp
+				          WHERE gp.grant_id = g.id AND gp.permission = '${executionContextCommandPermission}'
+				        ) AS command
+				 FROM grants g
+				 WHERE g.resource_type = 'execution_context' AND g.resource_id = ?
+				   AND g.org_id = ? AND g.deleted_at IS NULL
+				   AND (g.expires_at IS NULL OR g.expires_at > ?)
+				   AND ${subjectMatch.sql}`,
 			)
-			.bind(context.id, input.orgId, input.userId),
+			.bind(
+				context.id,
+				input.orgId,
+				new Date().toISOString(),
+				...subjectMatch.binds,
+			),
 		db
 			.prepare(
 				`SELECT role FROM org_memberships WHERE org_id = ? AND user_id = ? AND deleted_at IS NULL`,
@@ -207,6 +248,9 @@ export async function loadContextAccess(
 		(row) => (row as { preset: ContextAccess['preset'] }).preset,
 	)
 	const preset = strongestPreset(presets)
+	const commandGranted = (grant?.results ?? []).some(
+		(row) => Number((row as { command?: unknown }).command) === 1,
+	)
 	const isMember = (membership?.results.length ?? 0) > 0
 	const allMembers =
 		context.org_id === input.orgId
@@ -230,6 +274,8 @@ export async function loadContextAccess(
 		granted,
 		optedIn,
 		preset: isOperator ? 'manage' : (preset ?? (granted ? 'use' : null)),
+		canRunCommands:
+			isOperator || (granted && preset !== null && commandGranted),
 		usable: unusableReason === null,
 		unusableReason,
 	}

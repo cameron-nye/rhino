@@ -594,7 +594,7 @@ test('a webhook reads only a secret its own package may read (#3245)', async () 
 	}
 })
 
-test('a package app in a team org acts as its visitor, never as the org itself; a deleted org is denied', async () => {
+test('a package app in a team org resolves as a person member, never as the org itself; a deleted org is denied', async () => {
 	const t = await setup()
 	const created = await createOrganization(
 		t.db,
@@ -1513,4 +1513,24 @@ test('a vault reference with no binding is checked for Use like any credential t
 		'denied',
 		'failure',
 	])
+})
+
+test("a run on someone else's execution context resolves the requester's own credentials, as in Kody cloud", async () => {
+	const t = await setup()
+	const credentialId = await t.secretIdOf('orgToken')
+	const run = deriveRequestContext({
+		user: { userId: personIdFromStored(t.ownerStableId), username: 'owner' },
+		source: { kind: 'execution-context-run', ecid: 'ec-1', runId: 'run-1' },
+		orgBinding: { org: { id: t.orgId, slug: 'owner' }, role: 'owner' },
+	})
+	expect(run.credential.contextRunByOperator).toBeUndefined()
+	await expect(t.resolveSecretAs(run)).resolves.toMatchObject({
+		found: true,
+		value: secretValue,
+	})
+	const rows = await t.auditRows()
+	expect(rows.map((row) => [row.resource_id, row.result])).toEqual([
+		[credentialId, 'success'],
+	])
+	expect(JSON.stringify(rows)).not.toContain(secretValue)
 })
