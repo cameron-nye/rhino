@@ -28,6 +28,7 @@ import {
 import {
 	reportStartupBundleOverages,
 	type StartupBundleOverage,
+	type StartupBundleOverageAttribution,
 } from './startup-bundle-overage-issue.ts'
 import {
 	attributeGeneratedBytes,
@@ -214,6 +215,18 @@ export function collectStartupBundleOverages(
 		})
 	}
 	return overages
+}
+
+/**
+ * In-budget CI runs skip the source-map walk. An over-budget entry still
+ * attributes the bundle already on disk so the tracking issue can name
+ * sources. `--attribute` keeps the manual investigation printout.
+ */
+export function startupEntryNeedsAttribution(
+	attribute: boolean,
+	overBudget: boolean,
+) {
+	return attribute || overBudget
 }
 
 function withStartupBundleBudget(
@@ -478,7 +491,9 @@ async function inspectStartupBundle(
  * tripwire on top of it.
  *
  * Byte overages warn and open/update a tracking GitHub issue on main CI; they
- * never fail this check or block Deploy. Deferred-source / additional-module
+ * never fail this check or block Deploy. The issue names the largest
+ * attributed sources, and byte deltas when a previous outdir or the previous
+ * issue snapshot is available. Deferred-source / additional-module
  * regressions still fail hard.
  */
 export async function checkWorkerStartupBundles(
@@ -523,36 +538,45 @@ export async function checkWorkerStartupBundles(
 				`${JSON.stringify(startupBundleArtifacts(outputRoot, results), null, 2)}\n`,
 			)
 		}
+		const overageAttributions = new Map<
+			StartupBundleName,
+			StartupBundleOverageAttribution
+		>()
 		for (const result of results) {
 			const ratio = `${String(result.size)} / ${String(result.maxEntryBytes)}`
-			if (result.size > result.maxEntryBytes) {
+			const overBudget = result.size > result.maxEntryBytes
+			if (overBudget) {
 				console.warn(`${result.name} startup entry: ${ratio} bytes (OVER)`)
 			} else {
 				console.log(`${result.name} startup entry: ${ratio} bytes`)
 			}
-			if (!options.attribute) continue
-			const current = await attributeStartupEntry(
-				result.entryPath,
-				result.sourceMapPath,
+			if (!startupEntryNeedsAttribution(options.attribute, overBudget)) {
+				continue
+			}
+			const attribution = await loadStartupBundleOverageAttribution(
+				result,
+				compareOutdir,
 			)
-			if (compareOutdir) {
-				const base = await attributeStartupEntryFromOutdir(
-					compareOutdir,
-					result.name,
-				)
-				const deltas = formatSourceByteDeltas(
-					diffAttributedSources(current, base),
-				)
+			if (!attribution) continue
+			if (overBudget) overageAttributions.set(result.name, attribution)
+			if (!options.attribute) continue
+			if (compareOutdir && attribution.outdirDeltas) {
+				const deltas = formatSourceByteDeltas(attribution.outdirDeltas)
 				if (deltas.length > 0) console.log(deltas)
 			} else {
-				const sources = formatAttributedSources(current)
+				const sources = formatAttributedSources(attribution.sources)
 				if (sources.length > 0) console.log(sources)
 			}
 		}
 		if (options.keepOutdir) {
 			console.log(`startup bundle outdir: ${outputRoot}`)
 		}
-		reportStartupBundleOverages(collectStartupBundleOverages(results))
+		reportStartupBundleOverages(
+			collectStartupBundleOverages(results).map((overage) => {
+				const attribution = overageAttributions.get(overage.name)
+				return attribution ? { ...overage, attribution } : overage
+			}),
+		)
 	} finally {
 		await Promise.all([
 			removeStray ? rm(strayPath, { force: true }) : undefined,
@@ -633,6 +657,44 @@ async function attributeStartupEntryFromOutdir(
 	}
 	const entryPath = path.join(outputRoot, name, spec.entryFile)
 	return attributeStartupEntry(entryPath, `${entryPath}.map`)
+}
+
+export async function loadStartupBundleOverageAttribution(
+	result: Pick<StartupEntryInspection, 'name' | 'entryPath' | 'sourceMapPath'>,
+	compareOutdir: string | null,
+): Promise<StartupBundleOverageAttribution | null> {
+	let sources: Awaited<ReturnType<typeof attributeStartupEntry>>
+	try {
+		sources = await attributeStartupEntry(
+			result.entryPath,
+			result.sourceMapPath,
+		)
+	} catch (error) {
+		console.warn(
+			`Startup bundle attribution failed for ${result.name}: ${errorMessage(error)}`,
+		)
+		return null
+	}
+	if (!compareOutdir) return { sources }
+	try {
+		const base = await attributeStartupEntryFromOutdir(
+			compareOutdir,
+			result.name,
+		)
+		return {
+			sources,
+			outdirDeltas: diffAttributedSources(sources, base),
+		}
+	} catch (error) {
+		console.warn(
+			`Startup bundle baseline attribution failed for ${result.name}: ${errorMessage(error)}`,
+		)
+		return { sources }
+	}
+}
+
+function errorMessage(error: unknown) {
+	return error instanceof Error ? error.message : String(error)
 }
 
 if (isExecutedDirectly(import.meta.url)) {

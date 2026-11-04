@@ -15,7 +15,9 @@ typecheck heap, and rehearsal authorize"). The previous merge base was
 
 Upstream now keeps the soft-deleted org fixture and the mailbox provider-index
 repair stamp relative to the clock, so those two test files are no longer fork
-edits.
+edits. The auth-cache restore tombstone in
+`packages/worker/src/mcp-auth-cache.node.test.ts` stays relative to the clock.
+Upstream still stamps a fixed date there.
 
 ## Minimal divergence
 
@@ -251,6 +253,12 @@ purpose.
 | `tools/disaster-recovery/restore-trust-and-verification.node.test.ts`     | Pins the empty restore allowlist and the empty public-key registry.                                                                                                                                                                                                                                     |
 | `tools/worker-startup-bundle-budget.json`                                 | Platform and runtime startup byte ceilings cover shared worker growth since the #3459 reset. The origin ceiling stays.                                                                                                                                                                                  |
 | `tools/worker-startup-bundle-notes.md`                                    | Ledger note for those ceilings. The bytes are the shared worker graph, not a Rhino image or a new Sentry payload.                                                                                                                                                                                       |
+| `tools/startup-bundle-overage-issue.ts`                                   | Overage issues name the largest attributed sources and, when a previous baseline exists, the largest byte deltas.                                                                                                                                                                                       |
+| `tools/startup-bundle-overage-issue.node.test.ts`                         | Pins that issue body: largest sources, package rollup, and byte deltas from a previous outdir or issue snapshot.                                                                                                                                                                                        |
+| `tools/check-worker-startup-bundles.ts`                                   | Attributes over-budget startup entries from the build already on disk. In-budget CI runs skip the source-map walk.                                                                                                                                                                                      |
+| `tools/check-worker-startup-bundles.node.test.ts`                         | Pins overage attribution from the built entry, an optional previous outdir, and that in-budget runs skip it.                                                                                                                                                                                            |
+| `docs/contributing/architecture/startup-budget.md`                        | Notes that the tracking issue names the largest attributed sources without a second --attribute build.                                                                                                                                                                                                  |
+| `packages/worker/src/mcp-auth-cache.node.test.ts`                         | Auth-cache org-restore tombstone stays one day inside the 30-day restore window.                                                                                                                                                                                                                        |
 
 Production hostnames and the CI skips for this fork are in
 [Production hostnames](#production-hostnames). Product copy still names upstream
