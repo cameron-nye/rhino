@@ -409,6 +409,7 @@ test('webhookDeliveryList pushes the name filter, round-trips outcomes, and trea
 	mockSavedWebhook()
 	mockModule.listRunRecords.mockResolvedValue({
 		runs: [
+			['accepted-1', 'accepted', 202, '04', null],
 			['delivered-1', 'delivered', 202, '03', null],
 			['rejected-1', 'rejected', 401, '02', 'invalid_signature'],
 			['failed-1', 'failed', 502, '01', 'invocation_failed'],
@@ -428,6 +429,7 @@ test('webhookDeliveryList pushes the name filter, round-trips outcomes, and trea
 		ctx,
 	)
 	expect(outcomes.deliveries.map((row) => [row.id, row.outcome])).toEqual([
+		['accepted-1', 'accepted'],
 		['delivered-1', 'delivered'],
 		['rejected-1', 'rejected'],
 		['failed-1', 'failed'],

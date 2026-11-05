@@ -85,6 +85,9 @@ export function toWebhookDelivery(run: RunRecord): WebhookDelivery {
 		typeof run.metadata['httpStatus'] === 'number'
 			? run.metadata['httpStatus']
 			: null
+	// Ack ingress writes `accepted` (run status success) before the consumer
+	// writes `delivered`. Verification scans count only the terminal row.
+	const accepted = run.metadata['outcome'] === 'accepted'
 	return {
 		endpointKey: endpointId ?? `${run.packageId ?? ''}:${run.name ?? ''}`,
 		endpointId,
@@ -92,7 +95,7 @@ export function toWebhookDelivery(run: RunRecord): WebhookDelivery {
 		packageId: run.packageId,
 		kodyId: run.kodyId,
 		startedAt: run.startedAt,
-		delivered: run.status === 'success',
+		delivered: run.status === 'success' && !accepted,
 		httpStatus,
 		error: run.errorMessage,
 	}

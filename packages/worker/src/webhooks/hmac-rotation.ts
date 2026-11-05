@@ -223,6 +223,33 @@ export async function reconcileWebhookHmacVerificationRotation(input: {
 		}
 	}
 
+	// Steady ingress already has this secretName and this plaintext. Encrypting
+	// a fresh snapshot on every request (AES-GCM, new IV) is wasted CPU on the
+	// ack path and does not change the row. A decrypt failure is not a value
+	// change either: the write below leaves that snapshot in place.
+	const trackedName = endpoint.hmacSecretName?.trim() ?? ''
+	if (
+		trackedName === secretName &&
+		trackedName &&
+		endpoint.hmacVerificationSecretEncrypted
+	) {
+		try {
+			const previousPlaintext = await decryptWebhookVerificationSnapshot({
+				env: input.env,
+				userId: endpoint.userId,
+				endpointId: endpoint.id,
+				encrypted: endpoint.hmacVerificationSecretEncrypted,
+			})
+			if (previousPlaintext === input.declaredPlaintext) return endpoint
+		} catch (error) {
+			console.warn('webhook-verification-snapshot-decrypt-failed', {
+				endpointId: endpoint.id,
+				error,
+			})
+			return endpoint
+		}
+	}
+
 	const nextSnapshot = await encryptWebhookVerificationSnapshot({
 		env: input.env,
 		userId: endpoint.userId,
@@ -230,7 +257,6 @@ export async function reconcileWebhookHmacVerificationRotation(input: {
 		plaintext: input.declaredPlaintext,
 	})
 
-	const trackedName = endpoint.hmacSecretName?.trim() ?? ''
 	if (!trackedName) {
 		const saved = await setWebhookEndpointHmacVerificationState({
 			db: input.env.APP_DB,

@@ -16,7 +16,12 @@ import {
 	webhookPackageRefSchema,
 } from './shared.ts'
 
-const webhookOutcomeValues = ['delivered', 'rejected', 'failed'] as const
+const webhookOutcomeValues = [
+	'accepted',
+	'delivered',
+	'rejected',
+	'failed',
+] as const
 
 function metadataString(
 	metadata: Record<string, unknown>,
@@ -44,7 +49,12 @@ function metadataOutcome(
 	metadata: Record<string, unknown>,
 ): (typeof webhookOutcomeValues)[number] | null {
 	const raw = metadataString(metadata, ['outcome'])
-	if (raw === 'delivered' || raw === 'rejected' || raw === 'failed') {
+	if (
+		raw === 'accepted' ||
+		raw === 'delivered' ||
+		raw === 'rejected' ||
+		raw === 'failed'
+	) {
 		return raw
 	}
 	return null
@@ -62,7 +72,11 @@ function toDeliveryFromRunRecord(run: RunRecord) {
 	const outcome = deliveryOutcome(run)
 	const httpStatus =
 		metadataNumber(run.metadata, ['http_status', 'httpStatus']) ??
-		(outcome === 'delivered' ? 202 : outcome === 'rejected' ? 400 : 502)
+		(outcome === 'delivered' || outcome === 'accepted'
+			? 202
+			: outcome === 'rejected'
+				? 400
+				: 502)
 	const payloadBytes =
 		metadataNumber(run.metadata, ['payload_bytes', 'payloadBytes']) ?? 0
 	const webhookName =

@@ -51,6 +51,10 @@ export type WebhookAuthRegressionResult = {
  * Newest-first deliveries of one endpoint: a regression is a run of at least
  * `minStreak` 401s that ends at a success. Any other outcome inside the run
  * (a 404, 409, or failed export) is not an auth regression.
+ *
+ * Ack ingress records `accepted` at HTTP 202 (`delivered` false, so a
+ * verification scan does not count it twice). That 202 is still a success
+ * boundary, same as the consumer's later `delivered` row and a sync 200.
  */
 export function classifyWebhookAuthRegression(input: {
 	owner: WebhookOwner
@@ -62,7 +66,7 @@ export function classifyWebhookAuthRegression(input: {
 	let firstUnauthorizedAt: string | null = null
 	let lastUnauthorizedAt: string | null = null
 	for (const delivery of input.deliveries) {
-		if (delivery.delivered) {
+		if (delivery.delivered || delivery.httpStatus === 202) {
 			if (streak < input.minStreak || !firstUnauthorizedAt) return null
 			return {
 				ownerId: input.owner.ownerId,
