@@ -18,7 +18,10 @@ comments on Kent's repositories. Leftover papercuts go through
 Automerge is `.github/workflows/rhino-automerge.yml`. It squash-merges only when
 every gate below is true. It does not merge a fork, a draft, a base other than
 `main`, a branch that does not start with `cursor/`, a pull request whose author
-login is not `cameron-nye`, or a pull request labeled `no-automerge`.
+login is not `cameron-nye`, or a pull request labeled `no-automerge`. The
+merging token has `issues: write`. A closing keyword in the pull request body
+closes that issue when the squash merge lands. The keyword does not also have to
+be in the branch commit message.
 
 ## Gates
 

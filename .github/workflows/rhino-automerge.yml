@@ -31,6 +31,15 @@ name: Rhino auto-merge
 # workflow_dispatch is allowed from GITHUB_TOKEN. The job's actions: write
 # permission covers both dispatches. A failed preview dispatch warns and does
 # not fail the merge.
+#
+# GitHub closes issues linked from the pull request body as the account that
+# merges. This token needs issues: write for that. Pull request 22 recorded
+# issue 18 in closingIssuesReferences from the body keyword, the squash commit
+# did not contain that keyword, and 18 stayed open because this job granted
+# no issues permission. The squash message stays GitHub's default. Passing
+# commit text to the merge API replaces that message, so this job does not.
+# After a merge it closes any of those references in this repository that are
+# still open. A failed close warns and does not undo the merge.
 
 on:
   workflow_run:
@@ -72,9 +81,11 @@ jobs:
       )
     permissions:
       # workflow_dispatch of deploy.yml and preview.yml requires actions: write.
+      # issues: write lets this token close issues linked from the pull request.
       actions: write
       checks: read
       contents: write
+      issues: write
       pull-requests: write
     steps:
       - name:
@@ -298,6 +309,93 @@ jobs:
             note "Dispatched 🔎 Preview cleanup on main (action=cleanup, target=pr) for #${pr_number}."
           }
 
+          # GitHub's merge response does not always close closingIssuesReferences
+          # when the squash commit omits the body keyword. Close any that are
+          # still open in this repository. Never fail the merge from here.
+          close_linked_issues() {
+            local number owner name cursor page page_code has_next page_index query
+            local nodes node issue_number issue_repo issue_state close_out close_code
+            number="$1"
+            if [[ ! "$number" =~ ^[0-9]+$ ]]; then
+              warn "Refusing to close linked issues: pull request id is unexpected."
+              return 0
+            fi
+            owner="${REPOSITORY%%/*}"
+            name="${REPOSITORY#*/}"
+            cursor=""
+            has_next=""
+            page_index=0
+            # GraphQL variables are for gh, not the shell.
+            # shellcheck disable=SC2016
+            query='query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{number state repository{nameWithOwner}}}}}}'
+            while [[ "$page_index" -lt 10 ]]; do
+              page_index=$((page_index + 1))
+              set +e
+              page="$(jq -n \
+                --arg query "$query" \
+                --arg owner "$owner" \
+                --arg name "$name" \
+                --argjson number "$number" \
+                --arg cursor "$cursor" \
+                '{query:$query,variables:{owner:$owner,name:$name,number:$number,cursor:(if $cursor=="" then null else $cursor end)}}' \
+                | gh api graphql --input -)"
+              page_code=$?
+              set -e
+              if [[ "$page_code" -ne 0 ]]; then
+                warn "Could not read linked issues for #${number}. The squash merge stands."
+                return 0
+              fi
+              if [[ "$(jq -r 'if (.data.repository.pullRequest.closingIssuesReferences.pageInfo != null) and (.data.repository.pullRequest.closingIssuesReferences.nodes | type == "array") then "ok" else "bad" end' <<<"$page")" != "ok" ]]; then
+                warn "Linked issues response for #${number} was unusable. The squash merge stands."
+                return 0
+              fi
+              nodes="$(jq -c '.data.repository.pullRequest.closingIssuesReferences.nodes[]?' <<<"$page")"
+              while IFS= read -r node; do
+                if [[ -z "$node" ]]; then
+                  continue
+                fi
+                issue_number="$(jq -r '.number' <<<"$node")"
+                issue_state="$(printf '%s' "$(jq -r '.state' <<<"$node")" | tr '[:upper:]' '[:lower:]')"
+                issue_repo="$(jq -r '.repository.nameWithOwner // empty' <<<"$node")"
+                if [[ ! "$issue_number" =~ ^[0-9]+$ ]]; then
+                  warn "Skipping an unexpected linked issue id on #${number}."
+                  continue
+                fi
+                if [[ "$issue_repo" != "$REPOSITORY" ]]; then
+                  note "Skipping linked issue ${issue_repo:-unknown}#${issue_number}: not in ${REPOSITORY}."
+                  continue
+                fi
+                if [[ "$issue_state" != "open" ]]; then
+                  note "Linked issue #${issue_number} is already ${issue_state:-unknown}."
+                  continue
+                fi
+                set +e
+                close_out="$(gh api --method PATCH "repos/${REPOSITORY}/issues/${issue_number}" -f state=closed -f state_reason=completed 2>&1)"
+                close_code=$?
+                set -e
+                if [[ "$close_code" -ne 0 ]]; then
+                  printf '%s\n' "$close_out" >&2
+                  warn "Failed to close #${issue_number} from #${number} (exit ${close_code}). The squash merge stands."
+                  continue
+                fi
+                note "Closed #${issue_number} from squash-merge of #${number}."
+              done <<<"$nodes"
+              has_next="$(jq -r '.data.repository.pullRequest.closingIssuesReferences.pageInfo.hasNextPage' <<<"$page")"
+              if [[ "$has_next" != "true" ]]; then
+                break
+              fi
+              cursor="$(jq -r '.data.repository.pullRequest.closingIssuesReferences.pageInfo.endCursor // empty' <<<"$page")"
+              if [[ -z "$cursor" ]]; then
+                warn "Linked issues page for #${number} had no cursor. The squash merge stands."
+                return 0
+              fi
+            done
+            if [[ "$has_next" == "true" ]]; then
+              warn "Linked issues for #${number} did not finish paging. The squash merge stands."
+            fi
+            return 0
+          }
+
           prs_json="$(gh api "repos/${REPOSITORY}/commits/${HEAD_SHA}/pulls?per_page=100")"
           numbers="$(jq -r '.[].number' <<<"$prs_json")"
 
@@ -456,6 +554,7 @@ jobs:
             fi
             merged_now=1
             note "Squash-merged #${number} as ${last_merge_sha}."
+            close_linked_issues "$number"
             dispatch_preview_cleanup "$number"
           done <<<"$numbers"
 
