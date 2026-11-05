@@ -5,6 +5,9 @@
  *
  * Auth, OAuth, MCP, `/health`, legal pages, and package routes are not in
  * this list. Admin docs stay reachable; public guides do not.
+ *
+ * Entitlements read the same flag. Personal-use mode resolves every
+ * account to the Max plan (`resolveRhinoPersonalUsePlan`).
  */
 import { isPublicDocSlug } from '../page-access.ts'
 import { isOrganizationSlug, orgOverviewPath } from '#universal/org-pages.ts'

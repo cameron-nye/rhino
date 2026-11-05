@@ -29,6 +29,7 @@ import {
 import { adminUsageMetrics } from '#worker/admin/user-usage-data.ts'
 import { isCreditsEligiblePriceId } from '#worker/billing/billing-config.ts'
 import { resolveStripePriceCatalog } from '#worker/billing/stripe-price-catalog.ts'
+import { resolveRhinoPersonalUsePlan } from '#worker/entitlements/rhino-personal-plan.ts'
 import {
 	resolveUserEntitlementFromRow,
 	userEntitlementColumnsSql,
@@ -201,9 +202,8 @@ function inboundReceiveAgainstBasePlan(
 	row: Pick<UserEntitlementRow, 'plan' | 'stripe_plan' | 'entitlement_ladder'>,
 	effective: UserEntitlement,
 ): UserEntitlement | undefined {
-	const basePlan = resolveEffectivePlan(
-		parseStoredPlanName(row.plan),
-		row.stripe_plan,
+	const basePlan = resolveRhinoPersonalUsePlan(
+		resolveEffectivePlan(parseStoredPlanName(row.plan), row.stripe_plan),
 	)
 	if (basePlan === effective.plan) return undefined
 	return {
