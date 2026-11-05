@@ -458,3 +458,18 @@ raised again.
   gap, and none is a fork-only asset. Splitting the capability graph out of the
   entry is a separate change. Reviewed ceilings platform 6_748_000 and runtime
   5_295_000.
+- Upstream sync at `5f4c0dfd1` (Rhino #21, 123 commits since `6d20d3662`) grew
+  the shared worker graph. Rhino commits after the #16 / #17 ceilings
+  (`cfae78b51` through `79a2c3cdd`) only touch this ledger, overage-issue
+  attribution, and test clocks. `pnpm-lock.yaml` is unchanged, so
+  `@babel/parser` (295_705 / 295_640), `tldts` (123_192 / 123_170), and the
+  disposable-email list (163_011) stay the same size. CI on `58704138f` measured
+  platform 6_962_063 against the previous 6_748_000 budget (+214_063) and
+  runtime 5_492_498 against the previous 5_295_000 budget (+197_498). Local
+  dry-run of this tree matches those bytes. Origin measured 752_617, inside
+  7_750_000. The two entries moved together because the new source is shared:
+  profiles, execution contexts, agent registration, package-app authority, org
+  billing, credentials, and publish offload. Those domains already sit on this
+  graph. Dynamic `import()` defers their CPU, and esbuild keeps the bytes in the
+  entry. Splitting those upstream modules would diverge from `kody-hq/kody`.
+  Reviewed ceilings platform 6_965_000 and runtime 5_495_000.
