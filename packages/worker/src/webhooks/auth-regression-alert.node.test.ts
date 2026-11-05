@@ -36,14 +36,14 @@ const now = new Date('2026-10-12T04:00:00.000Z')
 
 function run(
 	minutesAgo: number,
-	outcome: 'delivered' | { status: number; error: string },
+	outcome: 'delivered' | 'accepted' | { status: number; error: string },
 	overrides: Partial<RunRecord> = {},
 ): RunRecord {
-	const delivered = outcome === 'delivered'
+	const success = outcome === 'delivered' || outcome === 'accepted'
 	return {
 		id: crypto.randomUUID(),
 		surface: 'webhook',
-		status: delivered ? 'success' : 'error',
+		status: success ? 'success' : 'error',
 		name: 'wake',
 		packageId: 'pkg-grok',
 		kodyId: 'grok-bot',
@@ -60,7 +60,7 @@ function run(
 		finishedAt: null,
 		durationMs: null,
 		errorName: null,
-		errorMessage: delivered ? null : outcome.error,
+		errorMessage: success ? null : outcome.error,
 		errorTriage: null,
 		triageNote: null,
 		triagedAt: null,
@@ -68,7 +68,8 @@ function run(
 		startedBy: null,
 		metadata: {
 			endpointId: 'ep-wake',
-			httpStatus: delivered ? 202 : outcome.status,
+			httpStatus: success ? 202 : outcome.status,
+			...(outcome === 'accepted' ? { outcome: 'accepted' } : {}),
 		},
 		logCount: 0,
 		...overrides,
@@ -103,6 +104,22 @@ test('a run of 401s that ends at a success is an auth regression', () => {
 		lastUnauthorizedAt: run(5, missingSignature).startedAt,
 		firstUnauthorizedAt: run(90, missingSignature).startedAt,
 		lastDeliveredAt: run(600, 'delivered').startedAt,
+	})
+})
+
+test('an accepted ack row ends a 401 streak the same way a delivery does', () => {
+	const accepted = run(600, 'accepted')
+	expect(toWebhookDelivery(accepted).delivered).toBe(false)
+	expect(
+		classify([
+			run(5, missingSignature),
+			run(30, missingSignature),
+			run(90, { status: 401, error: 'invalid_signature' }),
+			accepted,
+		]),
+	).toMatchObject({
+		unauthorizedStreak: 3,
+		lastDeliveredAt: accepted.startedAt,
 	})
 })
 

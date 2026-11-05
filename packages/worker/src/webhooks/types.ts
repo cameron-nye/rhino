@@ -132,7 +132,11 @@ export function isWebhookPreviousHmacLive(
 	return Date.parse(endpoint.previousHmacSecretExpiresAt) > nowMs
 }
 
-export type WebhookDeliveryOutcome = 'delivered' | 'rejected' | 'failed'
+export type WebhookDeliveryOutcome =
+	| 'accepted'
+	| 'delivered'
+	| 'rejected'
+	| 'failed'
 
 export type WebhookDeliveryRecord = {
 	id: string

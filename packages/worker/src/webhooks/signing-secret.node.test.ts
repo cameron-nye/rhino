@@ -562,3 +562,46 @@ test('secretName rename records previous identity and accepts the old value with
 	)
 	expect(stored?.previousHmacSecretExpiresAt).toBeTruthy()
 })
+
+test('steady ingress does not re-encrypt an unchanged verification snapshot', async () => {
+	const { env, userId, record, previousPlaintext } = await seededEndpointEnv()
+	vi.mocked(resolveSecret).mockResolvedValue({
+		found: true,
+		credentialId: 'cred-stripe',
+		value: previousPlaintext,
+		allowedHosts: [],
+		allowedPackages: ['pkg-1'],
+		placement: null,
+		scope: 'user',
+	})
+	const before = record.hmacVerificationSecretEncrypted
+	expect(before).toBeTruthy()
+	const resolve = () =>
+		resolveWebhookHmacVerificationSecrets({
+			env,
+			userId,
+			endpoint: record,
+			verification: stripeVerification,
+			now: new Date('2026-07-24T12:00:00.000Z'),
+		})
+	await resolve()
+	const afterFirst = await getWebhookEndpointByIdForUser({
+		db: env.APP_DB,
+		userId,
+		endpointId: record.id,
+	})
+	expect(afterFirst?.hmacVerificationSecretEncrypted).toBe(before)
+	await resolveWebhookHmacVerificationSecrets({
+		env,
+		userId,
+		endpoint: afterFirst ?? record,
+		verification: stripeVerification,
+		now: new Date('2026-07-24T12:01:00.000Z'),
+	})
+	const afterSecond = await getWebhookEndpointByIdForUser({
+		db: env.APP_DB,
+		userId,
+		endpointId: record.id,
+	})
+	expect(afterSecond?.hmacVerificationSecretEncrypted).toBe(before)
+})

@@ -363,6 +363,33 @@ function waitUntilFrom(ctx?: ExecutionContext) {
 	return ctx ? (promise: Promise<unknown>) => ctx.waitUntil(promise) : undefined
 }
 
+/**
+ * Enablement planning overlaps HMAC verification on the ack path. The promise
+ * always settles so a 401 return does not leave an unhandled rejection.
+ * Pause/resume inside the plan can still run after a bad signature: the URL
+ * secret already matched. Enqueue and the 202 wait for both results.
+ */
+function startAckEnablementPlan(input: {
+	env: Env
+	endpoint: { id: string; userId: string; packageId: string }
+}) {
+	return planEnablementRuns({
+		env: input.env,
+		orgId: input.endpoint.userId,
+		packageId: input.endpoint.packageId,
+		trigger: { kind: 'webhook', instanceId: input.endpoint.id },
+	}).then(
+		(plan) => ({ ok: true as const, plan }),
+		(error: unknown) => {
+			console.error('webhook-enablement-plan-failed', {
+				endpointId: input.endpoint.id,
+				error,
+			})
+			return { ok: false as const, error }
+		},
+	)
+}
+
 async function readBodyWithCap(
 	request: Request,
 	maxBytes: number,
@@ -759,6 +786,15 @@ export async function handleWebhookIngressRequest(
 		}
 	}
 
+	// Ack mode still has to know whether an enablement is on before it can
+	// 202 or 409. That D1 work overlaps HMAC verification. Sync plans inside
+	// the invocation, so it does not start a second plan here.
+	const ackEnablementPlan =
+		declared.responseMode === 'ack'
+			? startAckEnablementPlan({ env, endpoint: liveEndpoint })
+			: null
+	if (ackEnablementPlan && waitUntil) waitUntil(ackEnablementPlan)
+
 	// A declared HMAC scheme never falls back to URL-secret-only auth.
 	// Webhooks that declare no verification are permanently supported as
 	// `{ type: 'url-secret' }`: senders like Gmail Pub/Sub and Microsoft Graph
@@ -934,13 +970,14 @@ export async function handleWebhookIngressRequest(
 
 	if (declared.responseMode === 'ack') {
 		// Ack mode answers before the queue consumer runs, so the sender learns
-		// here that nothing will run. The consumer checks again.
-		const plan = await planEnablementRuns({
-			env,
-			orgId: liveEndpoint.userId,
-			packageId: liveEndpoint.packageId,
-			trigger: { kind: 'webhook', instanceId: liveEndpoint.id },
-		})
+		// here that nothing will run. The consumer checks again. The plan
+		// started before HMAC so this await is only the leftover time.
+		const planned = await ackEnablementPlan
+		if (!planned) {
+			throw new Error('Ack enablement plan was not started.')
+		}
+		if (!planned.ok) throw planned.error
+		const plan = planned.plan
 		if (plan.runs.length === 0) {
 			await recordWebhookDelivery({
 				env,
@@ -1055,17 +1092,46 @@ export async function handleWebhookIngressRequest(
 			})
 			return dispatchUnavailableResponse()
 		}
-		await retirePreviousWebhookUrlIfConfirmed({
-			env,
-			endpoint: liveEndpoint,
-			secretMatch,
-		})
-		await retirePreviousWebhookHmacIfConfirmed({
-			env,
-			endpoint: liveEndpoint,
-			matchedSource: matchedHmacSource,
-			previousHmacSecretEncrypted: observedPreviousHmacCiphertext,
-		})
+		// The queue send has resolved. Record acceptance and retire rotate
+		// overlap after the 202 so a sender that drops the connection at about
+		// 2 seconds still sees success, and so the delivery log survives that
+		// disconnect. Without ctx (the Start route), await the follow-up so
+		// the row and retire still happen.
+		const acceptedFollowUp = Promise.all([
+			recordWebhookDelivery({
+				env,
+				endpoint: liveEndpoint,
+				kodyId: savedPackage.kodyId,
+				outcome: 'accepted',
+				httpStatus: 202,
+				payloadBytes: bodyBytes.byteLength,
+				invocationId: deliveryId,
+				startedAt: receivedAt,
+			}).catch((error: unknown) => {
+				console.error('webhook-acceptance-record-failed', {
+					endpointId: liveEndpoint.id,
+					error,
+				})
+			}),
+			retirePreviousWebhookUrlIfConfirmed({
+				env,
+				endpoint: liveEndpoint,
+				secretMatch,
+			}).catch((error: unknown) => {
+				console.error('webhook-previous-url-retire-failed', {
+					endpointId: liveEndpoint.id,
+					error,
+				})
+			}),
+			retirePreviousWebhookHmacIfConfirmed({
+				env,
+				endpoint: liveEndpoint,
+				matchedSource: matchedHmacSource,
+				previousHmacSecretEncrypted: observedPreviousHmacCiphertext,
+			}),
+		])
+		if (waitUntil) waitUntil(acceptedFollowUp)
+		else await acceptedFollowUp
 		return jsonResponse({ ok: true }, { status: 202 })
 	}
 

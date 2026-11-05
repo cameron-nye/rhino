@@ -151,7 +151,7 @@ export const webhookDeliverySchema = z.object({
 	package_id: z.string(),
 	webhook_name: z.string(),
 	received_at: z.string(),
-	outcome: z.enum(['delivered', 'rejected', 'failed']),
+	outcome: z.enum(['accepted', 'delivered', 'rejected', 'failed']),
 	http_status: z.number().int(),
 	error: z.string().nullable(),
 	payload_bytes: z.number().int(),
@@ -265,7 +265,7 @@ export function toDeliveryCapability(delivery: {
 	packageId: string
 	webhookName: string
 	receivedAt: string
-	outcome: 'delivered' | 'rejected' | 'failed'
+	outcome: 'accepted' | 'delivered' | 'rejected' | 'failed'
 	httpStatus: number
 	error: string | null
 	payloadBytes: number

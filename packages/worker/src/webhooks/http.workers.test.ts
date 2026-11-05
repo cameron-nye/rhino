@@ -1792,3 +1792,97 @@ test('subscription challenges answer on minted URLs without invoking exports', a
 	expect((await getChallenge(crcQuery)).status).toBe(403)
 	expect(await listDeliveries(userId, hook)).toEqual([])
 })
+
+test('ack returns 202 before the acceptance record finishes and still logs it', async () => {
+	const userId = await setupOwnerWithWebhooks(['sentry'])
+	declareWebhook({ name: 'sentry', verification: githubVerification })
+	await useNamedSecret('sentry')
+	mockSecretValue(hmacSecret)
+	const body = JSON.stringify({ event: 'issue' })
+	const signature = await sign(body)
+	const delivery = await import('./delivery.ts')
+	let releaseAccepted!: () => void
+	const acceptedGate = new Promise<void>((resolve) => {
+		releaseAccepted = resolve
+	})
+	const original = delivery.recordWebhookDelivery
+	const spy = vi
+		.spyOn(delivery, 'recordWebhookDelivery')
+		.mockImplementation(async (input) => {
+			if (input.outcome === 'accepted') await acceptedGate
+			return original(input)
+		})
+	const ctx = createExecutionContext()
+	try {
+		const responsePromise = handleWebhookIngressRequest(
+			new Request(
+				`https://test.kody.dev/@alice/webhooks/sentry-bridge/sentry/${urlSecret}`,
+				{
+					method: 'POST',
+					headers: {
+						'content-type': 'application/json',
+						'x-hub-signature-256': signature,
+					},
+					body,
+				},
+			),
+			env,
+			ctx,
+		)
+		const raced = await Promise.race([
+			responsePromise.then((response) => ({
+				kind: 'response' as const,
+				response,
+			})),
+			new Promise<{ kind: 'timeout' }>((resolve) => {
+				setTimeout(() => resolve({ kind: 'timeout' }), 4_000)
+			}),
+		])
+		expect(raced.kind).toBe('response')
+		if (raced.kind !== 'response') return
+		expect(raced.response.status).toBe(202)
+		expect(mocks.enqueueWebhookDispatch).toHaveBeenCalledTimes(1)
+		expect(
+			(await listDeliveries(userId, 'sentry')).some(
+				(run) => run.metadata?.['outcome'] === 'accepted',
+			),
+		).toBe(false)
+		releaseAccepted()
+		await responsePromise
+		await waitOnExecutionContext(ctx)
+		const accepted = (await listDeliveries(userId, 'sentry')).find(
+			(run) => run.metadata?.['outcome'] === 'accepted',
+		)
+		expect(accepted?.status).toBe('success')
+		expect(accepted?.metadata).toMatchObject({
+			outcome: 'accepted',
+			httpStatus: 202,
+		})
+		expect(accepted?.invocationId).toBe(enqueued(0).deliveryId)
+	} finally {
+		releaseAccepted()
+		spy.mockRestore()
+	}
+})
+
+test('invalid HMAC is not enqueued and is not recorded as accepted', async () => {
+	const userId = await setupOwnerWithWebhooks(['sentry'])
+	declareWebhook({ name: 'sentry', verification: githubVerification })
+	await useNamedSecret('sentry')
+	mockSecretValue(hmacSecret)
+	const body = JSON.stringify({ event: 'issue' })
+	expect(
+		await statusOf('sentry', {
+			body,
+			headers: { 'x-hub-signature-256': 'sha256=00' },
+		}),
+	).toBe(401)
+	expect(mocks.enqueueWebhookDispatch).not.toHaveBeenCalled()
+	const runs = await listDeliveries(userId, 'sentry')
+	expect(runs.some((run) => run.metadata?.['outcome'] === 'accepted')).toBe(
+		false,
+	)
+	expect(runs.some((run) => run.errorMessage === 'invalid_signature')).toBe(
+		true,
+	)
+})

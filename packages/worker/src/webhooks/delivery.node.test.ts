@@ -115,6 +115,29 @@ test('successful deliveries and failures without an export message keep the old 
 		env: {} as Env,
 		endpoint,
 		kodyId: 'example-package',
+		outcome: 'accepted',
+		httpStatus: 202,
+		payloadBytes: 10,
+		invocationId: 'delivery-accepted',
+		startedAt: '2026-10-23T19:03:00.000Z',
+	})
+	expect(mocks.recordRunRecord).toHaveBeenLastCalledWith(
+		expect.objectContaining({
+			status: 'success',
+			error: undefined,
+			context: expect.objectContaining({
+				invocationId: 'delivery-accepted',
+				metadata: expect.objectContaining({
+					outcome: 'accepted',
+					httpStatus: 202,
+				}),
+			}),
+		}),
+	)
+	await recordWebhookDelivery({
+		env: {} as Env,
+		endpoint,
+		kodyId: 'example-package',
 		outcome: 'failed',
 		httpStatus: 502,
 		error: 'invocation_status_502',

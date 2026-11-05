@@ -289,13 +289,17 @@ package settings.
 - Rate limit per minted webhook → **429**. Default **60**/min; override with
   `rateLimitPerMinute` up to **600**.
 - `ack`: **202** `{ "ok": true }` after Kody durably queues the delivery; the
-  export runs in the background. Bodies use the same **1 MB** cap as sync;
-  oversized queue messages spill to ephemeral storage until the consumer runs. A
-  temporary queue failure returns **503** so the provider can retry without Kody
-  claiming acceptance. Activity duration for ack deliveries measures queue
-  consumer + export time (ingress receive time is kept as metadata). Failed
-  deliveries keep diagnostic logs — including when the export never reached user
-  code.
+  export runs in the background. The 202 does not wait for the acceptance record
+  or for signing-secret / URL rotation bookkeeping. Those finish after the
+  response, including when the sender disconnects once the queue has accepted
+  the message. Activity then shows an `accepted` row (`startedAt` is when the
+  POST arrived) and, when the export finishes, a `delivered` or `failed` row.
+  The consumer row's duration measures dispatch and export time (ingress receive
+  time is kept as metadata `receivedAt`). Bodies use the same **1 MB** cap as
+  sync; oversized queue messages spill to ephemeral storage until the consumer
+  runs. A temporary queue failure returns **503** so the provider can retry
+  without Kody claiming acceptance. Failed deliveries keep diagnostic logs —
+  including when the export never reached user code.
 - `sync`: waits for the export JSON result (**502** on failure). The failure
   body is `{ "ok": false, "error": { "code", "message" } }` and never carries
   package internals. `code` is `invocation_failed` unless the fetch gateway

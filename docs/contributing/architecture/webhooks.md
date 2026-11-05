@@ -133,27 +133,36 @@ Route: `GET|POST /@:username/webhooks/:packageKodyId/:webhookName/:urlSecret`
    present ids become the invocation idempotency key.
 8. Dispatch via `invokePackageExport` with a synthetic internal token scoped to
    the owning user / package / export, `source: 'webhook'`.
-9. `ack`: await enqueue to `kody-webhook-dispatch`, then return **202**. The
-   queue consumer owns the full invocation and its terminal writes, so work is
-   not tied to the post-response `waitUntil` window. A failed enqueue returns
-   **503** so the provider can retry. Queue messages omit reconstructed
-   `params.request.json` (the consumer parses `body`) and spill `body` to
-   `BUNDLE_ARTIFACTS_KV` under
+9. `ack`: HMAC is verified before anything is queued or acknowledged. Enablement
+   planning overlaps that verification (the URL secret already matched) and is
+   awaited before the response, so a webhook that is off still returns **409**
+   instead of a queued no-op. After `kody-webhook-dispatch` accepts the message,
+   return **202** without waiting for the acceptance record or for previous URL
+   / HMAC retirement. Those run on `ctx.waitUntil` (awaited when the caller has
+   no execution context) so they still finish if the sender disconnects after
+   enqueue. The queue consumer still owns the export and its terminal
+   `delivered` / `failed` write. A failed enqueue returns **503** so the
+   provider can retry, and does not record `accepted`. Queue messages omit
+   reconstructed `params.request.json` (the consumer parses `body`) and spill
+   `body` to `BUNDLE_ARTIFACTS_KV` under
    `webhook-dispatch-payload:v1:{userId}:{deliveryId}` when the serialized
    message would exceed a conservative 120 KB ceiling beneath Cloudflare Queues'
    128 KB limit. `sync`: await (30s) and return export JSON, **502** on failure.
 10. Authenticated deliveries (and post-auth rejects such as HMAC / size /
     missing declaration) record a `webhook` surface run record (no payload
     body). See [Run records](./run-records.md). URL-secret mismatches, pre-auth
-    rate limits, and subscription challenges still write no delivery history.
-    Ack delivery `startedAt` is the queue-consumer dispatch start (not ingress
-    `receivedAt`); ingress time is retained under metadata `receivedAt` so
+    rate limits, and subscription challenges still write no delivery history. An
+    accepted ack enqueue writes outcome `accepted` (HTTP 202, run status
+    success) with `startedAt` set to ingress `receivedAt`. The consumer still
+    writes `delivered` or `failed`; that row's `startedAt` is the queue-consumer
+    dispatch start, and ingress time is retained under metadata `receivedAt` so
     Activity duration measures export/dispatch work, not provider→queue lag.
-    Failed ack deliveries attach diagnostic logs and the underlying invocation
-    error code (`metadata.invocationErrorCode`). Pre-execution claim releases
-    finish the companion `export` run as an error with logs instead of deleting
-    it, so a failed delivery is never a silent `log_count: 0` with no export
-    row.
+    `accepted` is not a rejection and is not counted as a delivered
+    verification. An HTTP 202 still ends an auth-regression streak. Failed ack
+    deliveries attach diagnostic logs and the underlying invocation error code
+    (`metadata.invocationErrorCode`). Pre-execution claim releases finish the
+    companion `export` run as an error with logs instead of deleting it, so a
+    failed delivery is never a silent `log_count: 0` with no export row.
 
 Ack messages carry the accepted delivery id, idempotency key, scoped endpoint
 identity, export name, and already-authenticated payload (inline `body`, or a
