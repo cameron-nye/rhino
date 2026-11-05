@@ -56,42 +56,10 @@ test('subscription checkout, portal return, and credit payment persist through r
 	).toBeVisible()
 	await page.getByRole('button', { name: 'Return to Kody' }).click()
 	await expect(page).toHaveURL(new RegExp(`${billing}$`))
+	// Personal-use mode resolves the subscribed org to Max, which has no
+	// credit wallet, so the usage page does not offer a balance or top-up.
 	await page.goto(usage)
 	await waitForClientHydration(page)
-	const balance = page.locator('[data-credits-balance]')
-	await expect(balance).toBeVisible()
-	const before = Number((await balance.innerText()).replace(/[^\d.-]/g, ''))
-	await page.getByRole('button', { name: '$10', exact: true }).click()
-	await expect(
-		page.getByRole('heading', { name: 'Test checkout' }),
-	).toBeVisible()
-	const checkout = page.url()
-	const sessionId = new URL(checkout).pathname.split('/').at(-1)!
-	await page.getByRole('button', { name: 'Complete test payment' }).click()
-	await expect(page).toHaveURL(new RegExp(`${usage}\\?credits=added#credits$`))
-	await expect
-		.poll(async () =>
-			Number((await balance.innerText()).replace(/[^\d.-]/g, '')),
-		)
-		.toBe(before + 10)
-	await expect(page.locator('[data-credits-ledger-kind="top_up"]')).toHaveCount(
-		1,
-	)
-	await page.reload()
-	await expect
-		.poll(async () =>
-			Number((await balance.innerText()).replace(/[^\d.-]/g, '')),
-		)
-		.toBe(before + 10)
-	// Replaying the provider return goes through the real signed attribution and wallet write.
-	await page.goto(`${usage}?topup=success&session_id=${sessionId}`)
-	await expect(page).toHaveURL(new RegExp(`${usage}\\?credits=added#credits$`))
-	await expect
-		.poll(async () =>
-			Number((await balance.innerText()).replace(/[^\d.-]/g, '')),
-		)
-		.toBe(before + 10)
-	await expect(page.locator('[data-credits-ledger-kind="top_up"]')).toHaveCount(
-		1,
-	)
+	await expect(page.getByText('Current plan: max')).toBeVisible()
+	await expect(page.locator('[data-credits-balance]')).toHaveCount(0)
 })
