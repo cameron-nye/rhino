@@ -40,6 +40,7 @@ import {
 	buildEntitlementUpgradeHint,
 	isBudgetLimitError,
 } from './errors.ts'
+import { resolveRhinoPersonalUsePlan } from './rhino-personal-plan.ts'
 import { orgBillingPath } from '#universal/org-pages.ts'
 import { countLiveSeats } from '#worker/orgs/billing.ts'
 import { joinOrgsOnPersonalOrgIdSql } from '#worker/orgs/personal-org-sql.ts'
@@ -132,7 +133,8 @@ export function hasStoredCreditsEligibility(
  * Pro Stripe price or admin eligibility ({@link hasStoredCreditsEligibility}).
  * Second-agent / referral Pro overlays raise Free to the retired Pro table
  * without a credit wallet, so they keep pre-credits Pro ceilings. A manual
- * `max` grant outranks all of them.
+ * `max` grant outranks all of them. Personal-use Rhino then lifts that
+ * result to `max` ({@link resolveRhinoPersonalUsePlan}).
  */
 export function resolveUserPlanFromRow(
 	row: UserEntitlementRow,
@@ -142,7 +144,7 @@ export function resolveUserPlanFromRow(
 	ladder: UserEntitlement['ladder']
 	creditsEligible: boolean
 } {
-	const { plan } = resolvePlanOverlay(
+	const overlay = resolvePlanOverlay(
 		parseStoredPlanName(row.plan),
 		row.stripe_plan,
 		laterIsoTimestamp(
@@ -151,6 +153,7 @@ export function resolveUserPlanFromRow(
 		),
 		now,
 	)
+	const plan = resolveRhinoPersonalUsePlan(overlay.plan)
 	return {
 		plan,
 		ladder: parseEntitlementLadder(row.entitlement_ladder),
@@ -190,7 +193,8 @@ export async function readCreditWalletBalanceMicroUsd(
  * cannot inflate receive caps). It resolves the plan itself so an overlay
  * plan can never be paired with Stripe-only eligibility. Overlay-aware
  * callers (live gating, user warnings, fleet entitlement sweeps) use
- * {@link resolveUserEntitlementFromRow}.
+ * {@link resolveUserEntitlementFromRow}. Personal-use Rhino lifts this
+ * base plan the same way ({@link resolveRhinoPersonalUsePlan}).
  */
 export async function resolveBaseUserEntitlement(input: {
 	db: D1Database
@@ -204,9 +208,11 @@ export async function resolveBaseUserEntitlement(input: {
 		| 'admin_credits_eligible'
 	>
 }): Promise<UserEntitlement> {
-	const plan = resolveEffectivePlan(
-		parseStoredPlanName(input.row.plan),
-		input.row.stripe_plan,
+	const plan = resolveRhinoPersonalUsePlan(
+		resolveEffectivePlan(
+			parseStoredPlanName(input.row.plan),
+			input.row.stripe_plan,
+		),
 	)
 	const creditsEligible =
 		plan === 'pro' && hasStoredCreditsEligibility(input.row)
@@ -364,7 +370,8 @@ export async function resolveLiveEntitlementForResource(input: {
  * base plan is still free. Overlay Pro uses the retired Pro table (no
  * wallet). `legacy` ceilings apply only while that marker stays set and
  * paid access remains continuous. The credit wallet is `funded` only for
- * the purchasable Pro with a positive balance.
+ * the purchasable Pro with a positive balance. Personal-use Rhino replaces
+ * that plan with `max`.
  */
 type UserEntitlementLookupRow = UserEntitlementRow & {
 	/** Personal (or team) org id for wallet / seat / override reads. */
