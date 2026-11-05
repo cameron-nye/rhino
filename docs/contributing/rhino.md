@@ -39,8 +39,8 @@ purpose.
 | File                                                                      | Why                                                                                                                                                                                                                                                                                                     |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `docs/contributing/rhino.md`                                              | Additive fork rules (this page).                                                                                                                                                                                                                                                                        |
-| `.github/workflows/rhino-automerge.yml`                                   | Squash-merge same-repo `cursor/` pull requests only when `user.login` is `cameron-nye`, Validate succeeded, and Cursor Bugbot is success or neutral with no unresolved Bugbot threads, unless `RHINO_REQUIRE_BUGBOT` is off. Then dispatch production deploy and preview cleanup.                       |
-| `tools/ci/rhino-automerge-workflow.node.test.ts`                          | Pins automerge gates: Validate, Cursor Bugbot unless `RHINO_REQUIRE_BUGBOT` is off, unresolved Bugbot threads, and preview cleanup that does not fail the merge.                                                                                                                                        |
+| `.github/workflows/rhino-automerge.yml`                                   | Squash-merge same-repo `cursor/` pull requests only when `user.login` is `cameron-nye`, Validate succeeded, and Cursor Bugbot is success or neutral with no unresolved Bugbot threads, unless `RHINO_REQUIRE_BUGBOT` is off. Then dispatch production deploy, preview cleanup, and close linked issues. |
+| `tools/ci/rhino-automerge-workflow.node.test.ts`                          | Pins automerge gates: Validate, Cursor Bugbot unless `RHINO_REQUIRE_BUGBOT` is off, unresolved Bugbot threads, preview cleanup that does not fail the merge, and the close of issues linked from the pull request.                                                                                      |
 | `AGENTS.md`                                                               | Opening pointer to this page. Stays inside the 23-line `agents-md` budget.                                                                                                                                                                                                                              |
 | `docs/contributing/index.md`                                              | Link to this page from the contributing map, including the fork friction route.                                                                                                                                                                                                                         |
 | `.agents/skills/rhino-friction/SKILL.md`                                  | Additive. Agents file friction on `cameron-nye/rhino` with `gh`, labeled `friction`, `friction-skipped`, or `improvement`.                                                                                                                                                                              |
@@ -336,6 +336,12 @@ It squash-merges only when all of these are also true:
 - The pull request does not have the `no-automerge` label.
 - The pull request author login (`user.login`) is exactly `cameron-nye`.
 - GitHub reports the pull request mergeable. Merge conflicts leave it open.
+
+GitHub closes an issue linked from the pull request body as the account that
+merges, including when the squash commit message does not repeat the keyword.
+The job token has `issues: write` for that close. The squash commit message
+stays GitHub's default. After the merge, the job closes any still-open linked
+issue in this repository. A failed close warns and does not undo the merge.
 
 ### Enable Bugbot
 
