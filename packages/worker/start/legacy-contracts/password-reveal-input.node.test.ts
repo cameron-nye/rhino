@@ -1,8 +1,21 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { jsx } from 'react/jsx-runtime'
 import { renderStartPage as renderToString } from '../test-support/render-start-page.ts'
 import { expect, test } from 'vitest'
 import { PasswordRevealInput } from '../components/password-reveal-input.tsx'
 import { passwordManagerIgnoreProps } from '../../client/password-manager-ignore.ts'
+
+const passwordRevealSource = readFileSync(
+	resolve(import.meta.dirname, '../components/password-reveal-input.tsx'),
+	'utf8',
+)
+
+test('password reveal wrapper tolerates extension-injected siblings before hydrate', () => {
+	expect(passwordRevealSource).toMatch(
+		/return\s*\(\s*<div[\s\S]*suppressHydrationWarning/,
+	)
+})
 
 test('password reveal input starts hidden with an accessible toggle', async () => {
 	const html = await renderToString(

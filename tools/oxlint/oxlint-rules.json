@@ -45,6 +45,7 @@
 		"kody-custom/no-oversized-guide-section": "error",
 		"kody-custom/no-tautological-absence": "error",
 		"kody-custom/prefer-loader-data-types": "error",
+		"kody-custom/require-public-auth-form-hydration-suppress": "error",
 		"typescript/no-explicit-any": "error",
 		"vitest/require-mock-type-parameters": "off",
 		"vitest/no-conditional-expect": "off",
