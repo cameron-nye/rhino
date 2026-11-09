@@ -19,12 +19,13 @@ import {
 export type EcpRootKey = { kid: string; x: string }
 
 /**
- * Root public keys pinned in every CLI release. root-2 is the standby: it
- * signs nothing today, so a lost root-1 needs no emergency release.
+ * Root public keys pinned in every CLI release. root-rhino-1 is the Rhino
+ * self-host trust root pinned in this fork; root-2 remains unused standby.
  */
 export const ecpRootPublicKeys: ReadonlyArray<EcpRootKey> = [
 	{ kid: 'root-1', x: 'snJD_ruDIz9ejTdYyRuDT38rlmScNQyXSYpeUCxOBRQ' },
 	{ kid: 'root-2', x: '8TMMLGTn67-wjqM4tU7hUcKtvEgENM2cE4DFjLdBz-w' },
+	{ kid: 'root-rhino-1', x: 'zFFzSb9rgMac1PfrrP_LvBOPMEx87-wlB1iCwUXbZq8' },
 ]
 
 /**
