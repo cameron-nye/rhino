@@ -114,9 +114,9 @@ export async function verifyDetached(input: {
 	publicKey: EcpCryptoKey
 }) {
 	if (!base64UrlPattern.test(input.signature)) return false
-	const signature = base64UrlToBytes(input.signature)
-	if (signature.byteLength !== 64) return false
 	try {
+		const signature = base64UrlToBytes(input.signature)
+		if (signature.byteLength !== 64) return false
 		return await crypto.subtle.verify(
 			{ name: 'Ed25519' },
 			input.publicKey,

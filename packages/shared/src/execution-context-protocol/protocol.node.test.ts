@@ -97,13 +97,15 @@ test('signing vectors are exact (Ed25519 is deterministic)', async () => {
 	).toBe('clock_skew')
 })
 
-test('the production key set verifies against pinned root-1 and the test set does not', async () => {
+test('the production key set verifies against pinned root-rhino-1 and the test set does not', async () => {
+	// Note: committed production keyset is the Rhino root-rhino-1 ceremony envelope.
 	const set = await verifyServerKeySet({ document: productionKeySet })
+	expect(productionKeySet.k).toBe('root-rhino-1')
 	expect(set?.keys).toEqual([
 		{
-			kid: 'ecp-frame-2026-10',
-			x: '6TADcouO3btnE0Tunr1gGwKyvqmOWi7zhDg2vLoaTCE',
-			notAfter: 1824940800000,
+			kid: 'ecp-frame-rhino-2026-11',
+			x: 'nUxPFIihUBQpxAshOz8xLSZAI2Jyrokay_FfeyOqZsg',
+			notAfter: 1857254400000,
 		},
 	])
 	expect(
@@ -115,8 +117,16 @@ test('the production key set verifies against pinned root-1 and the test set doe
 			roots: [vectors.keySet.root],
 		}),
 	).toEqual(vectors.keySet.payload)
-	const tampered = { ...productionKeySet, k: 'root-2' }
-	expect(await verifyServerKeySet({ document: tampered })).toBeNull()
+	expect(
+		await verifyServerKeySet({
+			document: { ...productionKeySet, k: 'root-2' },
+		}),
+	).toBeNull()
+	expect(
+		await verifyServerKeySet({
+			document: { ...productionKeySet, k: 'root-1' },
+		}),
+	).toBeNull()
 	const frameAsKeySet: EcpEnvelope = vectors.serverFrame.envelope
 	expect(
 		await verifyServerKeySet({
@@ -125,7 +135,6 @@ test('the production key set verifies against pinned root-1 and the test set doe
 		}),
 	).toBeNull()
 })
-
 test('a frame signature is never accepted as a key set signature', async () => {
 	const rootKey = await importEd25519PrivateKey(testKeys.root.privateKeyJwk)
 	const asFrame = await signEnvelope({
