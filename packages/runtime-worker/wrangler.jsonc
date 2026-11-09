@@ -213,6 +213,13 @@
 						"name": "REPO_SESSION_INDEX",
 						"script_name": "kody-platform",
 					},
+					// Workflow steps (and other background invokes) that route through
+					// an execution context call sessionStub → EXECUTION_CONTEXT_SESSION.
+					{
+						"class_name": "ExecutionContextSessionV1",
+						"name": "EXECUTION_CONTEXT_SESSION",
+						"script_name": "kody-platform",
+					},
 				],
 			},
 			// Jobs worker service binding (ADR 0016): package save/delete paths
@@ -409,6 +416,11 @@
 					{
 						"class_name": "RepoSessionIndex",
 						"name": "REPO_SESSION_INDEX",
+						"script_name": "kody-platform",
+					},
+					{
+						"class_name": "ExecutionContextSessionV1",
+						"name": "EXECUTION_CONTEXT_SESSION",
 						"script_name": "kody-platform",
 					},
 				],
