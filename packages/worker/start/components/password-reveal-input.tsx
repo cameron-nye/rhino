@@ -19,6 +19,7 @@ export function PasswordRevealInput({
 	const label = `${revealed ? 'Hide' : 'Show'} ${revealNoun}`
 	return (
 		<div
+			suppressHydrationWarning
 			css={{
 				position: 'relative',
 				display: 'flex',

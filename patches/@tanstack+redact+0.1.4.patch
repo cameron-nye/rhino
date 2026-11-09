@@ -545,7 +545,7 @@ index 1ddf88f..aa70487 100644
 +export declare function renderErrorFallback(fiber: Fiber, render: () => void): void;
  export {};
 diff --git a/node_modules/@tanstack/redact/dist/dom/reconcile.js b/node_modules/@tanstack/redact/dist/dom/reconcile.js
-index baf049b..0f886e2 100644
+index baf049b..3158162 100644
 --- a/node_modules/@tanstack/redact/dist/dom/reconcile.js
 +++ b/node_modules/@tanstack/redact/dist/dom/reconcile.js
 @@ -127,7 +127,11 @@ function flushRoot(root) {
@@ -593,7 +593,7 @@ index baf049b..0f886e2 100644
    const parentIsHead = domParent.nodeName === "HEAD";
    if (structurallyChanged && !currentRoot?.h && !parentIsHead) {
      placeChildrenInOrder(parent, domParent, anchor);
-@@ -688,14 +695,14 @@ function renderHost(fiber, domParent, anchor) {
+@@ -688,23 +695,27 @@ function renderHost(fiber, domParent, anchor) {
      const previous = preparedParent;
      preparedParent = fiber.dom;
      try {
@@ -611,14 +611,25 @@ index baf049b..0f886e2 100644
      if (parentTag !== "head" && parentTag !== "html" && parentTag !== "body" && !hasOpaqueHydrationChildren) {
        const cursor = getHydrationCursor(fiber);
        if (cursor) {
-@@ -704,5 +711,5 @@
-             process.env.NODE_ENV !== "production" ? `Hydration mismatch: server rendered extra nodes inside <${parentTag}>.` : "Hydration mismatch."
-           );
+         if (cursor.has()) {
+-          const error = new Error(
+-            process.env.NODE_ENV !== "production" ? `Hydration mismatch: server rendered extra nodes inside <${parentTag}>.` : "Hydration mismatch."
+-          );
 -          if (currentRoot.re) currentRoot.re(error, { componentStack: null });
-+          if (currentRoot.re) currentRoot.re(error, { componentStack: componentStack(fiber) });
-           abortHydration(error, fiber);
+-          abortHydration(error, fiber);
++          if (props.suppressHydrationWarning) {
++            while (cursor.has()) cursor.take();
++          } else {
++            const error = new Error(
++              process.env.NODE_ENV !== "production" ? `Hydration mismatch: server rendered extra nodes inside <${parentTag}>.` : "Hydration mismatch."
++            );
++            if (currentRoot.re) currentRoot.re(error, { componentStack: componentStack(fiber) });
++            abortHydration(error, fiber);
++          }
          }
-@@ -889,7 +896,10 @@ var RenderErrorCapture = class {
+       }
+     }
+@@ -889,7 +900,10 @@ var RenderErrorCapture = class {
    constructor(boundary, error, source = boundary) {
      this.boundary = boundary;
      this.error = error;
@@ -629,7 +640,7 @@ index baf049b..0f886e2 100644
    }
    boundary;
    error;
-@@ -901,9 +911,14 @@ function captureError(capture) {
+@@ -901,9 +915,14 @@ function captureError(capture) {
    fiber.ms = { ...fiber.ms, error: capture };
    scheduleUpdate(fiber);
  }
@@ -645,7 +656,7 @@ index baf049b..0f886e2 100644
      const instance = parent.sn;
      if (instance?._fiber === parent && (parent.ms?.b?.getDerivedStateFromError || instance.componentDidCatch)) return parent;
    }
-@@ -1270,6 +1285,24 @@ function scheduleLifecycle(fiber, fn) {
+@@ -1270,6 +1289,24 @@ function scheduleLifecycle(fiber, fn) {
    if (isActivityHidden(fiber) || layoutIsDisconnected(fiber)) return;
    stageCommit(fiber, fn);
  }
@@ -670,7 +681,7 @@ index baf049b..0f886e2 100644
  function runEffects(root) {
    if (root.fr) refreshFragmentInstances(root);
    if (!pendingInsertionEffects.length && !pendingCommits.length && !pendingEffects.length) return;
-@@ -1346,6 +1379,7 @@ function isEventProp(name) {
+@@ -1346,6 +1383,7 @@ function isEventProp(name) {
    return name.length > 2 && name.charCodeAt(0) === 111 && name.charCodeAt(1) === 110 && name.charCodeAt(2) >= 65;
  }
  export {
@@ -678,7 +689,7 @@ index baf049b..0f886e2 100644
    RenderErrorCapture,
    RenderSuspenseCapture,
    activityIsDisconnected,
-@@ -1383,6 +1417,8 @@ export {
+@@ -1383,6 +1421,8 @@ export {
    renderRoot,
    runEffects,
    scheduleLifecycle,
@@ -1095,7 +1106,7 @@ index 45fa668..4bdd962 100644
  }
  
 diff --git a/node_modules/@tanstack/redact/src/dom/reconcile.ts b/node_modules/@tanstack/redact/src/dom/reconcile.ts
-index 5eedc9b..cd46e19 100644
+index 5eedc9b..c5a8d8b 100644
 --- a/node_modules/@tanstack/redact/src/dom/reconcile.ts
 +++ b/node_modules/@tanstack/redact/src/dom/reconcile.ts
 @@ -158,6 +158,13 @@ function flushRoot(root: FiberRoot): void {
@@ -1193,13 +1204,15 @@ index 5eedc9b..cd46e19 100644
      if (
        parentTag !== 'head' &&
        parentTag !== 'html' &&
-@@ -998,5 +1011,5 @@
+@@ -997,7 +1010,7 @@ function renderHost(fiber: Fiber, domParent: Node, anchor: Node | null): void {
+               ? `Hydration mismatch: server rendered extra nodes inside <${parentTag}>.`
                : 'Hydration mismatch.',
            )
 -          if (currentRoot.re) currentRoot.re(error, { componentStack: null })
 +          if (currentRoot.re) currentRoot.re(error, { componentStack: componentStack(fiber) })
            abortHydration(error, fiber)
          }
+       }
 @@ -1234,8 +1247,12 @@ export function findSuspenseBoundary(fiber: Fiber): Fiber | null {
  
  export class RenderErrorCapture {

@@ -83,6 +83,47 @@ function getDeclaredTypeName(node) {
 	return node.id.name
 }
 
+const requirePublicAuthFormHydrationSuppressRule = {
+	meta: {
+		type: 'problem',
+		docs: {
+			description:
+				'Require suppressHydrationWarning on public auth forms so password-manager injections before hydrate do not throw.',
+		},
+		schema: [],
+		messages: {
+			missingSuppressHydrationWarning:
+				'Forms with data-public-auth-form must set suppressHydrationWarning so extension-injected nodes before hydration do not mismatch.',
+		},
+	},
+	createOnce(context) {
+		return {
+			JSXOpeningElement(node) {
+				if (node.name.type !== 'JSXIdentifier' || node.name.name !== 'form') {
+					return
+				}
+				let hasPublicAuthForm = false
+				let hasSuppressHydrationWarning = false
+				for (const attribute of node.attributes) {
+					if (attribute.type !== 'JSXAttribute') continue
+					if (attribute.name.type !== 'JSXIdentifier') continue
+					if (attribute.name.name === 'data-public-auth-form') {
+						hasPublicAuthForm = true
+					}
+					if (attribute.name.name === 'suppressHydrationWarning') {
+						hasSuppressHydrationWarning = true
+					}
+				}
+				if (!hasPublicAuthForm || hasSuppressHydrationWarning) return
+				context.report({
+					node,
+					messageId: 'missingSuppressHydrationWarning',
+				})
+			},
+		}
+	},
+}
+
 const noLiteralFrameSrcRule = {
 	meta: {
 		type: 'problem',
@@ -478,6 +519,8 @@ const plugin = {
 		'no-oversized-guide-section': noOversizedGuideSectionRule,
 		'no-tautological-absence': noTautologicalAbsenceRule,
 		'prefer-loader-data-types': preferLoaderDataTypesRule,
+		'require-public-auth-form-hydration-suppress':
+			requirePublicAuthFormHydrationSuppressRule,
 	},
 }
 

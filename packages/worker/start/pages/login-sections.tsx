@@ -164,6 +164,8 @@ export function AuthForm(
 			data-rise
 			method="post"
 			noValidate
+			// Password managers may inject hidden nodes before hydrate (RHINO-9).
+			suppressHydrationWarning
 			style={{ '--rise': '1' } as CSSProperties}
 			css={authFormCss}
 			onSubmit={props.onSubmit}
