@@ -379,3 +379,21 @@ test('generate preserves a different-zone */* from the runtime base config', asy
 		...packageAppRoutes,
 	])
 })
+
+/** Routes workflow steps with execution settings through sessionStub. */
+const runtimeExecutionContextSessionBinding = {
+	name: 'EXECUTION_CONTEXT_SESSION',
+	class_name: 'ExecutionContextSessionV1',
+	script_name: 'kody-platform',
+} as const
+
+test('committed runtime worker binds EXECUTION_CONTEXT_SESSION from kody-platform', async () => {
+	const base = parseJsonc(
+		await readFile(runtimeBaseConfigPath, 'utf8'),
+	) as WorkerConfig
+	for (const envName of ['production', 'preview'] as const) {
+		expect(byName(base.env?.[envName], 'EXECUTION_CONTEXT_SESSION')).toEqual(
+			runtimeExecutionContextSessionBinding,
+		)
+	}
+})
