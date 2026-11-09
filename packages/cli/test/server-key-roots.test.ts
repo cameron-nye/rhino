@@ -126,9 +126,11 @@ test('Rhino custom domain trusts pinned roots only; TRUST_TEST_ROOT does not add
 		serverKeyRootsFor(apiUrl, { KODY_ECP_TRUST_TEST_ROOT: '1' }),
 		ecpRootPublicKeys,
 	)
-	assert.ok(!serverKeyRootsFor(apiUrl, { KODY_ECP_TRUST_TEST_ROOT: '1' }).some(
-		(root) => root.kid === 'root-test-1',
-	))
+	assert.ok(
+		!serverKeyRootsFor(apiUrl, { KODY_ECP_TRUST_TEST_ROOT: '1' }).some(
+			(root) => root.kid === 'root-test-1',
+		),
+	)
 })
 
 test('fetchServerKeys accepts Rhino production keyset on custom domain without TRUST_TEST_ROOT', async () => {
@@ -145,7 +147,9 @@ test('fetchServerKeys accepts Rhino production keyset on custom domain without T
 
 test('Rhino production keyset fails closed without root-rhino-1 in the root list', async () => {
 	assert.equal(productionKeySet.k, 'root-rhino-1')
-	const filtered = ecpRootPublicKeys.filter((root) => root.kid !== 'root-rhino-1')
+	const filtered = ecpRootPublicKeys.filter(
+		(root) => root.kid !== 'root-rhino-1',
+	)
 	const set = await verifyServerKeySet({
 		document: productionKeySet,
 		roots: filtered,
