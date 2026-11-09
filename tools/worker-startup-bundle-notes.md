@@ -473,3 +473,10 @@ raised again.
   graph. Dynamic `import()` defers their CPU, and esbuild keeps the bytes in the
   entry. Splitting those upstream modules would diverge from `kody-hq/kody`.
   Reviewed ceilings platform 6_965_000 and runtime 5_495_000.
+- Deferred disposable-email blocklist (`disposable-email-domains-load.ts` at
+  worker src root → `node_modules/.kody-generated/disposable-email-domains.mjs`,
+  same lane as postal-mime): removes ~163 KB attributed to
+  `identity/disposable-email-domains.ts` from platform and runtime main entries.
+  Signup and email-change already await `assessAccountEmail`. CI dry-run after
+  deferral: platform and runtime under the 6_965_000 / 5_495_000 ceilings (Rhino
+  #34 / #35) without raising them.

@@ -127,6 +127,13 @@ export default mergeConfig(
 						'packages/worker/src/mcp/codemode-normalize-module.ts',
 					),
 				},
+				{
+					find: './node_modules/.kody-generated/disposable-email-domains.mjs',
+					replacement: resolve(
+						rootDir,
+						'packages/worker/src/identity/disposable-email-domains-module.ts',
+					),
+				},
 			],
 		},
 		test: {

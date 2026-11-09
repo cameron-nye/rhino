@@ -4,13 +4,23 @@
  * DNS runs from `mail-domain-acceptance.ts` via `assessAccountEmail`.
  */
 
-import { disposableEmailDomainList } from './disposable-email-domains.ts'
+import { loadDisposableEmailDomains } from '#worker/disposable-email-domains-load.ts'
 import {
 	lookupMailDomainAcceptance,
 	type MailDomainLookup,
 } from './mail-domain-acceptance.ts'
 
-const disposableEmailDomains = new Set<string>(disposableEmailDomainList)
+let disposableEmailDomains: Set<string> | null = null
+let disposableEmailDomainsLoad: Promise<Set<string>> | null = null
+
+async function ensureDisposableEmailDomains() {
+	if (disposableEmailDomains) return disposableEmailDomains
+	disposableEmailDomainsLoad ??= loadDisposableEmailDomains().then(
+		(list) => new Set(list),
+	)
+	disposableEmailDomains = await disposableEmailDomainsLoad
+	return disposableEmailDomains
+}
 
 /**
  * Never block these even if a refreshed disposable list contains them.
@@ -138,11 +148,12 @@ function isAcceptedEmailTld(tld: string) {
 	return /^xn--[a-z0-9](?:[a-z0-9-]{0,57}[a-z0-9])?$/u.test(tld)
 }
 
-export function isDisposableEmailDomain(domain: string) {
+export async function isDisposableEmailDomain(domain: string) {
+	const disposableDomains = await ensureDisposableEmailDomains()
 	let current = domain.trim().toLowerCase().replace(/\.$/u, '')
 	while (current.includes('.')) {
 		if (protectedEmailDomains.has(current)) return false
-		if (disposableEmailDomains.has(current)) return true
+		if (disposableDomains.has(current)) return true
 		const dot = current.indexOf('.')
 		current = current.slice(dot + 1)
 	}
@@ -203,20 +214,20 @@ function disposableRejection(): AccountEmailRejection {
  * Login must not call this: existing accounts with a malformed address can
  * still sign in.
  */
-export function assessAccountEmailSyntax(
+export async function assessAccountEmailSyntax(
 	email: string,
-): AccountEmailAssessment {
+): Promise<AccountEmailAssessment> {
 	const parsed = parseAccountEmail(email)
 	if (!parsed) return invalidEmailRejection()
 	const suggestion = accountEmailTypoSuggestion(parsed.email)
 	if (suggestion) {
 		const suggestedDomainName = suggestion.split('@').at(1) ?? ''
-		if (isDisposableEmailDomain(suggestedDomainName)) {
+		if (await isDisposableEmailDomain(suggestedDomainName)) {
 			return disposableRejection()
 		}
 		return typoRejection(suggestion)
 	}
-	if (isDisposableEmailDomain(parsed.domain)) return disposableRejection()
+	if (await isDisposableEmailDomain(parsed.domain)) return disposableRejection()
 	return { ok: true, email: parsed.email }
 }
 
@@ -236,7 +247,7 @@ export async function assessAccountEmail(
 	email: string,
 	options?: { fetchImpl?: typeof fetch; allowExampleDomain?: boolean },
 ): Promise<AccountEmailAssessment> {
-	const syntax = assessAccountEmailSyntax(email)
+	const syntax = await assessAccountEmailSyntax(email)
 	if (!syntax.ok) return syntax
 	// example.com publishes a null MX. Unit tests skip DNS under Vitest.
 	// Local dev, preview, and Playwright permit that fixture only; production
