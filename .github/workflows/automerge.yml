@@ -1,0 +1,92 @@
+name: Auto-merge
+
+# Evaluates every open pull request against main using the default-branch copy
+# of this workflow. It checks out only that copy's .github/automerge scripts.
+# It does not check out a pull request head and it does not execute pull
+# request code.
+#
+# Bugbot is not a gate. A factory reviewer verdict marker for the current head
+# SHA is. cursor/* pull requests fail closed until that marker exists.
+#
+# A GITHUB_TOKEN merge does not start push workflows or pull_request: closed.
+# After a squash merge, run.js dispatches deploy.yml (mode=production) and
+# preview.yml (action=cleanup, target=pr) on main. Deploy is skipped when a
+# workflow_dispatch for that merge SHA is already queued or has succeeded.
+# A failed preview dispatch warns and leaves the merge in place.
+# Linked closingIssuesReferences that are still open in this repo are closed
+# with state_reason completed. A failed close warns and leaves the merge.
+
+on:
+  workflow_run:
+    workflows:
+      - '✅ Validate'
+      - 'Auto-merge signal'
+    types:
+      - completed
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - labeled
+      - unlabeled
+      - ready_for_review
+      - edited
+  issue_comment:
+    types:
+      - created
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  AUTOMERGE_CONFIG:
+    '{"base":"main","author":"cameron-nye","factoryPrefixes":["habits/issue-","factory/"],"reviewOnlyPrefixes":["cursor/"],"timeoutMinutes":60,"fixupStaleHours":4,"fixupLabel":"factory-fixup-running","noAutomergeLabel":"no-automerge","deviceTestPattern":"device[-
+    ]?(test|check)|real[- ](phone|device)|physical (phone|device)|on[- ]device
+    (test|check)|airplane[- ]mode|manual(ly)? test(ed)? on (a
+    )?(phone|device)","ciWorkflow":"✅
+    Validate","catalogPath":null,"manualPaths":[".github/workflows/**","**/wrangler.jsonc","**/wrangler.json","**/wrangler.toml","wrangler-env.ts","packages/*/migrations/**","packages/worker/audit-migrations/**","**/*.sql","packages/worker/src/billing/**","packages/worker/src/authorization/**","packages/worker/src/identity/**","packages/worker/src/oauth-device/**","packages/worker/src/oidc/**","packages/worker/src/credentials/**","packages/worker/src/secrets/**","packages/worker/src/mcp/secrets/**","packages/worker/src/mcp/capabilities/secrets/**","packages/worker/src/execution-contexts/**","packages/shared/src/execution-context-protocol/**","packages/backup-control-plane/**","**/.env","**/.env.*","**/.dev.vars*","patches/**","packages/shared/**","packages/worker/src/api-tokens/**","packages/worker/src/webhooks/**","packages/worker/src/mcp/capabilities/webhooks/**","packages/worker/src/security/**","packages/worker/src/oauth-*","packages/worker/src/mcp-auth*","packages/worker/src/app/handlers/auth.ts","packages/worker/src/app/handlers/auth-provider.ts","packages/worker/src/app/handlers/stripe-webhook.ts"],"manualContent":[],"__mustBeManual":["packages/worker/wrangler.jsonc","packages/worker/migrations/0001.sql","packages/worker/src/billing/x.ts",".github/workflows/deploy.yml","patches/foo.patch","packages/shared/src/a.ts"],"__mustBeAuto":["packages/worker/src/app/handlers/x.ts","docs/guides/x.md"]}'
+
+concurrency:
+  group: automerge-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  automerge:
+    name: Evaluate and squash-merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      checks: read
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Check out the default-branch policy
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: .github/automerge
+          persist-credentials: false
+
+      - name: Evaluate open pull requests
+        id: policy
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          DISCORD_WEBHOOK_PR_READY: ${{ secrets.DISCORD_WEBHOOK_PR_READY }}
+          DISCORD_WEBHOOK_PR_MERGED: ${{ secrets.DISCORD_WEBHOOK_PR_MERGED }}
+        with:
+          script: |
+            const { join } = require('path')
+            const { pathToFileURL } = require('url')
+            const href = pathToFileURL(
+              join(process.env.GITHUB_WORKSPACE, '.github/automerge/run.js'),
+            ).href
+            const loaded = await import(href)
+            const result = await loaded.default({ github, context, core })
+            const merged =
+              result && Array.isArray(result.merged) ? result.merged : []
+            core.setOutput('merged', JSON.stringify(merged))

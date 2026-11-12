@@ -1,0 +1,23 @@
+name: Auto-merge signal
+
+# pull_request_review does not trigger workflow_run by itself. This job only
+# echoes, then the default-branch Auto-merge workflow runs. No permissions, no
+# secrets, and no checkout: a review must not execute pull request code.
+
+on:
+  pull_request_review:
+    types:
+      - submitted
+      - edited
+      - dismissed
+
+permissions: {}
+
+jobs:
+  signal:
+    name: Signal auto-merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Wake auto-merge
+        run: echo "Auto-merge signal for a pull request review."
