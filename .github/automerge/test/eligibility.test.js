@@ -298,7 +298,7 @@ test('a verdict for an older SHA is ignored and no verdict goes stuck after 60 m
 	)
 })
 
-test('a verdict of fail gives ready and the latest marker for the head SHA wins', () => {
+test('a verdict of fail gives failed and the latest marker for the head SHA wins', () => {
 	const fail = {
 		body: `<!-- factory-review: verdict=fail sha=${SHA} -->`,
 		at: at(-1),
@@ -307,7 +307,7 @@ test('a verdict of fail gives ready and the latest marker for the head SHA wins'
 		edited: false,
 	}
 	const failed = decide({ pr: { reviews: [fail] } })
-	assert.equal(failed.decision, 'ready')
+	assert.equal(failed.decision, 'failed')
 	assert.ok(failed.reasons.includes('verdict fail'))
 	const olderFail = {
 		body: `<!-- factory-review: verdict=fail sha=${SHA} -->`,
@@ -322,7 +322,7 @@ test('a verdict of fail gives ready and the latest marker for the head SHA wins'
 	)
 	assert.equal(
 		decide({ pr: { reviews: [passReview(SHA, -20), fail] } }).decision,
-		'ready',
+		'failed',
 	)
 })
 
@@ -418,14 +418,48 @@ test('the fix-up label waits and goes stuck when it is older than 4 hours', () =
 	assert.deepEqual(stale.reasons, ['fixup stale'])
 })
 
-test('no-automerge gives ready', () => {
+test('no-automerge gives ready only after green CI and a passing review', () => {
+	assert.equal(
+		decide({ pr: { labels: ['no-automerge'], reviews: [] } }).decision,
+		'wait',
+	)
+	assert.equal(
+		decide({
+			pr: { labels: ['no-automerge'] },
+			runs: [],
+			commitAt: at(-5),
+		}).decision,
+		'wait',
+	)
 	const result = decide({
 		pr: { labels: ['no-automerge'] },
-		runs: [],
-		commitAt: at(-500),
 	})
 	assert.equal(result.decision, 'ready')
 	assert.deepEqual(result.reasons, ['no-automerge'])
+})
+
+test('manual reasons wait for a passing review on the current head SHA', () => {
+	const filename =
+		(config.__mustBeManual && config.__mustBeManual[0]) ||
+		'.github/workflows/automerge.yml'
+	const files = [{ filename, status: 'modified' }]
+	assert.equal(decide({ pr: { files, reviews: [] } }).decision, 'wait')
+	assert.equal(
+		decide({
+			pr: { files, reviews: [] },
+			runs: [successRun({ createdAt: at(-61) })],
+		}).decision,
+		'stuck',
+	)
+	const fail = {
+		body: `<!-- factory-review: verdict=fail sha=${SHA} -->`,
+		at: at(-1),
+		author: 'cameron-nye',
+		state: 'changes_requested',
+		edited: false,
+	}
+	assert.equal(decide({ pr: { files, reviews: [fail] } }).decision, 'failed')
+	assert.equal(decide({ pr: { files } }).decision, 'ready')
 })
 
 test('a 300-file pull request still merges', () => {

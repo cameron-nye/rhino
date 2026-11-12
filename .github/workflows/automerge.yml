@@ -16,6 +16,10 @@ name: Auto-merge
 # Linked closingIssuesReferences that are still open in this repo are closed
 # with state_reason completed. A failed close warns and leaves the merge.
 
+#
+# Ready pings (pr-ready) require green CI and a passing factory review
+# marker for the current head SHA. Manual reasons including no-automerge
+# still skip auto-merge, but they do not ping ready until that review exists.
 on:
   workflow_run:
     workflows:
