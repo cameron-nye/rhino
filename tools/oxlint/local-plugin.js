@@ -473,6 +473,78 @@ const enforceImportBoundariesRule = {
  * constructor's optional second argument overrides that name, so any second
  * argument silently turns a terminal failure into a retried one.
  */
+function callExpressionCalleeName(node) {
+	const callee = node.callee
+	if (callee.type === 'Identifier') return callee.name
+	if (
+		callee.type === 'MemberExpression' &&
+		!callee.computed &&
+		callee.property.type === 'Identifier'
+	) {
+		return callee.property.name
+	}
+	return null
+}
+
+function objectLiteralHasNestedObjectProperties(node) {
+	if (node.type !== 'ObjectExpression') return false
+	for (const property of node.properties) {
+		if (property.type !== 'Property') continue
+		const value = property.value
+		if (value.type === 'ObjectExpression' || value.type === 'ArrayExpression') {
+			return true
+		}
+	}
+	return false
+}
+
+function arrayLiteralHasObjectElements(node) {
+	if (node.type !== 'ArrayExpression') return false
+	return node.elements.some(
+		(element) =>
+			element != null &&
+			element.type !== 'SpreadElement' &&
+			(element.type === 'ObjectExpression' ||
+				objectLiteralHasNestedObjectProperties(element)),
+	)
+}
+
+const noSentryContextObjectArraysRule = {
+	meta: {
+		type: 'problem',
+		docs: {
+			description:
+				'Forbid arrays of objects in Sentry.setContext payloads; they render as "[Object]" in Sentry (RHINO-C).',
+		},
+		schema: [],
+		messages: {
+			objectArray:
+				'Do not pass arrays of objects to Sentry.setContext; flatten to strings or JSON. Arrays of objects show as "[Object]" in Sentry.',
+		},
+	},
+	createOnce(context) {
+		return {
+			CallExpression(node) {
+				if (callExpressionCalleeName(node) !== 'setContext') return
+				const payload = node.arguments[1]
+				if (!payload) return
+				if (payload.type === 'ObjectExpression') {
+					for (const property of payload.properties) {
+						if (property.type !== 'Property') continue
+						if (arrayLiteralHasObjectElements(property.value)) {
+							context.report({ node: property, messageId: 'objectArray' })
+						}
+					}
+					return
+				}
+				if (arrayLiteralHasObjectElements(payload)) {
+					context.report({ node: payload, messageId: 'objectArray' })
+				}
+			},
+		}
+	},
+}
+
 const noNonRetryableErrorNameRule = {
 	meta: {
 		type: 'problem',
@@ -516,6 +588,7 @@ const plugin = {
 		'no-example-identifier': noExampleIdentifierRule,
 		'no-literal-frame-src': noLiteralFrameSrcRule,
 		'no-nonretryable-error-name': noNonRetryableErrorNameRule,
+		'no-sentry-context-object-arrays': noSentryContextObjectArraysRule,
 		'no-oversized-guide-section': noOversizedGuideSectionRule,
 		'no-tautological-absence': noTautologicalAbsenceRule,
 		'prefer-loader-data-types': preferLoaderDataTypesRule,

@@ -8,7 +8,12 @@ import {
 	type JobRow,
 } from '@kody-internal/shared/jobs/repo.ts'
 import { computeNextRunAt } from '@kody-internal/shared/jobs/schedule.ts'
+import { jobScheduleWatchdogIntervalMinutes } from '@kody-internal/shared/jobs/scheduled-lanes.ts'
 import { logJobSchedulerEvent } from '@kody-internal/shared/jobs/scheduler-logging.ts'
+import {
+	buildJobScheduleWatchdogSentryContext,
+	summarizeWatchdogJobsForOps,
+} from '@kody-internal/shared/jobs/watchdog-sentry.ts'
 import { type JobsWorkerEnv } from './env.ts'
 import { jobManagerStub } from './manager.ts'
 import { getWorkerStateValue, putWorkerStateValue } from './store.ts'
@@ -23,6 +28,12 @@ import { getWorkerStateValue, putWorkerStateValue } from './store.ts'
 
 /** Due jobs older than this are treated as silently overdue. */
 export const jobScheduleWatchdogGraceMs = 5 * 60 * 1_000
+/**
+ * When the scheduled dispatch queue delivers a watchdog lane shortly after the
+ * cron tick, extend the grace window so co-located JobManager alarms can claim
+ * jobs due on that boundary before ops is paged (RHINO-C).
+ */
+export const jobScheduleWatchdogQueueLagCoalesceMs = 2 * 60 * 1_000
 export const jobScheduleWatchdogPageSize = 100
 /** Cap cross-user page accumulation so a large backlog cannot OOM the cron. */
 export const jobScheduleWatchdogMaxRowsPerTick = 5_000
@@ -44,16 +55,24 @@ export type JobScheduleWatchdogResult = {
 	alerted: boolean
 }
 
-function summarizeJobs(rows: Array<JobRow>) {
-	// Omit user-authored job names from ops/Sentry payloads; job ids are enough.
-	// Detection uses scheduling fences (next_run_at / claim / completed-for);
-	// last_run_at is retention/observability and not needed in the sample.
-	return rows.slice(0, jobScheduleWatchdogMaxJobsLogged).map((row) => ({
-		jobId: row.id,
-		userId: row.user_id,
-		nextRunAt: row.next_run_at,
-		lastCompletedScheduledFor: row.last_completed_scheduled_for,
-	}))
+export function resolveJobScheduleWatchdogGraceMs(input: {
+	observedAt: Date
+	scheduledAt: Date
+}): number {
+	let graceMs = jobScheduleWatchdogGraceMs
+	const scheduledOnWatchdogTick =
+		input.scheduledAt.getUTCMinutes() % jobScheduleWatchdogIntervalMinutes === 0
+	const queueLagMs = Math.max(
+		0,
+		input.observedAt.getTime() - input.scheduledAt.getTime(),
+	)
+	if (
+		scheduledOnWatchdogTick &&
+		queueLagMs < jobScheduleWatchdogQueueLagCoalesceMs
+	) {
+		graceMs += jobScheduleWatchdogQueueLagCoalesceMs
+	}
+	return graceMs
 }
 
 async function collectPagedJobRows(input: {
@@ -82,6 +101,7 @@ async function collectPagedJobRows(input: {
 async function maybeCaptureWatchdogAlert(input: {
 	env: JobsWorkerEnv
 	now: Date
+	observedAtMs: number
 	result: Omit<JobScheduleWatchdogResult, 'alerted'>
 	overdueSample: Array<JobRow>
 	stuckSample: Array<JobRow>
@@ -115,11 +135,21 @@ async function maybeCaptureWatchdogAlert(input: {
 		)
 	}
 
-	const payload = {
-		...input.result,
-		overdueSample: summarizeJobs(input.overdueSample),
-		stuckSample: summarizeJobs(input.stuckSample),
-	}
+	const overdueSample = summarizeWatchdogJobsForOps({
+		rows: input.overdueSample,
+		observedAtMs: input.observedAtMs,
+		maxRows: jobScheduleWatchdogMaxJobsLogged,
+	})
+	const stuckSample = summarizeWatchdogJobsForOps({
+		rows: input.stuckSample,
+		observedAtMs: input.observedAtMs,
+		maxRows: jobScheduleWatchdogMaxJobsLogged,
+	})
+	const payload = buildJobScheduleWatchdogSentryContext({
+		counts: { ...input.result },
+		overdueSample,
+		stuckSample,
+	})
 	console.warn('job-schedule-watchdog-overdue', payload)
 	if (alerted) {
 		Sentry.withScope((scope) => {
@@ -136,12 +166,20 @@ async function maybeCaptureWatchdogAlert(input: {
 
 export async function runJobScheduleWatchdogTick(input: {
 	env: JobsWorkerEnv
+	/** Wall clock when the tick runs (lease expiry and grace window). */
 	now?: Date
+	/** Cron `scheduledTime` from the platform / queue message. */
+	scheduledAt?: Date
 }): Promise<JobScheduleWatchdogResult> {
-	const now = input.now ?? new Date()
-	const nowIso = now.toISOString()
+	const observedAt = input.now ?? new Date()
+	const scheduledAt = input.scheduledAt ?? observedAt
+	const nowIso = observedAt.toISOString()
+	const graceMs = resolveJobScheduleWatchdogGraceMs({
+		observedAt,
+		scheduledAt,
+	})
 	const overdueBeforeIso = new Date(
-		now.getTime() - jobScheduleWatchdogGraceMs,
+		observedAt.getTime() - graceMs,
 	).toISOString()
 
 	const overduePage = await collectPagedJobRows({
@@ -250,7 +288,8 @@ export async function runJobScheduleWatchdogTick(input: {
 	}
 	const alerted = await maybeCaptureWatchdogAlert({
 		env: input.env,
-		now,
+		now: observedAt,
+		observedAtMs: observedAt.getTime(),
 		result: baseResult,
 		overdueSample: overdueRows,
 		stuckSample: stuckRows,
