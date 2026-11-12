@@ -343,6 +343,10 @@ It squash-merges only when all of these are true:
   then posts stuck after 60 minutes. It does not merge from a partial page.
 - The pull request has no `no-automerge` label and no fresh
   `factory-fixup-running` label. A fix-up label older than 4 hours is stuck.
+  Immediately before the merge, the job re-reads the pull request and merges
+  only when the head SHA is unchanged, it is still not a draft, and both of
+  those labels are still absent.
+- Discord dedupe comments count only when the author is `github-actions[bot]`.
 - The diff is not on a manual path (workflows, Wrangler, migrations, billing,
   auth, secrets, signing, patches, `packages/shared`, and the other globs in the
   config). Renames count both paths. New dependencies and major bumps are

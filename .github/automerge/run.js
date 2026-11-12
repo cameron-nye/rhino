@@ -235,10 +235,6 @@ async function closeLinked(github, owner, repo, number, issues, core) {
 	}
 }
 
-function commentText(comment) {
-	return comment?.body ?? ''
-}
-
 function webhookVariable(state) {
 	return state === 'merged'
 		? 'DISCORD_WEBHOOK_PR_MERGED'
@@ -271,8 +267,7 @@ async function postDiscord(core, url, payload) {
 
 async function notify(github, owner, repo, pr, state, reasons, comments, core) {
 	const sha = pr.headSha
-	const bodies = comments.map(commentText)
-	if (hasNotifyMarker(bodies, state, sha)) {
+	if (hasNotifyMarker(comments, state, sha)) {
 		core.info(
 			`Discord notice already posted for #${pr.number} ${state} ${sha}.`,
 		)
@@ -453,6 +448,7 @@ async function gather(github, owner, repo, pr, config, core) {
 	const comments = (commentsPage.items ?? []).map((comment) => ({
 		body: comment.body,
 		at: comment.created_at,
+		author: comment.user?.login ?? '',
 	}))
 	if (commentFailures.length > 0) {
 		core.warning(
@@ -497,7 +493,20 @@ async function gather(github, owner, repo, pr, config, core) {
 	}
 }
 
-async function mergePull(github, owner, repo, number, expectedSha, core) {
+function pullLabelNames(pull) {
+	if (!Array.isArray(pull?.labels)) return null
+	return pull.labels.map((label) => label?.name ?? label)
+}
+
+async function mergePull(
+	github,
+	owner,
+	repo,
+	number,
+	expectedSha,
+	config,
+	core,
+) {
 	const fresh = await github.request(
 		'GET /repos/{owner}/{repo}/pulls/{pull_number}',
 		{ owner, repo, pull_number: number },
@@ -509,9 +518,26 @@ async function mergePull(github, owner, repo, number, expectedSha, core) {
 		)
 		return null
 	}
-	if (pull.state !== 'open' || pull.draft === true) {
+	if (pull.draft === true) {
+		core.info(`Skipping #${number}: the pull request is a draft.`)
+		return null
+	}
+	if (pull.state !== 'open') {
 		core.info(`Skipping #${number}: the pull request is no longer open.`)
 		return null
+	}
+	const labels = pullLabelNames(pull)
+	if (!labels) {
+		core.warning(
+			`Skipping #${number}: labels could not be re-read, so it was not merged.`,
+		)
+		return null
+	}
+	for (const name of [config.noAutomergeLabel, config.fixupLabel]) {
+		if (name && labels.includes(name)) {
+			core.info(`Skipping #${number}: ${name} is present.`)
+			return null
+		}
 	}
 	if (!/^[0-9a-f]{40}$/.test(expectedSha)) {
 		core.warning(`Refusing to merge #${number}: head SHA is invalid.`)
@@ -673,6 +699,7 @@ export default async function run({ github, context, core, now }) {
 					repo,
 					pull.number,
 					gathered.snapshot.headSha,
+					config,
 					core,
 				)
 			} catch {

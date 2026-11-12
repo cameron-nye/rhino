@@ -20,8 +20,11 @@
    latest accepted marker for that SHA wins. Markers for other SHAs are ignored.
    Required for cursor/* PRs too. No `factory-fixup-running` label on the PR.
 6. No size cap.
-7. No `no-automerge` label. Head unchanged at merge (re-read, then
-   `PUT /pulls/{n}/merge` with `sha=<head>`); squash merge.
+7. No `no-automerge` label. Immediately before `PUT /pulls/{n}/merge`, re-fetch
+   the pull request. Merge only when the head SHA is still unchanged, the pull
+   request is still not a draft, and neither `no-automerge` nor
+   `factory-fixup-running` is present. If the re-fetched labels are missing, do
+   not merge. Squash merge with `sha=<head>`.
 8. If CI has not concluded, or no verdict exists, 60 minutes after the head was
    pushed (first workflow run `created_at` for the SHA, else the commit date),
    don't merge; post one "stuck or failed" notice per head SHA. A
@@ -72,8 +75,10 @@ cancel-in-progress.
 - **Message:** state, repo, PR number and title, link, and reason. Strip `@` and
   backticks from titles.
 - **Dedupe:** per PR + SHA + state, using a hidden PR comment
-  `<!-- automerge-notify: state=<s> sha=<sha> -->`. If Discord returns non-2xx,
-  write no marker, so the next run retries.
+  `<!-- automerge-notify: state=<s> sha=<sha> -->`. Count the marker only when
+  the comment author is `github-actions[bot]`. A marker from any other user is
+  ignored, so it cannot suppress a notice. If Discord returns non-2xx, write no
+  marker, so the next run retries.
 - **Missing secret:** call `core.warning`, skip the post, write the marker with
   "Discord: skipped", and keep the job green.
 
@@ -106,7 +111,10 @@ cancel-in-progress.
 - run.js against a fake GitHub:
   - the merge is pinned to the SHA, with squash
   - the linked issue gets closed
-  - one Discord post per PR + SHA + state
+  - one Discord post per PR + SHA + state, and a marker from any other user does
+    not count
+  - a `no-automerge` label, a `factory-fixup-running` label, or a draft that
+    appears on the re-fetched pull request blocks the merge
   - a missing secret only warns
   - the webhook URL never appears anywhere
   - deploy and preview dispatches fire after a merge

@@ -3,7 +3,12 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { buildNotice, evaluate } from '../eligibility.js'
+import {
+	buildNotice,
+	evaluate,
+	hasNotifyMarker,
+	notifyMarker,
+} from '../eligibility.js'
 import run, { LOOKUP_PAGE_LIMIT } from '../run.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -714,6 +719,13 @@ function createHarness(options = {}) {
 			)
 		) {
 			const data = [...comments]
+			if (options.forgedMarker) {
+				data.push({
+					body: `<!-- automerge-notify: state=${options.forgedState ?? 'ready'} sha=${pr.head.sha} -->`,
+					created_at: at(-1),
+					user: { login: options.forgedAuthor ?? 'octocat' },
+				})
+			}
 			if (options.commentVerdict) {
 				data.push({
 					body: `<!-- factory-review: verdict=pass sha=${pr.head.sha} -->`,
@@ -890,7 +902,14 @@ function createHarness(options = {}) {
 					headers: {},
 				}
 			}
-			return { data: pr, headers: {} }
+			const data = {
+				...pr,
+				labels: Array.isArray(pr.labels) ? [...pr.labels] : pr.labels,
+			}
+			if (options.refetchDraft) data.draft = true
+			if (options.refetchLabels) data.labels = options.refetchLabels
+			if (options.refetchLabelsMissing) data.labels = undefined
+			return { data, headers: {} }
 		}
 		if (route === 'GET /repos/{owner}/{repo}/pulls') {
 			return { data: pr.state === 'open' ? [pr] : [], headers: {} }
@@ -914,7 +933,11 @@ function createHarness(options = {}) {
 			return { data: { state: 'closed' }, headers: {} }
 		}
 		if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments') {
-			comments.push({ body: params.body, created_at: NOW })
+			comments.push({
+				body: params.body,
+				created_at: NOW,
+				user: { login: 'github-actions[bot]' },
+			})
 			return { data: { id: comments.length }, headers: {} }
 		}
 		if (
@@ -1127,6 +1150,23 @@ test('run.js squash-merges the pinned SHA, closes the linked issue, and dispatch
 			)
 			assertNoSecret(outcome.blob)
 		}),
+	)
+})
+
+test('only a github-actions bot marker dedupes a notice', () => {
+	const marker = notifyMarker('ready', SHA)
+	assert.equal(
+		hasNotifyMarker([{ body: marker, author: 'octocat' }], 'ready', SHA),
+		false,
+	)
+	assert.equal(hasNotifyMarker([marker], 'ready', SHA), false)
+	assert.equal(
+		hasNotifyMarker(
+			[{ body: marker, author: 'github-actions[bot]' }],
+			'ready',
+			SHA,
+		),
+		true,
 	)
 })
 
@@ -1346,6 +1386,59 @@ test('a failed or truncated eligibility lookup does not merge', async () => {
 				),
 			)
 			assert.equal(filePages.length, LOOKUP_PAGE_LIMIT)
+		}),
+	)
+})
+
+test('a forged automerge-notify marker does not suppress the notice', async () => {
+	await exclusive(() =>
+		withSecrets(async () => {
+			const outcome = await execute({
+				pull: { labels: [{ name: 'no-automerge' }] },
+				forgedMarker: true,
+			})
+			assert.equal(outcome.result.merged.length, 0)
+			assert.equal(outcome.stats.fetchCount, 1)
+			assert.equal(outcome.comments.length, 1)
+			assert.match(outcome.comments[0].body, /state=ready /)
+			assertNoSecret(outcome.blob)
+		}),
+	)
+})
+
+test('a label or draft on the re-fetched pull request blocks the merge', async () => {
+	await exclusive(() =>
+		withSecrets(async () => {
+			const cases = [
+				{
+					refetchLabels: [{ name: 'no-automerge' }],
+					message: 'no-automerge is present',
+				},
+				{
+					refetchLabels: [{ name: 'factory-fixup-running' }],
+					message: 'factory-fixup-running is present',
+				},
+				{
+					refetchDraft: true,
+					message: 'the pull request is a draft',
+				},
+				{
+					refetchLabelsMissing: true,
+					message: 'labels could not be re-read',
+				},
+			]
+			for (const options of cases) {
+				const outcome = await execute(options)
+				assert.equal(mergedCount(outcome), 0, options.message)
+				assert.equal(outcome.result.merged.length, 0, options.message)
+				assert.equal(dispatch(outcome.calls, 'deploy.yml', 'POST ').length, 0)
+				assert.equal(dispatch(outcome.calls, 'preview.yml', 'POST ').length, 0)
+				assert.ok(
+					outcome.logs.some((entry) => entry.message.includes(options.message)),
+					options.message,
+				)
+				assertNoSecret(outcome.blob)
+			}
 		}),
 	)
 })

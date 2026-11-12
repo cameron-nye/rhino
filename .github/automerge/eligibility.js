@@ -380,13 +380,20 @@ export function buildNotice({ state, repo, number, title, url, reasons }) {
 	].join('\n')
 }
 
+export const NOTIFY_AUTHOR = 'github-actions[bot]'
+
 export function notifyMarker(state, sha) {
 	return `<!-- automerge-notify: state=${state} sha=${sha} -->`
 }
 
-export function hasNotifyMarker(texts, state, sha) {
+export function hasNotifyMarker(comments, state, sha) {
 	const pattern = new RegExp(
 		`<!--\\s*automerge-notify:\\s*state=${state}\\s+sha=${sha}\\s*-->`,
 	)
-	return (texts ?? []).some((text) => pattern.test(String(text ?? '')))
+	return (comments ?? []).some((entry) => {
+		if (!entry || typeof entry !== 'object') return false
+		const author = entry.author ?? entry.user?.login ?? ''
+		if (author !== NOTIFY_AUTHOR) return false
+		return pattern.test(String(entry.body ?? ''))
+	})
 }
