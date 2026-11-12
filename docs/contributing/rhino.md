@@ -39,12 +39,18 @@ purpose.
 | File                                                                      | Why                                                                                                                                                                                                                                                                                                     |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `docs/contributing/rhino.md`                                              | Additive fork rules (this page).                                                                                                                                                                                                                                                                        |
-| `.github/workflows/rhino-automerge.yml`                                   | Squash-merge same-repo `cursor/` pull requests only when `user.login` is `cameron-nye`, Validate succeeded, and Cursor Bugbot is success or neutral with no unresolved Bugbot threads, unless `RHINO_REQUIRE_BUGBOT` is off. Then dispatch production deploy, preview cleanup, and close linked issues. |
-| `tools/ci/rhino-automerge-workflow.node.test.ts`                          | Pins automerge gates: Validate, Cursor Bugbot unless `RHINO_REQUIRE_BUGBOT` is off, unresolved Bugbot threads, preview cleanup that does not fail the merge, and the close of issues linked from the pull request.                                                                                      |
+| `.github/workflows/automerge.yml`                                         | Squash-merge same-repo `cursor/`, `habits/issue-`, and `factory/` pull requests from `cameron-nye` when Validate succeeded and a factory reviewer passed that head SHA. Bugbot is not a gate. Then dispatch production deploy, preview cleanup, and close linked issues.                                |
+| `.github/workflows/automerge-signal.yml`                                  | Echo-only `pull_request_review` workflow so a review wakes Auto-merge through `workflow_run`. No permissions and no checkout.                                                                                                                                                                           |
+| `.github/automerge/SPEC.md`                                               | Cameron's approved auto-merge and Discord notification policy, plus the Rhino dispatch binding.                                                                                                                                                                                                         |
+| `.github/automerge/eligibility.js`                                        | Pure merge decision. No I/O and no Discord secrets.                                                                                                                                                                                                                                                     |
+| `.github/automerge/run.js`                                                | Actions glue: squash merge pinned to the head SHA, Discord notices, linked-issue close, and the deploy plus preview dispatches.                                                                                                                                                                         |
+| `.github/automerge/test/eligibility.test.js`                              | `node:test` coverage for the policy, including a fake GitHub client that proves the webhook URL is never logged.                                                                                                                                                                                        |
+| `.oxlintrc.json`                                                          | Node globals for `.github/automerge` and an exception so those tests can import `node:test`.                                                                                                                                                                                                            |
+| `tools/ci/rhino-automerge-workflow.node.test.ts`                          | Pins the default-branch checkout, the empty signal workflow, the deploy and preview dispatch contract, and the linked-issue close.                                                                                                                                                                      |
 | `AGENTS.md`                                                               | Opening pointer to this page. Stays inside the 23-line `agents-md` budget.                                                                                                                                                                                                                              |
 | `docs/contributing/index.md`                                              | Link to this page from the contributing map, including the fork friction route.                                                                                                                                                                                                                         |
 | `.agents/skills/rhino-friction/SKILL.md`                                  | Additive. Agents file friction on `cameron-nye/rhino` with `gh`, labeled `friction`, `friction-skipped`, or `improvement`.                                                                                                                                                                              |
-| `.agents/skills/rhino-ship-pr/SKILL.md`                                   | Additive. Agents wait for Cursor Bugbot, fix or answer it, and do not call Kent's ship-pr package or Discord.                                                                                                                                                                                           |
+| `.agents/skills/rhino-ship-pr/SKILL.md`                                   | Additive. Agents follow the auto-merge policy (Bugbot is not a gate) and do not call Kent's ship-pr package or Discord.                                                                                                                                                                                 |
 | `.agents/skills/file-friction/SKILL.md`                                   | Guard sends this fork to rhino-friction. Upstream friction-log steps stay below the guard.                                                                                                                                                                                                              |
 | `.agents/skills/ship-pr/SKILL.md`                                         | Guard sends this fork to rhino-ship-pr. Upstream tick stays below the guard.                                                                                                                                                                                                                            |
 | `skills-lock.json`                                                        | ship-pr folder hash after the Rhino guard.                                                                                                                                                                                                                                                              |
@@ -135,7 +141,7 @@ purpose.
 | `tools/ci/production-resources.ts`                                        | `APP_BASE_URL` and `PACKAGE_APP_BASE_URL` fallbacks, and an optional Fathom site id.                                                                                                                                                                                                                    |
 | `tools/nx-remote-cache-probe.ts`                                          | Default Nx cache server hostname.                                                                                                                                                                                                                                                                       |
 | `.github/workflows/deploy.yml`                                            | Production hostnames, app and package-app origin fallbacks, optional Fathom site id, the DR job skip, and fresh-account worker bootstrap. Origin bootstrap runs only when `origin_bootstrap` is true. Origin secret sync copies `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` onto `kody-production`. |
-| `.github/workflows/validate.yml`                                          | 🧹 Static sets `NODE_OPTIONS=--max-old-space-size=6144` and a 15-minute timeout. 🧪 Node on `ubuntu-latest` uses 20 minutes and `--runner ubuntu-latest`.                                                                                                                                               |
+| `.github/workflows/validate.yml`                                          | 🧹 Static sets `NODE_OPTIONS=--max-old-space-size=6144` and a 15-minute timeout, and runs the automerge policy tests plus actionlint. 🧪 Node on `ubuntu-latest` uses 20 minutes and `--runner ubuntu-latest`.                                                                                          |
 | `.github/workflows/nx-cache-deploy.yml`                                   | Nx cache hostname and skip when the write token is absent.                                                                                                                                                                                                                                              |
 | `.github/workflows/cla.yml`                                               | CLA jobs run only on `kody-hq/kody`.                                                                                                                                                                                                                                                                    |
 | `.github/workflows/weekly-site-perf.yml`                                  | Weekly site perf runs only on `kody-hq/kody`.                                                                                                                                                                                                                                                           |
@@ -298,85 +304,80 @@ Do not call `@kentcdodds/friction-log`. Do not open issues on `kody-hq/kody` or
 any other Kent repository. Do not post to Discord. If `gh` cannot write, stop.
 The upstream daily sweep does not run here.
 
-Agents wait for `✅ Validate` and for the `Cursor Bugbot` check, fix or answer
-its findings, resolve those review threads, and push again before expecting
-automerge. That wait is part of
+Agents wait for `✅ Validate` on the current head SHA. Bugbot is not a merge
+gate. Automerge also waits for a factory reviewer verdict marker for that SHA.
+That wait is part of
 [rhino-ship-pr](../../.agents/skills/rhino-ship-pr/SKILL.md).
 
 ## Pull requests
 
-Agent pull requests use `cursor/` branches.
-`.github/workflows/rhino-automerge.yml` squash-merges them only when
-`✅ Validate` (`.github/workflows/validate.yml`) has completed with conclusion
-`success` on that head SHA and the Cursor Bugbot gate below is clear.
+Agent pull requests use `cursor/` branches. Factory branches use `habits/issue-`
+or `factory/`. `.github/workflows/automerge.yml` squash-merges them only when
+every rule in [`.github/automerge/SPEC.md`](../../.github/automerge/SPEC.md)
+holds on the current head SHA. Bugbot is not a gate.
 
-The workflow runs from `main`. It starts when Validate's `workflow_run`
-completes, and when the `check_run` named `Cursor Bugbot` completes. Either
-event can arrive first. Each run re-checks every gate. It does not check out the
-pull request.
+The workflow runs from `main`. It starts when `✅ Validate` or
+`Auto-merge signal` completes, on `pull_request_target`, on a new issue comment,
+every 15 minutes, and on `workflow_dispatch`. A review only wakes
+`.github/workflows/automerge-signal.yml`, which has no permissions and does not
+check out code. The merge job checks out the default branch's
+`.github/automerge` scripts and does not check out the pull request.
 
-The check name `Cursor Bugbot` is the GitHub check in
-[Cursor's Bugbot docs](https://cursor.com/docs/bugbot) (CI check statuses). The
-Cursor GitHub App slug on that check is `cursor`. Conclusion `success` or
-`neutral` can merge. `success` means Bugbot found nothing unresolved. `neutral`
-is the default when Bugbot reports findings, when a newer commit cancelled the
-run, or when Bugbot hit an internal error, so unresolved threads are a separate
-gate. `failure` does not merge. Bugbot does not emit `skipped`. The separate
-`Cursor Bugbot Autofix` check is not a gate.
+It squash-merges only when all of these are true:
 
-When Bugbot has not reported a completed check on the head SHA, the job logs
-`Skipping: Cursor Bugbot has not reported on <sha>.` and does not merge.
-Unresolved review threads are read with GraphQL `reviewThreads`. A thread blocks
-the merge when it is unresolved and its first comment author is a Bot whose
-login is `cursor`, `cursor[bot]`, or `cursor-bot`. A GraphQL failure logs a skip
-and does not merge.
-
-Repository variable `RHINO_REQUIRE_BUGBOT` turns that gate off. Unset, empty, or
-any value other than `false`, `0`, `no`, or `off` (any case, surrounding space
-ignored) keeps the gate on. Set the variable to `false` when Bugbot is not
-installed and merges should follow Validate alone.
-
-It squash-merges only when all of these are also true:
-
-- The Validate run was a `pull_request` event, and the head branch is in this
-  repository and starts with `cursor/`. Fork pull requests are ignored.
-- That head SHA is still the pull request's current head. The pull request is
-  open against `main` and is not a draft.
-- The pull request does not have the `no-automerge` label.
-- The pull request author login (`user.login`) is exactly `cameron-nye`.
-- GitHub reports the pull request mergeable. Merge conflicts leave it open.
+- The head branch is in this repository (not a fork), the base is `main`, the
+  pull request is open, and it is not a draft.
+- The author login (`user.login`) is exactly `cameron-nye`.
+- The head branch starts with `cursor/`, `habits/issue-`, or `factory/`.
+- `✅ Validate` (`.github/workflows/validate.yml`) has a run on that head SHA
+  whose latest run concluded `success`. The latest run is the newest
+  `created_at`, then the highest `run_attempt`. An older run does not win
+  because its attempt number is higher. Queued and in-progress runs wait.
+  Cancelled, skipped, neutral, stale, and failure do not pass. A truncated or
+  errored lookup of those runs waits, then goes stuck.
+- A factory reviewer review for that SHA says pass:
+  `<!-- factory-review: verdict=pass sha=<head> -->`. Only a pull request review
+  from `cameron-nye` counts. Issue comments, review comments, and edited,
+  dismissed, or pending reviews do not. `cursor/*` needs this marker too. Until
+  `@cam/rhino-pr-review` posts it, those pull requests do not merge. After 60
+  minutes the job posts one stuck notice and stops.
+- A GitHub lookup the decision needs (linked issues, files, workflow runs,
+  reviews, or labels) that errors or stops early is not eligible. The job waits,
+  then posts stuck after 60 minutes. It does not merge from a partial page.
+- The pull request has no `no-automerge` label and no fresh
+  `factory-fixup-running` label. A fix-up label older than 4 hours is stuck.
+  Immediately before the merge, the job re-reads the pull request and merges
+  only when that read succeeds, the head SHA is unchanged, the pull request is
+  still open and not a draft, and both of those labels are still absent.
+- Discord dedupe comments are trusted only from `github-actions[bot]`.
+- The diff is not on a manual path (workflows, Wrangler, migrations, billing,
+  auth, secrets, signing, patches, `packages/shared`, and the other globs in the
+  config). Renames count both paths. New dependencies and major bumps are
+  manual. For `0.x`, a minor bump counts as major. Device-test text in the body
+  or a linked issue is manual. There is no size cap.
 
 GitHub closes an issue linked from the pull request body as the account that
 merges, including when the squash commit message does not repeat the keyword.
-The job token has `issues: write` for that close. The squash commit message
-stays GitHub's default. After the merge, the job closes any still-open linked
-issue in this repository. A failed close warns and does not undo the merge.
-
-### Enable Bugbot
-
-Cameron turns the check on from the Cursor dashboard. The workflow cannot do
-that.
-
-1. [Integrations](https://cursor.com/dashboard): GitHub is connected, and the
-   installation includes `cameron-nye/rhino`.
-2. [Bugbot](https://cursor.com/dashboard/bugbot), under Automations: enable this
-   repository from the installations list.
-3. On an individual plan, Bugbot reviews pull requests authored by the GitHub
-   account linked to that Cursor account. Automerge only merges `cameron-nye`,
-   so that login is the one that needs the repository enabled.
-4. Leave "Run only when mentioned" off. Each push then publishes
-   `Cursor Bugbot`. Agents do not comment `bugbot run`. Bugbot ignores that
-   command from a bot or a GitHub App.
+Pull request 22 recorded issue 18 that way, and the issue stayed open when the
+merge token lacked `issues: write`. The job token has `issues: write`. The
+squash message stays GitHub's default. After the merge, the job closes any
+still-open linked issue in this repository. A failed close warns and does not
+undo the merge.
 
 A squash merge made with `GITHUB_TOKEN` does not start `push` workflows, and it
 does not start the `pull_request: closed` run of `🔎 Preview`.
 `🚀 Deploy (production)` (`.github/workflows/deploy.yml`) follows Validate only
 for a successful `push` to `main`, so that path does not see an agent merge.
 After the squash merge, this workflow dispatches Deploy on `main` with `mode`
-set to `production`. It also dispatches `🔎 Preview` on `main` with `action`
-`cleanup`, `target` `pr`, and the pull request number. That same Preview
-dispatch runs when Actions already squash-merged the pull request. A failed
-Preview dispatch warns and leaves the merge in place.
+set to `production`, unless a `workflow_dispatch` for that merge SHA is already
+queued or has succeeded. It also dispatches `🔎 Preview` on `main` with `action`
+`cleanup`, `target` `pr`, and the pull request number. A failed Preview dispatch
+warns and leaves the merge in place.
+
+Discord "ready for Cameron" and "stuck or failed" notices use
+`DISCORD_WEBHOOK_PR_READY`. "Auto-merged" uses `DISCORD_WEBHOOK_PR_MERGED`. The
+job reads those secrets from the environment and does not print them. A missing
+secret warns, skips that post, and stays green.
 
 The workflow file has to be on `main` before either trigger runs. A pull request
 that changes the gate does not merge itself while it carries `no-automerge`.
@@ -584,7 +585,7 @@ instead of failing the run:
 Per-PR preview deploys stay enabled. Preview sweep and audit bump stay
 upstream-only. Close-time cleanup is triggered by the automerge workflow via
 `workflow_dispatch`. After a squash merge, and when Actions already merged the
-pull request, `.github/workflows/rhino-automerge.yml` dispatches `🔎 Preview` on
+pull request, `.github/workflows/automerge.yml` dispatches `🔎 Preview` on
 `main` with `action` `cleanup`, `target` `pr`, and that pull request's number. A
 failed dispatch warns and leaves the merge in place. `GITHUB_TOKEN` does not
 start the `pull_request: closed` cleanup, which is why the dispatch exists.

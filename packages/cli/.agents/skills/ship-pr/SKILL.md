@@ -2,9 +2,10 @@
 name: ship-pr
 description: >
   Babysit a pull request to done. On cameron-nye/rhino, follow the root
-  rhino-ship-pr skill: wait for Cursor Bugbot, file friction on this fork, and
-  do not call @kentcdodds/ship-pr or Discord. Upstream kody-hq/kody still ticks
-  the ship-pr package. Use when a pull request needs to be shepherded to done.
+  rhino-ship-pr skill: Bugbot is not a merge gate, file friction on this fork,
+  and do not call @kentcdodds/ship-pr or Discord. Upstream kody-hq/kody still
+  ticks the ship-pr package. Use when a pull request needs to be shepherded to
+  done.
 ---
 
 # Ship a pull request

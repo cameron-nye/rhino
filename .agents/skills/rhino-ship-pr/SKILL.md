@@ -1,76 +1,60 @@
 ---
 name: rhino-ship-pr
 description: >
-  Shepherd a cameron-nye/rhino pull request until Validate and Cursor Bugbot are
-  clear, then let rhino-automerge squash-merge it. File leftover friction on
-  this fork. Use when a pull request in this fork needs to be finished. Never
-  call Kent's ship-pr package or post to Discord.
+  Shepherd a cameron-nye/rhino pull request until Validate is green and the
+  factory reviewer has passed the head SHA, then let automerge squash-merge it.
+  Bugbot is not a gate. File leftover friction on this fork. Use when a pull
+  request in this fork needs to be finished. Never call Kent's ship-pr package
+  or post to Discord.
 ---
 
 # Ship a Rhino pull request
 
 This checkout is `cameron-nye/rhino`. Do not run `kody:@kentcdodds/ship-pr/tick`
 or any other `@kentcdodds/ship-pr`, `@kentcdodds/friction-log`, or
-`@kentcdodds/discord` export. Do not post to Discord. Do not open issues or
-comments on Kent's repositories. Leftover papercuts go through
+`@kentcdodds/discord` export. Do not post to Discord. The auto-merge workflow
+sends the pull request notices. Do not open issues or comments on Kent's
+repositories. Leftover papercuts go through
 [rhino-friction](../rhino-friction/SKILL.md).
 
-Automerge is `.github/workflows/rhino-automerge.yml`. It squash-merges only when
-every gate below is true. It does not merge a fork, a draft, a base other than
-`main`, a branch that does not start with `cursor/`, a pull request whose author
-login is not `cameron-nye`, or a pull request labeled `no-automerge`. The
-merging token has `issues: write`. A closing keyword in the pull request body
-closes that issue when the squash merge lands. The keyword does not also have to
-be in the branch commit message.
+Automerge is `.github/workflows/automerge.yml` on the default branch. The policy
+is `.github/automerge/SPEC.md`. It does not check out the pull request and it
+does not run pull request code. Bugbot is not a gate.
 
 ## Gates
 
-Wait for both of these on the current head SHA, then push again if either is
-missing or stale:
+All of these must hold on the current head SHA. Push again when one is missing
+or stale:
 
-- `✅ Validate` completed with conclusion `success`.
-- The GitHub check run named `Cursor Bugbot` (Cursor GitHub App slug `cursor`)
-  completed with conclusion `success` or `neutral`. The name is from
-  [Cursor's Bugbot docs](https://cursor.com/docs/bugbot), under CI check
-  statuses. `failure` and a missing check do not merge. `neutral` is Bugbot's
-  default when it reports findings, so it is not a clean review by itself.
+- Base `main`, head branch in this repository, not a draft, author login
+  `cameron-nye`.
+- Head branch is `cursor/*`, `habits/issue-*`, or `factory/*`.
+- `✅ Validate` completed with conclusion `success` on that SHA. The latest
+  attempt wins. Queued and in-progress runs wait. Cancelled, skipped, neutral,
+  stale, and failure do not pass.
+- A factory reviewer marker for that SHA says pass:
+  `<!-- factory-review: verdict=pass sha=<40-hex head> -->`.
+  `@cam/rhino-pr-review` posts it as a pull request review with Cameron's user
+  token. A marker in an issue comment, a review comment, or an edited,
+  dismissed, or pending review does not count. Until that package exists,
+  `cursor/*` pull requests do not merge. After 60 minutes the workflow posts one
+  stuck notice. That is intended. Do not merge by hand to get past it.
+- If a lookup the decision needs errors or is truncated, the pull request waits.
+  It is not eligible.
+- No `factory-fixup-running` label, and no `no-automerge` label.
+- The diff is not on a manual path, and it does not add a dependency, bump a
+  major (a `0.x` minor bump counts), or mention a device test.
 
-Repository variable `RHINO_REQUIRE_BUGBOT` defaults to on. Automerge skips the
-Bugbot check only when that variable is `false`, `0`, `no`, or `off`. Leave the
-variable unset unless Cameron disabled the gate. When the gate is on and Bugbot
-has not reported, leave the pull request open. Do not comment `bugbot run` or
-`cursor review` from an agent or a GitHub App. Bugbot ignores those commands
-from bots.
+High risk (workflows, Wrangler, migrations, billing, auth, secrets, signing,
+patches, `packages/shared`) is manual because of those paths. Also add
+`no-automerge` when Cameron should merge by hand, including any change to the
+auto-merge workflow. Do not merge by hand unless Cameron asked.
 
-## Bugbot findings
+A verdict of `fail` does not merge. Fix the finding and wait for a pass marker
+on the new SHA.
 
-Read unresolved review threads before expecting a merge. Automerge refuses while
-any unresolved thread was opened by the Cursor bot (`author.__typename` is `Bot`
-and `author.login` is `cursor`, `cursor[bot]`, or `cursor-bot`).
+## After the merge
 
-For each of those threads:
-
-1. Fix a valid finding and push, or answer it when the finding should not
-   change. Reply with Cursor `ManagePullRequest` `post_comment` (`in_reply_to`
-   the review comment). Do not use `@kentcdodds/github`.
-2. Resolve the thread after the fix or the answer:
-
-```bash
-gh api graphql \
-  -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' \
-  -f id='THREAD_NODE_ID'
-```
-
-A 403 from `gh` means this token cannot resolve threads. Say that on the pull
-request and stop. Do not expect automerge until the threads are resolved. Do not
-fall back to Kent's bot.
-
-3. Wait until `Cursor Bugbot` has completed again on the new head SHA and no
-   unresolved Cursor bot threads remain. `Cursor Bugbot Autofix` is a separate
-   check. Automerge does not wait on it.
-
-High risk (auth, secrets, billing, data migrations, destructive changes, or
-anything hard to undo) gets the `no-automerge` label and waits for Cameron.
-Other ready pull requests stay unlabeled so automerge can squash-merge, then
-dispatch production deploy and preview cleanup. Do not merge by hand unless
-Cameron asked.
+The workflow squash-merges with the head SHA pinned. It closes issues linked
+from the pull request body, then dispatches production deploy and preview
+cleanup. A `GITHUB_TOKEN` merge does not start those workflows by itself.
