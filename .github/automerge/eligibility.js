@@ -222,6 +222,11 @@ function runCreated(run) {
 	return Date.parse(run?.createdAt ?? run?.created_at ?? '')
 }
 
+function runAttempt(run) {
+	const attempt = Number(run?.attempt ?? run?.run_attempt ?? 1)
+	return Number.isFinite(attempt) ? attempt : 1
+}
+
 function runUpdated(run) {
 	const updated = Date.parse(run?.updatedAt ?? run?.updated_at ?? '')
 	if (!Number.isNaN(updated)) return updated
@@ -236,9 +241,15 @@ export function latestCiRun(runs, sha, workflowName) {
 		return true
 	})
 	matching.sort((left, right) => {
-		const attempt =
-			(right.attempt ?? right.run_attempt ?? 1) -
-			(left.attempt ?? left.run_attempt ?? 1)
+		const leftCreated = runCreated(left)
+		const rightCreated = runCreated(right)
+		const leftKnown = !Number.isNaN(leftCreated)
+		const rightKnown = !Number.isNaN(rightCreated)
+		if (leftKnown && rightKnown && leftCreated !== rightCreated) {
+			return rightCreated - leftCreated
+		}
+		if (leftKnown !== rightKnown) return leftKnown ? -1 : 1
+		const attempt = runAttempt(right) - runAttempt(left)
 		if (attempt !== 0) return attempt
 		return runUpdated(right) - runUpdated(left)
 	})
@@ -380,20 +391,41 @@ export function buildNotice({ state, repo, number, title, url, reasons }) {
 	].join('\n')
 }
 
-export const NOTIFY_AUTHOR = 'github-actions[bot]'
+export const NOTIFY_LOGIN = 'github-actions[bot]'
 
 export function notifyMarker(state, sha) {
 	return `<!-- automerge-notify: state=${state} sha=${sha} -->`
 }
 
-export function hasNotifyMarker(comments, state, sha) {
+export function alreadyNotified(comments, state, sha, login = NOTIFY_LOGIN) {
 	const pattern = new RegExp(
 		`<!--\\s*automerge-notify:\\s*state=${state}\\s+sha=${sha}\\s*-->`,
 	)
-	return (comments ?? []).some((entry) => {
-		if (!entry || typeof entry !== 'object') return false
-		const author = entry.author ?? entry.user?.login ?? ''
-		if (author !== NOTIFY_AUTHOR) return false
-		return pattern.test(String(entry.body ?? ''))
+	return (comments ?? []).some((comment) => {
+		if (!comment || typeof comment !== 'object') return false
+		if (comment.user?.login !== login) return false
+		return pattern.test(String(comment.body ?? ''))
 	})
+}
+
+function labelNames(labels) {
+	if (!Array.isArray(labels)) return []
+	return labels
+		.map((label) => (typeof label === 'string' ? label : label?.name))
+		.filter((name) => typeof name === 'string' && name.length > 0)
+}
+
+export function preMergeCheck(cfg, sha, fresh) {
+	if (fresh == null) return 're-read failed'
+	if (fresh.head?.sha !== sha) return 'head changed'
+	if (fresh.state !== 'open') return 'not open'
+	if (fresh.draft === true) return 'draft'
+	const labels = labelNames(fresh.labels)
+	if (cfg?.noAutomergeLabel && labels.includes(cfg.noAutomergeLabel)) {
+		return cfg.noAutomergeLabel
+	}
+	if (cfg?.fixupLabel && labels.includes(cfg.fixupLabel)) {
+		return cfg.fixupLabel
+	}
+	return null
 }

@@ -4,10 +4,12 @@ import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import {
+	alreadyNotified,
 	buildNotice,
 	evaluate,
-	hasNotifyMarker,
+	NOTIFY_LOGIN,
 	notifyMarker,
+	preMergeCheck,
 } from '../eligibility.js'
 import run, { LOOKUP_PAGE_LIMIT } from '../run.js'
 
@@ -235,6 +237,42 @@ test('the latest CI attempt wins', () => {
 			runs: [
 				successRun({ conclusion: 'success', attempt: 1, updatedAt: at(-30) }),
 				successRun({ conclusion: 'failure', attempt: 1, updatedAt: at(-1) }),
+			],
+		}).decision,
+		'failed',
+	)
+})
+
+test('an older failed CI run does not outrank a newer success', () => {
+	const newerSuccess = successRun({
+		conclusion: 'success',
+		attempt: 1,
+		createdAt: at(-5),
+		updatedAt: at(-5),
+	})
+	const olderFailure = successRun({
+		conclusion: 'failure',
+		attempt: 2,
+		createdAt: at(-40),
+		updatedAt: at(-1),
+	})
+	assert.equal(decide({ runs: [newerSuccess, olderFailure] }).decision, 'merge')
+	assert.equal(decide({ runs: [olderFailure, newerSuccess] }).decision, 'merge')
+	assert.equal(
+		decide({
+			runs: [
+				successRun({
+					conclusion: 'success',
+					attempt: 2,
+					createdAt: at(-40),
+					updatedAt: at(-30),
+				}),
+				successRun({
+					conclusion: 'failure',
+					attempt: 1,
+					createdAt: at(-5),
+					updatedAt: at(-5),
+				}),
 			],
 		}).decision,
 		'failed',
@@ -639,6 +677,7 @@ function createHarness(options = {}) {
 	const consoleEvents = []
 	let fetchCount = 0
 	let fetchMatched = 0
+	let prGetIndex = 0
 	const pr = githubPull(options.pull)
 	const comments = []
 	const core = {
@@ -896,20 +935,7 @@ function createHarness(options = {}) {
 			}
 		}
 		if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
-			if (options.headMoved) {
-				return {
-					data: { ...pr, head: { ...pr.head, sha: OTHER } },
-					headers: {},
-				}
-			}
-			const data = {
-				...pr,
-				labels: Array.isArray(pr.labels) ? [...pr.labels] : pr.labels,
-			}
-			if (options.refetchDraft) data.draft = true
-			if (options.refetchLabels) data.labels = options.refetchLabels
-			if (options.refetchLabelsMissing) data.labels = undefined
-			return { data, headers: {} }
+			return { data: pr, headers: {} }
 		}
 		if (route === 'GET /repos/{owner}/{repo}/pulls') {
 			return { data: pr.state === 'open' ? [pr] : [], headers: {} }
@@ -971,8 +997,38 @@ function createHarness(options = {}) {
 		if (options.fetchThrow) throw new Error(`connect failed ${url}`)
 		return { status: options.fetchStatus ?? 200 }
 	}
+	async function pullsGet(params) {
+		if (Array.isArray(options.prGetSeq)) {
+			const next =
+				prGetIndex < options.prGetSeq.length
+					? options.prGetSeq[prGetIndex]
+					: null
+			prGetIndex += 1
+			calls.push({ route: 'pulls.get', params })
+			if (next == null || next instanceof Error) {
+				throw next instanceof Error
+					? next
+					: Object.assign(new Error('re-read failed'), { status: 500 })
+			}
+			return { data: next }
+		}
+		return request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+			owner: params.owner,
+			repo: params.repo,
+			pull_number: params.pull_number,
+		})
+	}
+	async function pullsMerge(params) {
+		return request('PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge', {
+			owner: params.owner,
+			repo: params.repo,
+			pull_number: params.pull_number,
+			merge_method: params.merge_method,
+			sha: params.sha,
+		})
+	}
 	return {
-		github: { request },
+		github: { request, rest: { pulls: { get: pullsGet, merge: pullsMerge } } },
 		context: { repo: { owner: 'cameron-nye', repo: 'rhino' } },
 		core,
 		calls,
@@ -1153,20 +1209,60 @@ test('run.js squash-merges the pinned SHA, closes the linked issue, and dispatch
 	)
 })
 
-test('only a github-actions bot marker dedupes a notice', () => {
+test('alreadyNotified trusts only a github-actions[bot] marker', () => {
 	const marker = notifyMarker('ready', SHA)
+	const ignored = [
+		{ body: marker, user: { login: 'cameron-nye' } },
+		{ body: marker, user: { login: 'octocat' } },
+		{ body: marker },
+		{ body: marker, user: { login: 'github-actions' } },
+		marker,
+	]
+	for (const comment of ignored) {
+		assert.equal(alreadyNotified([comment], 'ready', SHA), false)
+	}
 	assert.equal(
-		hasNotifyMarker([{ body: marker, author: 'octocat' }], 'ready', SHA),
-		false,
-	)
-	assert.equal(hasNotifyMarker([marker], 'ready', SHA), false)
-	assert.equal(
-		hasNotifyMarker(
-			[{ body: marker, author: 'github-actions[bot]' }],
+		alreadyNotified(
+			[{ body: marker, user: { login: NOTIFY_LOGIN } }],
 			'ready',
 			SHA,
 		),
 		true,
+	)
+	assert.equal(NOTIFY_LOGIN, 'github-actions[bot]')
+})
+
+test('preMergeCheck refuses a changed pull request or a failed re-read', () => {
+	const fresh = {
+		head: { sha: SHA },
+		state: 'open',
+		draft: false,
+		labels: [],
+	}
+	assert.equal(preMergeCheck(config, SHA, fresh), null)
+	assert.equal(preMergeCheck(config, SHA, null), 're-read failed')
+	assert.equal(
+		preMergeCheck(config, SHA, { ...fresh, head: { sha: OTHER } }),
+		'head changed',
+	)
+	assert.equal(
+		preMergeCheck(config, SHA, { ...fresh, state: 'closed' }),
+		'not open',
+	)
+	assert.equal(preMergeCheck(config, SHA, { ...fresh, draft: true }), 'draft')
+	assert.equal(
+		preMergeCheck(config, SHA, {
+			...fresh,
+			labels: [{ name: 'no-automerge' }],
+		}),
+		'no-automerge',
+	)
+	assert.equal(
+		preMergeCheck(config, SHA, {
+			...fresh,
+			labels: [{ name: 'factory-fixup-running' }],
+		}),
+		'factory-fixup-running',
 	)
 })
 
@@ -1191,6 +1287,7 @@ test('one Discord post per pull request, SHA, and state', async () => {
 				assert.deepEqual(second.merged, [])
 				assert.equal(harness.stats().fetchCount, 1)
 				assert.equal(harness.comments.length, 1)
+				assert.equal(harness.comments[0].user.login, NOTIFY_LOGIN)
 				assert.match(harness.comments[0].body, /state=ready sha=/)
 				assertNoSecret(harness.blob())
 			} finally {
@@ -1393,66 +1490,97 @@ test('a failed or truncated eligibility lookup does not merge', async () => {
 test('a forged automerge-notify marker does not suppress the notice', async () => {
 	await exclusive(() =>
 		withSecrets(async () => {
-			const outcome = await execute({
+			const harness = createHarness({
 				pull: { labels: [{ name: 'no-automerge' }] },
 				forgedMarker: true,
 			})
-			assert.equal(outcome.result.merged.length, 0)
-			assert.equal(outcome.stats.fetchCount, 1)
-			assert.equal(outcome.comments.length, 1)
-			assert.match(outcome.comments[0].body, /state=ready /)
-			assertNoSecret(outcome.blob)
-		}),
-	)
-})
-
-test('a label or draft on the re-fetched pull request blocks the merge', async () => {
-	await exclusive(() =>
-		withSecrets(async () => {
-			const cases = [
-				{
-					refetchLabels: [{ name: 'no-automerge' }],
-					message: 'no-automerge is present',
-				},
-				{
-					refetchLabels: [{ name: 'factory-fixup-running' }],
-					message: 'factory-fixup-running is present',
-				},
-				{
-					refetchDraft: true,
-					message: 'the pull request is a draft',
-				},
-				{
-					refetchLabelsMissing: true,
-					message: 'labels could not be re-read',
-				},
-			]
-			for (const options of cases) {
-				const outcome = await execute(options)
-				assert.equal(mergedCount(outcome), 0, options.message)
-				assert.equal(outcome.result.merged.length, 0, options.message)
-				assert.equal(dispatch(outcome.calls, 'deploy.yml', 'POST ').length, 0)
-				assert.equal(dispatch(outcome.calls, 'preview.yml', 'POST ').length, 0)
-				assert.ok(
-					outcome.logs.some((entry) => entry.message.includes(options.message)),
-					options.message,
-				)
-				assertNoSecret(outcome.blob)
+			try {
+				await run({
+					github: harness.github,
+					context: harness.context,
+					core: harness.core,
+					now: NOW,
+				})
+				assert.equal(harness.stats().fetchCount, 1)
+				assert.equal(harness.comments.length, 1)
+				assert.equal(harness.comments[0].user.login, NOTIFY_LOGIN)
+				assert.match(harness.comments[0].body, /state=ready /)
+				await run({
+					github: harness.github,
+					context: harness.context,
+					core: harness.core,
+					now: NOW,
+				})
+				assert.equal(harness.stats().fetchCount, 1)
+				assert.equal(harness.comments.length, 1)
+				assertNoSecret(harness.blob())
+			} finally {
+				harness.restore()
 			}
 		}),
 	)
 })
 
-test('a moved head is not merged', async () => {
+test('a label, a moved head, or a failed re-read blocks the merge', async () => {
 	await exclusive(() =>
 		withSecrets(async () => {
-			const outcome = await execute({ headMoved: true })
-			assert.deepEqual(outcome.result.merged, [])
-			assert.equal(
-				outcome.calls.filter((call) => call.route.startsWith('PUT ')).length,
-				0,
-			)
-			assert.equal(dispatch(outcome.calls, 'deploy.yml', 'POST ').length, 0)
+			const open = {
+				state: 'open',
+				draft: false,
+				head: { sha: SHA },
+				labels: [],
+			}
+			const cases = [
+				{
+					prGetSeq: [{ ...open, labels: [{ name: 'no-automerge' }] }],
+					reason: 'no-automerge',
+				},
+				{
+					prGetSeq: [{ ...open, labels: [{ name: 'factory-fixup-running' }] }],
+					reason: 'factory-fixup-running',
+				},
+				{
+					prGetSeq: [{ ...open, draft: true }],
+					reason: 'draft',
+				},
+				{
+					prGetSeq: [{ ...open, state: 'closed' }],
+					reason: 'not open',
+				},
+				{
+					prGetSeq: [{ ...open, head: { sha: OTHER } }],
+					reason: 'head changed',
+				},
+				{
+					prGetSeq: [null],
+					reason: 're-read failed',
+				},
+			]
+			for (const options of cases) {
+				const outcome = await execute(options)
+				assert.equal(mergedCount(outcome), 0, options.reason)
+				assert.equal(outcome.result.merged.length, 0, options.reason)
+				assert.equal(
+					outcome.calls.filter((call) => call.route.startsWith('PUT ')).length,
+					0,
+					options.reason,
+				)
+				assert.equal(
+					dispatch(outcome.calls, 'deploy.yml', 'POST ').length,
+					0,
+					options.reason,
+				)
+				assert.equal(
+					dispatch(outcome.calls, 'preview.yml', 'POST ').length,
+					0,
+					options.reason,
+				)
+				assert.ok(
+					outcome.logs.some((entry) => entry.message.includes(options.reason)),
+					options.reason,
+				)
+				assertNoSecret(outcome.blob)
+			}
 		}),
 	)
 })

@@ -7,8 +7,11 @@
 2. Head branch is `cursor/*` OR a factory branch. Factory prefixes are one
    config list: `habits/issue-` and `factory/`.
 3. The repo's CI workflow (`✅ Validate` for Rhino) has a run on exactly the
-   head SHA whose latest attempt concluded `success`. queued / in_progress /
-   skipped / cancelled / neutral / stale never pass.
+   head SHA. The latest run of that workflow is the newest `created_at`;
+   `run_attempt` breaks a tie. An older run does not win because its attempt
+   number is higher. That latest run must have concluded `success`. queued /
+   in_progress / skipped / cancelled / neutral / stale never pass. A truncated
+   or errored lookup of those runs is not eligible.
 4. Bugbot is NOT a gate.
 5. A factory reviewer verdict marker for exactly the head SHA says pass:
    `<!-- factory-review: verdict=pass sha=<40-hex head> -->`. Accept it only
@@ -20,11 +23,10 @@
    latest accepted marker for that SHA wins. Markers for other SHAs are ignored.
    Required for cursor/* PRs too. No `factory-fixup-running` label on the PR.
 6. No size cap.
-7. No `no-automerge` label. Immediately before `PUT /pulls/{n}/merge`, re-fetch
-   the pull request. Merge only when the head SHA is still unchanged, the pull
-   request is still not a draft, and neither `no-automerge` nor
-   `factory-fixup-running` is present. If the re-fetched labels are missing, do
-   not merge. Squash merge with `sha=<head>`.
+7. No `no-automerge` label. Immediately before the merge, re-read the pull
+   request. Refuse when the re-read failed, the head SHA changed, the pull
+   request is not open, it is a draft, or `no-automerge` or
+   `factory-fixup-running` is present. Otherwise squash merge with `sha=<head>`.
 8. If CI has not concluded, or no verdict exists, 60 minutes after the head was
    pushed (first workflow run `created_at` for the SHA, else the commit date),
    don't merge; post one "stuck or failed" notice per head SHA. A
@@ -75,15 +77,17 @@ cancel-in-progress.
 - **Message:** state, repo, PR number and title, link, and reason. Strip `@` and
   backticks from titles.
 - **Dedupe:** per PR + SHA + state, using a hidden PR comment
-  `<!-- automerge-notify: state=<s> sha=<sha> -->`. Count the marker only when
-  the comment author is `github-actions[bot]`. A marker from any other user is
-  ignored, so it cannot suppress a notice. If Discord returns non-2xx, write no
-  marker, so the next run retries.
+  `<!-- automerge-notify: state=<s> sha=<sha> -->`. Dedupe markers are trusted
+  only from `github-actions[bot]`. A marker from any other login, including
+  `github-actions` without `[bot]`, a comment with no user, or any other person,
+  is ignored, so it cannot suppress a notice. If Discord returns non-2xx, write
+  no marker, so the next run retries.
 - **Missing secret:** call `core.warning`, skip the post, write the marker with
   "Discord: skipped", and keep the job green.
 
 ## 5. After merge
 
+- Dedupe markers are trusted only from `github-actions[bot]`.
 - Close linked issues (closingIssuesReferences that are still OPEN) with
   state_reason completed. A failed close only warns.
 - A GITHUB_TOKEN merge doesn't start push workflows, so dispatch deploy.yml and
@@ -95,7 +99,9 @@ cancel-in-progress.
 - Ignores: draft, fork, author, base, branch, closed.
 - CI failure gives failed. Cancelled, skipped, neutral and stale never pass.
   Queued waits, then goes stuck after 60 min. CI on another SHA is ignored. The
-  latest attempt wins.
+  latest run wins: newest `created_at`, then highest `run_attempt`. An older
+  failed run that follows a newer success does not override that success, and a
+  newer failure outranks an older success that has a higher attempt.
 - A verdict for an older SHA is ignored. A verdict of fail gives ready. No
   verdict after 60 min gives stuck. A pass marker from another user, from an
   issue comment, or from an edited, dismissed, or pending review is ignored.
@@ -111,13 +117,28 @@ cancel-in-progress.
 - run.js against a fake GitHub:
   - the merge is pinned to the SHA, with squash
   - the linked issue gets closed
-  - one Discord post per PR + SHA + state, and a marker from any other user does
-    not count
-  - a `no-automerge` label, a `factory-fixup-running` label, or a draft that
-    appears on the re-fetched pull request blocks the merge
+  - one Discord post per PR + SHA + state. A forged non-bot marker still posts,
+    and the bot's own marker dedupes on the next run
+  - a label added, a moved head, or a failed re-read immediately before the
+    merge does not merge
   - a missing secret only warns
   - the webhook URL never appears anywhere
   - deploy and preview dispatches fire after a merge
+
+## 9. Hardening acceptance tests
+
+- Markers from `cameron-nye`, any other user, a comment with no user, or
+  `github-actions` without `[bot]` are ignored. Only `github-actions[bot]`
+  dedupes.
+- `preMergeCheck` refuses a moved head, a closed pull request, a draft,
+  `no-automerge`, `factory-fixup-running`, and a failed re-read.
+- A forged non-bot marker still posts. The bot's own marker dedupes on the next
+  run. The fake commenter is `github-actions[bot]`.
+- A label added, a moved head, or a failed re-read immediately before the merge
+  does not merge. The fake GitHub supplies that re-read through a `prGetSeq`
+  sequence of `pulls.get` responses.
+- An older failed CI run that follows a newer success does not override that
+  success. A newer failure outranks an older success that has a higher attempt.
 
 ## Rhino binding
 

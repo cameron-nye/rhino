@@ -7,10 +7,11 @@
  */
 
 import {
+	alreadyNotified,
 	buildNotice,
 	evaluate,
-	hasNotifyMarker,
 	notifyMarker,
+	preMergeCheck,
 } from './eligibility.js'
 
 export const LOOKUP_PAGE_LIMIT = 40
@@ -267,7 +268,7 @@ async function postDiscord(core, url, payload) {
 
 async function notify(github, owner, repo, pr, state, reasons, comments, core) {
 	const sha = pr.headSha
-	if (hasNotifyMarker(comments, state, sha)) {
+	if (alreadyNotified(comments, state, sha)) {
 		core.info(
 			`Discord notice already posted for #${pr.number} ${state} ${sha}.`,
 		)
@@ -448,7 +449,7 @@ async function gather(github, owner, repo, pr, config, core) {
 	const comments = (commentsPage.items ?? []).map((comment) => ({
 		body: comment.body,
 		at: comment.created_at,
-		author: comment.user?.login ?? '',
+		user: { login: comment.user?.login ?? '' },
 	}))
 	if (commentFailures.length > 0) {
 		core.warning(
@@ -493,11 +494,6 @@ async function gather(github, owner, repo, pr, config, core) {
 	}
 }
 
-function pullLabelNames(pull) {
-	if (!Array.isArray(pull?.labels)) return null
-	return pull.labels.map((label) => label?.name ?? label)
-}
-
 async function mergePull(
 	github,
 	owner,
@@ -507,53 +503,34 @@ async function mergePull(
 	config,
 	core,
 ) {
-	const fresh = await github.request(
-		'GET /repos/{owner}/{repo}/pulls/{pull_number}',
-		{ owner, repo, pull_number: number },
-	)
-	const pull = fresh?.data
-	if (!pull || pull.head?.sha !== expectedSha) {
-		core.info(
-			`Skipping #${number}: head is ${pull?.head?.sha ?? 'unknown'}, not ${expectedSha}.`,
-		)
-		return null
+	let latest = null
+	try {
+		const response = await github.rest.pulls.get({
+			owner,
+			repo,
+			pull_number: number,
+		})
+		latest = response?.data ?? null
+	} catch {
+		latest = null
 	}
-	if (pull.draft === true) {
-		core.info(`Skipping #${number}: the pull request is a draft.`)
-		return null
-	}
-	if (pull.state !== 'open') {
-		core.info(`Skipping #${number}: the pull request is no longer open.`)
-		return null
-	}
-	const labels = pullLabelNames(pull)
-	if (!labels) {
-		core.warning(
-			`Skipping #${number}: labels could not be re-read, so it was not merged.`,
-		)
-		return null
-	}
-	for (const name of [config.noAutomergeLabel, config.fixupLabel]) {
-		if (name && labels.includes(name)) {
-			core.info(`Skipping #${number}: ${name} is present.`)
-			return null
-		}
+	const reason = preMergeCheck(config, expectedSha, latest)
+	if (reason) {
+		core.info(`Skipping #${number}: ${reason}`)
+		return { state: 'wait', reasons: [reason] }
 	}
 	if (!/^[0-9a-f]{40}$/.test(expectedSha)) {
 		core.warning(`Refusing to merge #${number}: head SHA is invalid.`)
-		return null
+		return { state: 'wait', reasons: ['head SHA is invalid'] }
 	}
 	try {
-		const response = await github.request(
-			'PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge',
-			{
-				owner,
-				repo,
-				pull_number: number,
-				merge_method: 'squash',
-				sha: expectedSha,
-			},
-		)
+		const response = await github.rest.pulls.merge({
+			owner,
+			repo,
+			pull_number: number,
+			merge_method: 'squash',
+			sha: expectedSha,
+		})
 		const merged = response?.data
 		if (merged?.merged !== true || !/^[0-9a-f]{40}$/.test(merged.sha ?? '')) {
 			throw new Error(
@@ -561,12 +538,12 @@ async function mergePull(
 			)
 		}
 		core.info(`Squash-merged #${number} as ${merged.sha}.`)
-		return merged.sha
+		return { state: 'merged', sha: merged.sha }
 	} catch (error) {
 		const status = error?.status
 		if (status === 405 || status === 409) {
 			core.warning(`Skipping #${number}: merge was refused (${status}).`)
-			return null
+			return { state: 'wait', reasons: [`merge refused (${status})`] }
 		}
 		throw error
 	}
@@ -691,9 +668,9 @@ export default async function run({ github, context, core, now }) {
 			`#${pull.number} ${decision.decision}${decision.reasons.length ? `: ${decision.reasons.join('; ')}` : ''}`,
 		)
 		if (decision.decision === 'merge') {
-			let mergeSha = null
+			let mergeResult = null
 			try {
-				mergeSha = await mergePull(
+				mergeResult = await mergePull(
 					github,
 					owner,
 					repo,
@@ -704,29 +681,17 @@ export default async function run({ github, context, core, now }) {
 				)
 			} catch {
 				core.warning(
-					`#${pull.number}: the head could not be re-read, so it was not merged.`,
+					`#${pull.number}: the merge request failed, so it was not merged.`,
 				)
-				const blocked = evaluate({
-					config,
-					now: clock,
-					commitAt: gathered.commitAt,
-					runs: gathered.runs,
-					pr: { ...gathered.snapshot, lookupIncomplete: true },
-				})
-				if (blocked.discordState) {
-					await notify(
-						github,
-						owner,
-						repo,
-						gathered.snapshot,
-						blocked.discordState,
-						blocked.reasons,
-						gathered.comments,
-						core,
-					)
-				}
 				continue
 			}
+			if (mergeResult?.state === 'wait') {
+				core.info(
+					`#${pull.number} wait: ${(mergeResult.reasons ?? []).join('; ')}`,
+				)
+				continue
+			}
+			const mergeSha = mergeResult?.sha
 			if (!mergeSha) continue
 			await closeLinked(github, owner, repo, pull.number, gathered.issues, core)
 			await notify(

@@ -330,8 +330,11 @@ It squash-merges only when all of these are true:
 - The author login (`user.login`) is exactly `cameron-nye`.
 - The head branch starts with `cursor/`, `habits/issue-`, or `factory/`.
 - `✅ Validate` (`.github/workflows/validate.yml`) has a run on that head SHA
-  whose latest attempt concluded `success`. Queued and in-progress runs wait.
-  Cancelled, skipped, neutral, stale, and failure do not pass.
+  whose latest run concluded `success`. The latest run is the newest
+  `created_at`, then the highest `run_attempt`. An older run does not win
+  because its attempt number is higher. Queued and in-progress runs wait.
+  Cancelled, skipped, neutral, stale, and failure do not pass. A truncated or
+  errored lookup of those runs waits, then goes stuck.
 - A factory reviewer review for that SHA says pass:
   `<!-- factory-review: verdict=pass sha=<head> -->`. Only a pull request review
   from `cameron-nye` counts. Issue comments, review comments, and edited,
@@ -344,9 +347,9 @@ It squash-merges only when all of these are true:
 - The pull request has no `no-automerge` label and no fresh
   `factory-fixup-running` label. A fix-up label older than 4 hours is stuck.
   Immediately before the merge, the job re-reads the pull request and merges
-  only when the head SHA is unchanged, it is still not a draft, and both of
-  those labels are still absent.
-- Discord dedupe comments count only when the author is `github-actions[bot]`.
+  only when that read succeeds, the head SHA is unchanged, the pull request is
+  still open and not a draft, and both of those labels are still absent.
+- Discord dedupe comments are trusted only from `github-actions[bot]`.
 - The diff is not on a manual path (workflows, Wrangler, migrations, billing,
   auth, secrets, signing, patches, `packages/shared`, and the other globs in the
   config). Renames count both paths. New dependencies and major bumps are
