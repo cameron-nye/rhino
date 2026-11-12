@@ -72,8 +72,9 @@ cancel-in-progress.
 ## 4. Discord
 
 - **Channels:** "ready for Cameron" goes to pr-ready, when CI is green and a
-  passing factory review exists for the current head SHA but the PR isn't auto-mergeable; include the reasons. "Stuck or
-  failed" goes to pr-ready. "Auto-merged" goes to pr-merged.
+  passing factory review exists for the current head SHA but the PR isn't
+  auto-mergeable; include the reasons. "Stuck or failed" goes to pr-ready.
+  "Auto-merged" goes to pr-merged.
 - **Message:** state, repo, PR number and title, link, and reason. Strip `@` and
   backticks from titles.
 - **Dedupe:** per PR + SHA + state, using a hidden PR comment
@@ -107,11 +108,14 @@ cancel-in-progress.
   issue comment, or from an edited, dismissed, or pending review is ignored.
 - A lookup that errors or is truncated waits, then goes stuck after 60 min. That
   includes linked issues, files, workflow runs, reviews, and labels.
-- The fix-up label waits, and goes stuck when stale. `no-automerge` gives ready only after green CI and a passing review on the current head SHA.
+- The fix-up label waits, and goes stuck when stale. `no-automerge` gives ready
+  only after green CI and a passing review on the current head SHA.
 - A 300-file PR still merges.
-- Every `__mustBeManual` path gives ready after green CI and a passing review; every `__mustBeAuto` path gives
-  merge. A rename from a manual path gives ready after that same review.
-- Device-test text in the PR or a linked issue gives ready after green CI and a passing review.
+- Every `__mustBeManual` path gives ready after green CI and a passing review;
+  every `__mustBeAuto` path gives merge. A rename from a manual path gives ready
+  after that same review.
+- Device-test text in the PR or a linked issue gives ready after green CI and a
+  passing review.
 - New-dependency and major-bump detection.
 - The workflow's config block equals the fixture config.
 - run.js against a fake GitHub:
@@ -186,14 +190,15 @@ directories are also manual: `packages/worker/src/oauth-*`,
 handlers. Other files in `packages/worker/src/app/handlers/` stay auto.
 
 Concluded CI other than `success` is `failed` (including cancelled, skipped,
-neutral, and stale). `no-automerge` and other manual reasons are `ready` only after CI is green and a passing factory review exists for the current head SHA. Path,
-dependency, and device-test reasons are posted once those gates pass.
-A verdict of fail is `failed`, not ready. The 15-minute sweep lists open pull requests only, so a dispatch that
-crashes after the merge is not retried from a closed pull request; deploy still
-skips a SHA that is already queued or green. Each eligibility lookup pages until
-the API says it is done. The cap is 40 pages of 100. A further page, a missing
-page cursor, a non-array body, or a thrown request marks that pull request
-`lookup incomplete`: wait, then stuck after 60 minutes. It is not merged from
-the pages already read. Closing a linked issue after the merge still only warns.
-A Discord marker comment that fails to post warns and still leaves the merge and
-the dispatches in place.
+neutral, and stale). `no-automerge` and other manual reasons are `ready` only
+after CI is green and a passing factory review exists for the current head SHA.
+Path, dependency, and device-test reasons are posted once those gates pass. A
+verdict of fail is `failed`, not ready. The 15-minute sweep lists open pull
+requests only, so a dispatch that crashes after the merge is not retried from a
+closed pull request; deploy still skips a SHA that is already queued or green.
+Each eligibility lookup pages until the API says it is done. The cap is 40 pages
+of 100. A further page, a missing page cursor, a non-array body, or a thrown
+request marks that pull request `lookup incomplete`: wait, then stuck after 60
+minutes. It is not merged from the pages already read. Closing a linked issue
+after the merge still only warns. A Discord marker comment that fails to post
+warns and still leaves the merge and the dispatches in place.

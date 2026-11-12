@@ -438,7 +438,6 @@ test('no-automerge gives ready only after green CI and a passing review', () => 
 	assert.deepEqual(result.reasons, ['no-automerge'])
 })
 
-
 test('manual reasons wait for a passing review on the current head SHA', () => {
 	const filename =
 		(config.__mustBeManual && config.__mustBeManual[0]) ||

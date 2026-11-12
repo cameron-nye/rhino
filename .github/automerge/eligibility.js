@@ -356,9 +356,7 @@ export function evaluate(input) {
 			: result('wait', ['no verdict'])
 	}
 	const manual = [
-		...(hasLabel(pr.labels, config.noAutomergeLabel)
-			? ['no-automerge']
-			: []),
+		...(hasLabel(pr.labels, config.noAutomergeLabel) ? ['no-automerge'] : []),
 		...manualPathReasons(config, pr.files),
 		...dependencyReasons(pr.packageJsons),
 		...(deviceHit(config, pr) ? ['device test'] : []),
