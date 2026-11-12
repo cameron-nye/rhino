@@ -329,10 +329,6 @@ export function evaluate(input) {
 			: result('wait', [reason])
 	}
 
-	if (hasLabel(pr.labels, config.noAutomergeLabel)) {
-		return result('ready', ['no-automerge'])
-	}
-
 	if (hasLabel(pr.labels, config.fixupLabel)) {
 		const added = fixupAddedAt(pr, config.fixupLabel)
 		const staleMs = (config.fixupStaleHours ?? 4) * 60 * 60 * 1000
@@ -353,18 +349,21 @@ export function evaluate(input) {
 	}
 
 	const verdict = latestVerdict(pr.reviews, pr.headSha, config.author)
+	if (verdict !== 'pass') {
+		if (verdict === 'fail') return result('failed', ['verdict fail'])
+		return timedOut(input, pr.headSha, now)
+			? result('stuck', ['no verdict'])
+			: result('wait', ['no verdict'])
+	}
 	const manual = [
-		...(verdict === 'fail' ? ['verdict fail'] : []),
+		...(hasLabel(pr.labels, config.noAutomergeLabel)
+			? ['no-automerge']
+			: []),
 		...manualPathReasons(config, pr.files),
 		...dependencyReasons(pr.packageJsons),
 		...(deviceHit(config, pr) ? ['device test'] : []),
 	]
 	if (manual.length > 0) return result('ready', manual)
-	if (verdict !== 'pass') {
-		return timedOut(input, pr.headSha, now)
-			? result('stuck', ['no verdict'])
-			: result('wait', ['no verdict'])
-	}
 	return result('merge', [])
 }
 
