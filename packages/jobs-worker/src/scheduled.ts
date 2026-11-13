@@ -27,7 +27,8 @@ export async function runScheduledLaneWithFailureIsolation(input: {
 		if (isJobsWorkerLocalLane(input.message.lane)) {
 			await runJobScheduleWatchdogTick({
 				env: input.env,
-				now: scheduledAt,
+				scheduledAt,
+				now: new Date(),
 			})
 			return 'completed'
 		}
