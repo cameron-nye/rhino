@@ -1,5 +1,4 @@
-import { expect, test, waitForClientHydration } from '../playwright-utils.ts'
-import type { Page } from '@playwright/test'
+import { expect, test } from '../playwright-utils.ts'
 
 // Personal-use mode redirects public docs and the blog before Start renders
 // them, so the upstream first-click checks for those documents do not run
