@@ -681,7 +681,6 @@ test('fresh-account deploys only bind Durable Object classes their migrations co
 		'packages/platform-worker/wrangler.jsonc',
 		'packages/push-queue-worker/wrangler.jsonc',
 		'packages/runtime-worker/wrangler.jsonc',
-		'packages/start-routing-worker/wrangler.jsonc',
 		'packages/status/wrangler.jsonc',
 		'packages/worker/wrangler.jsonc',
 	])

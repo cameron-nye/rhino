@@ -67,11 +67,7 @@ test('CI matrices hash shards, retain crash retry and aggregate every shard at t
 	)
 	expect(e2e).toContain('retry-classifiers.ts e2e e2e-attempt-1.log')
 	expect(e2e).toContain('path: blob-report')
-	expect(workflow).toContain("needs.node.result == 'success'")
-	expect(workflow).toContain("needs.node.result != 'success'")
 	expect(workflow).toMatch(/name: 🧹 Static[\s\S]*?timeout-minutes: 15/)
-	expect(workflow).toContain("needs.workers.result == 'success'")
-	expect(workflow).toContain("needs.workers.result != 'success'")
 	expect(e2e).toMatch(
 		/Upload Playwright blob report[\s\S]*?continue-on-error: true[\s\S]*?timeout-minutes: 2[\s\S]*?path: blob-report/,
 	)

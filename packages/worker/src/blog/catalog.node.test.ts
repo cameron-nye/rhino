@@ -323,7 +323,7 @@ test('buildBlogRssXml scopes a category feed', () => {
 	const category = blogCategories.find((entry) => entry.slug === 'how-to')!
 	const posts = listBlogPosts().filter((post) => post.category === 'how-to')
 	const xml = buildBlogRssXml({ origin: 'https://kody.codes', posts, category })
-	expect(xml).toContain('<title>Kody Blog: How-to</title>')
+	expect(xml).toContain('<title>Rhino Blog: How-to</title>')
 	expect(xml).toContain('<link>https://kody.codes/blog/category/how-to</link>')
 	expect(xml.match(/<item>/g)?.length).toBe(posts.length)
 	expect(xml).not.toContain('<category>Essays</category>')
