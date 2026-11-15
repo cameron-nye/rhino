@@ -18,6 +18,9 @@ export const platformOwnedClassNames = [
 	'StripePlanRefresh',
 ] as const
 
+/** Platform classes that ship in their own migration tags after the v1 transfer. */
+export const platformInPlaceClassNames = ['FileStore', 'FileRoom'] as const
+
 export const runtimeOwnedClassNames = [
 	'StorageRunner',
 	'RunLog',

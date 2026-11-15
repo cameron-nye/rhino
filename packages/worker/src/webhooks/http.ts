@@ -1131,46 +1131,17 @@ export async function handleWebhookIngressRequest(
 			})
 			return dispatchUnavailableResponse()
 		}
-		// The queue send has resolved. Record acceptance and retire rotate
-		// overlap after the 202 so a sender that drops the connection at about
-		// 2 seconds still sees success, and so the delivery log survives that
-		// disconnect. Without ctx (the Start route), await the follow-up so
-		// the row and retire still happen.
-		const acceptedFollowUp = Promise.all([
-			recordWebhookDelivery({
-				env,
-				endpoint: liveEndpoint,
-				kodyId: savedPackage.kodyId,
-				outcome: 'accepted',
-				httpStatus: 202,
-				payloadBytes: bodyBytes.byteLength,
-				invocationId: deliveryId,
-				startedAt: receivedAt,
-			}).catch((error: unknown) => {
-				console.error('webhook-acceptance-record-failed', {
-					endpointId: liveEndpoint.id,
-					error,
-				})
-			}),
-			retirePreviousWebhookUrlIfConfirmed({
-				env,
-				endpoint: liveEndpoint,
-				secretMatch,
-			}).catch((error: unknown) => {
-				console.error('webhook-previous-url-retire-failed', {
-					endpointId: liveEndpoint.id,
-					error,
-				})
-			}),
-			retirePreviousWebhookHmacIfConfirmed({
-				env,
-				endpoint: liveEndpoint,
-				matchedSource: matchedHmacSource,
-				previousHmacSecretEncrypted: observedPreviousHmacCiphertext,
-			}),
-		])
-		if (waitUntil) waitUntil(acceptedFollowUp)
-		else await acceptedFollowUp
+		await retirePreviousWebhookUrlIfConfirmed({
+			env,
+			endpoint: liveEndpoint,
+			secretMatch,
+		})
+		await retirePreviousWebhookHmacIfConfirmed({
+			env,
+			endpoint: liveEndpoint,
+			matchedSource: matchedHmacSource,
+			previousHmacSecretEncrypted: observedPreviousHmacCiphertext,
+		})
 		return jsonResponse({ ok: true }, { status: 202 })
 	}
 

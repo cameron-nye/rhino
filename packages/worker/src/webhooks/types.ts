@@ -132,11 +132,7 @@ export function isWebhookPreviousHmacLive(
 	return Date.parse(endpoint.previousHmacSecretExpiresAt) > nowMs
 }
 
-export type WebhookDeliveryOutcome =
-	| 'accepted'
-	| 'delivered'
-	| 'rejected'
-	| 'failed'
+export type WebhookDeliveryOutcome = 'delivered' | 'rejected' | 'failed'
 
 /**
  * Lifecycle of one delivery's run row. Ack deliveries write `accepted` before

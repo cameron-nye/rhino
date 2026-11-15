@@ -93,10 +93,13 @@ test('documents report the ssr phase and loader phases in Server-Timing', async 
 			headers: { 'Content-Type': 'text/html' },
 		})
 	})
-	const response = await handleRequest(new Request('https://kody.test/'), {
-		COOKIE_SECRET: 'test-only',
-		WRANGLER_IS_LOCAL_DEV: 'true',
-	} as Env)
+	const response = await handleRequest(
+		new Request('https://kody.test/privacy'),
+		{
+			COOKIE_SECRET: 'test-only',
+			WRANGLER_IS_LOCAL_DEV: 'true',
+		} as Env,
+	)
 	const names = (response.headers.get('Server-Timing') ?? '')
 		.split(',')
 		.map((entry) => entry.trim().split(';')[0])

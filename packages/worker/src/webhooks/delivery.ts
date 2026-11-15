@@ -207,13 +207,7 @@ export async function recordWebhookDelivery(input: {
 	/** Prefer an already-derived request when the caller has one. */
 	request?: RequestContext | null
 }) {
-	// `accepted` is the ack ingress row written once the queue takes the
-	// message. It is a success for Activity and auth-regression, not a
-	// failure. The consumer still writes the terminal `delivered` / `failed`.
-	const status =
-		input.outcome === 'delivered' || input.outcome === 'accepted'
-			? 'success'
-			: 'error'
+	const status = input.outcome === 'delivered' ? 'success' : 'error'
 	const failure =
 		status === 'error'
 			? describeWebhookDeliveryFailure({
