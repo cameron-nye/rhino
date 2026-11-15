@@ -8,7 +8,6 @@ import {
 	rhinoBodyPathDs,
 	rhinoHornPathD,
 	rhinoIconSvgMarkup,
-	rhinoMarkAspectRatio,
 	rhinoMarkSvgMarkup,
 	rhinoMarkViewBox,
 } from './rhino-mark.ts'
@@ -17,8 +16,6 @@ import {
 export const kodyMarkViewBox = rhinoMarkViewBox
 
 export const kodyMarkPathTransform = ''
-
-export const kodyMarkAspectRatio = rhinoMarkAspectRatio
 
 /** Loading spinner stroke paths: canopy, port intake, starboard intake, horn. */
 export const kodyMarkOutlinedOuterPathD = rhinoBodyPathDs[0]!

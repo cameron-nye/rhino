@@ -36,7 +36,7 @@ export const jobScheduleWatchdogGraceMs = 5 * 60 * 1_000
  * jobs due on that boundary before ops is paged (RHINO-C).
  */
 export const jobScheduleWatchdogQueueLagCoalesceMs = 2 * 60 * 1_000
-export const jobScheduleWatchdogPageSize = 100
+const jobScheduleWatchdogPageSize = 100
 /** Cap cross-user page accumulation so a large backlog cannot OOM the cron. */
 const jobScheduleWatchdogMaxRowsPerTick = 5_000
 const jobScheduleWatchdogMaxUsersPerTick = 50
