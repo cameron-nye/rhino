@@ -3,7 +3,7 @@ import {
 	getKodyLogoDataUri,
 	getKodyMarkDataUri,
 } from './og-image-assets.node.ts'
-import { type OgTheme } from './palette.ts'
+import type { OgTheme } from './palette.ts'
 
 function decodeMark(theme: OgTheme): string {
 	const dataUri = getKodyMarkDataUri(theme)
