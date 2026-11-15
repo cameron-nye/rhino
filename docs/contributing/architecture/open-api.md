@@ -128,6 +128,13 @@ accepted as Bearer
 reject non-`kody_at_` bearers with `401 Invalid API token`. Older CLIs keep
 using MCP and the local-execute OAuth routes.
 
+`POST /v1/secrets/local-read` returns secret values for `kody secret get` and
+`kody run` only ([ADR 0097](../decisions/0097-local-secret-reads.md)). It takes
+a `kody_at_` bearer over HTTP and refuses the MCP `api` tool, CLI OAuth, and
+execution-context runs. Each secret needs Use, its local reads switch on, and
+`secret:read_local` on agent-minted tokens (`kody login` device tokens count as
+holding it). Refusals are 403 with a plain-language reason per secret.
+
 - Scopes are org permissions (`resource-type:action`: `org:read`, `org:execute`,
   `package:read`, `search:read`, …). Vocabulary:
   [`packages/shared/src/org-permissions.ts`](../../../packages/shared/src/org-permissions.ts).
@@ -139,9 +146,10 @@ using MCP and the local-execute OAuth routes.
   is the CapabilityProxy / package-graph / execute route grant; each resolved
   `kody:@…` import also needs `package:execute`. `none` means the surface
   touches no org data (own tokens, who-am-I, discovery, site-admin tools).
-- TTL: tokens require an explicit lifetime: `lifetime` `short` (1h idle / 24h
-  max) or `long` (14d idle / 3mo max), or both `idle_ttl_seconds` (60–1209600)
-  and `max_lifetime_seconds` (up to 7776000). Each authenticated request slides
+- TTL: `tokenCreate` requires an explicit lifetime: `lifetime` `short` (1h idle
+  / 24h max) or `long` (14d idle / 3mo max), or both `idle_ttl_seconds`
+  (60–1209600) and `max_lifetime_seconds` (up to 7776000). CLI bootstrap omits
+  lifetime to use the login `long` default. Each authenticated request slides
   `expires_at` forward (debounced), never past `max_expires_at`. Aliases are
   input sugar only; only the resulting idle/max values are stored.
 - Minting: the first token comes from the MCP `api` tool (`tokenCreate`, full
@@ -152,15 +160,15 @@ using MCP and the local-execute OAuth routes.
   `expires_at`), never the caller's own token. Reclaim applies to every mint.
 - **CLI bootstrap (ADR 0056):** `cliCredentialBootstrap` (capability +
   `POST /v1/tokens/bootstrap`) returns a one-shot `kody_bc_…` code (never
-  `kody_at_`) and a `cli_command` that includes required lifetime flags.
+  `kody_at_`) and a `cli_command` that includes lifetime flags for older CLIs.
   `POST /v1/tokens/bootstrap/redeem` is code-authenticated only (no Bearer;
-  rejected for MCP `api`) and mints a normal `kody_at_` with default scopes:
-  `org:execute` + `org:read` + package/integration/secret/email/job/app/memory
-  use scopes (migration 0092), plus `package:write` (plain-repo / package
-  pushes), `package:create` (`packageGetGitRemote` create stubs), and
-  `token:delete` (self-revoke), and `created_via: cli-bootstrap` for the CLI to
-  store. Lifetime is required on both bootstrap mint and redeem. CLI `whoami` /
-  `GET /v1/tokens/current` surface sliding `expires_at` (the idle window).
+  rejected for MCP `api`) and mints the same `kody_at_` as `kody login`: full
+  org-permission scopes (`cliTokenScopes`, capped by the org role and by a
+  parent token), login lifetime (14d idle / 3mo max) when `lifetime` is omitted
+  at mint, `created_via: cli-bootstrap`, saved in the same CLI slot. Redeem
+  without lifetime fields keeps the code's authorized lifetime. Pass `scopes` or
+  `lifetime` only to narrow. CLI `whoami` / `GET /v1/tokens/current` surface
+  sliding `expires_at` (the idle window).
 - Mint and rotate return `token`, `token_type: "Bearer"`, `id`, `name`,
   `scopes`, `status`, `idle_ttl_seconds`, `expires_at`, `max_expires_at`, and
   timestamps. List and get never return the value.
@@ -210,6 +218,14 @@ module and does not silently hop to `kody.execute`. See
   (or `kody dev` worker bundles that only need stamped deps) pass `imports`
   alone; origin synthesizes a tiny entry from that list so the multi-megabyte
   bundle never crosses the wire.
+- Package-graph builds never run in the API isolate. Origin caches unsigned
+  graphs by import identity and builds misses in a throwaway `RepoSession`
+  isolate
+  (`packages/worker/src/package-runtime/isolated-local-execute-package-graph.ts`).
+  Isolate memory or CPU limits fail only that request with
+  `400 package_graph_resource_limit`. A graph is served only when every
+  reachable static relative import names a module in the response; otherwise
+  `500 internal_error`.
 - Calls dispatch through the same `kody.*` tool map as ad hoc cloud execute, so
   capability behavior, `kody.mcp`, and workflows match the cloud. Caller errors
   from a capability keep their status and message. Unexpected capability
@@ -217,6 +233,13 @@ module and does not silently hop to `kody.execute`. See
   tokens and any secret values the call wrote. Platform failures outside the
   capability return the generic `internal_error`, and the details are logged
   server-side.
+- Package-local `kody.mcp.<server>.<tool>(args)` calls
+  (`createPackageLocalRuntimeModuleSource` in
+  `packages/cli/src/package-local-runtime-source.ts`) send the signed package
+  binding as a second argument, `{ packageBinding }`. Origin verifies it with
+  `authorizeLocalExecutePackageBinding` and the MCP capability acts as that
+  package, claimed (package locks and declared needs apply; the actor still
+  needs Use). No binding means no package. Older origins ignore the argument.
 - Confused-deputy limits: `POST /v1/capability-proxy/call` is JSON arguments
   only. No caller header or cookie is forwarded into a capability, and the edge
   strips `Cookie` and non-allowlisted `X-Kody-*` before origin sees the request.
@@ -291,18 +314,18 @@ module and does not silently hop to `kody.execute`. See
 Every error is `{ error: { code, message, details? } }` with
 `Cache-Control: no-store`.
 
-| Status | `code`                                                                                                             |
-| ------ | ------------------------------------------------------------------------------------------------------------------ |
-| 400    | `invalid_request`, `package_import_unresolved`, `package_import_unpublished`, `unsupported_dynamic_package_import` |
-| 401    | `unauthorized` (missing, invalid, expired, or revoked token)                                                       |
-| 403    | `insufficient_scope`, `email_verification_required`, `account_suspended`                                           |
-| 404    | `not_found`, `feature_unavailable` (capability or MCP gate)                                                        |
-| 405    | `method_not_allowed` (with `Allow`)                                                                                |
-| 409    | `account_deleting`                                                                                                 |
-| 413    | `payload_too_large`                                                                                                |
-| 415    | `unsupported_media_type`                                                                                           |
-| 429    | `rate_limited` (edge, `Retry-After`), `entitlement_limit`                                                          |
-| 500    | `capability_error`, `internal_error`                                                                               |
+| Status | `code`                                                                                                                                                     |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | `invalid_request`, `package_import_unresolved`, `package_import_unpublished`, `unsupported_dynamic_package_import`, `package_graph_resource_limit`         |
+| 401    | `unauthorized` (missing, invalid, expired, or revoked token)                                                                                               |
+| 403    | `insufficient_scope`, `profile_grant`, `profile_inactive`, `email_verification_required`, `account_suspended`, `guest_not_allowed`, `guest_claim_required` |
+| 404    | `not_found`, `feature_unavailable` (capability or MCP gate)                                                                                                |
+| 405    | `method_not_allowed` (with `Allow`)                                                                                                                        |
+| 409    | `account_deleting`                                                                                                                                         |
+| 413    | `payload_too_large`                                                                                                                                        |
+| 415    | `unsupported_media_type`                                                                                                                                   |
+| 429    | `rate_limited` (edge, `Retry-After`), `entitlement_limit`                                                                                                  |
+| 500    | `capability_error`, `internal_error`                                                                                                                       |
 
 ## Metering
 

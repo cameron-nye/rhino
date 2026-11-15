@@ -1,4 +1,4 @@
-import { type SurfacePermission } from '#worker/authorization/authorize.ts'
+import type { SurfacePermission } from '#worker/authorization/authorize.ts'
 
 export const apiOperationMethods = [
 	'GET',
@@ -28,6 +28,7 @@ export const apiOperationTags = [
 	'storage',
 	'community',
 	'tokens',
+	'files',
 	'profiles',
 	'capability-proxy',
 	'execute',
@@ -95,6 +96,7 @@ export const nativeApiOperationIds = [
 	'execute',
 	'searchTool',
 	'cliLoginDeviceToken',
+	'secretLocalRead',
 ] as const
 
 export type NativeApiOperationId = (typeof nativeApiOperationIds)[number]
@@ -200,6 +202,8 @@ export const apiOperations: ReadonlyArray<ApiOperation> = [
 		['GET', '/v1/account/feedback', 'metaPlatformFeedbackList'],
 		['GET', '/v1/account/feedback/{feedback_id}', 'metaPlatformFeedbackGet'],
 		['POST', '/v1/account/feedback', 'metaPlatformFeedbackSubmit'],
+		['POST', '/v1/account/guest-claim', 'guestClaimStart'],
+		['POST', '/v1/account/guest-claim/finish', 'guestClaimFinish'],
 		// Teams access (grants, invites, orgs, teams). Tagged account until
 		// token scopes move to the org vocabulary (P4/P5).
 		['GET', '/v1/access/grants', 'accessList'],
@@ -243,6 +247,7 @@ export const apiOperations: ReadonlyArray<ApiOperation> = [
 		['DELETE', '/v1/orgs/members/{user_id}', 'orgMemberRemove'],
 		['GET', '/v1/orgs/teams', 'teamList'],
 		['POST', '/v1/orgs/teams', 'teamCreate'],
+		['DELETE', '/v1/orgs/teams/{team_id}', 'teamDelete'],
 		['POST', '/v1/orgs/teams/{team_id}/members', 'teamMemberAdd'],
 		[
 			'DELETE',
@@ -305,6 +310,37 @@ export const apiOperations: ReadonlyArray<ApiOperation> = [
 			'secretProviderLock',
 			{ deprecatedForward: resourceLockForward('secret_provider') },
 		],
+	]),
+	...capabilityRoutes('files', [
+		['GET', '/v1/files', 'fileList'],
+		['POST', '/v1/files', 'fileCreate'],
+		['GET', '/v1/files/{file_id}', 'fileGet'],
+		['PUT', '/v1/files/{file_id}', 'fileWrite'],
+		['DELETE', '/v1/files/{file_id}', 'fileDelete'],
+		['POST', '/v1/files/{file_id}/manage', 'fileManage'],
+		['POST', '/v1/files/{file_id}/blocks', 'pagePatch'],
+		['GET', '/v1/files/{file_id}/collaboration', 'fileCollaborationGet'],
+		['POST', '/v1/files/{file_id}/comments', 'fileComment'],
+		[
+			'GET',
+			'/v1/files/{file_id}/threads/{thread_id}/comments',
+			'fileThreadCommentsGet',
+		],
+		['GET', '/v1/files/{file_id}/history', 'fileHistoryGet'],
+		['GET', '/v1/file-directory', 'fileDirectoryList'],
+		['GET', '/v1/file-storage', 'fileStorageGet'],
+		['POST', '/v1/file-storage', 'fileStorageSet'],
+		['POST', '/v1/files/{file_id}/public-link', 'filePublicLinkSet'],
+		['GET', '/v1/files/{file_id}/asset', 'fileAssetGet'],
+		['PUT', '/v1/files/{file_id}/asset', 'fileAssetSet'],
+		['POST', '/v1/files/{file_id}/asset/sign', 'fileAssetSign'],
+		['GET', '/v1/files/{file_id}/move-preview', 'fileMovePreview'],
+		['POST', '/v1/files/batch-write', 'fileBatchWrite'],
+		['POST', '/v1/files/batch-download', 'fileBatchDownload'],
+		['POST', '/v1/files/shared-copy/prepare', 'fileSharedCopyPrepare'],
+		['POST', '/v1/files/shared-copy/step', 'fileSharedCopyStep'],
+		['POST', '/v1/files/{file_id}/live-update', 'fileLiveUpdate'],
+		['PUT', '/v1/files/{file_id}/presence', 'filePresenceSet'],
 	]),
 	...capabilityRoutes('profiles', [
 		['GET', '/v1/profiles', 'profileList'],
@@ -378,6 +414,12 @@ export const apiOperations: ReadonlyArray<ApiOperation> = [
 				// HTTP alias.
 				aliasPaths: ['/v1/packages/{package_id}/external-push'],
 			},
+		],
+		[
+			'POST',
+			'/v1/packages/publish-builds',
+			'packagePublishBuildCreate',
+			{ aliasPaths: ['/v1/packages/{package_id}/publish-builds'] },
 		],
 		['GET', '/v1/package-subscriptions', 'packageSubscriptionsList'],
 		['GET', '/v1/enablements', 'enablementList'],
@@ -530,8 +572,45 @@ export const apiOperations: ReadonlyArray<ApiOperation> = [
 		['PATCH', '/v1/execution-contexts/{id}', 'executionContextUpdate'],
 		['DELETE', '/v1/execution-contexts/{id}', 'executionContextRevoke'],
 		['POST', '/v1/execution-contexts/{id}/delete', 'executionContextDelete'],
+		['POST', '/v1/execution-contexts/{id}/pause', 'executionContextPause'],
+		['POST', '/v1/execution-contexts/{id}/resume', 'executionContextResume'],
+		[
+			'GET',
+			'/v1/execution-contexts/{id}/daemon',
+			'executionContextDaemonStatus',
+		],
+		[
+			'POST',
+			'/v1/execution-contexts/{id}/daemon/restart',
+			'executionContextDaemonRestart',
+		],
+		[
+			'POST',
+			'/v1/execution-contexts/{id}/daemon/update',
+			'executionContextDaemonUpdate',
+		],
+		[
+			'PATCH',
+			'/v1/execution-contexts/{id}/daemon/config',
+			'executionContextDaemonConfig',
+		],
+		[
+			'GET',
+			'/v1/execution-contexts/{id}/daemon/logs',
+			'executionContextDaemonLogs',
+		],
 		['POST', '/v1/execution-contexts/{id}/opt-in', 'executionContextOptIn'],
 		['DELETE', '/v1/execution-contexts/{id}/opt-in', 'executionContextOptOut'],
+		[
+			'POST',
+			'/v1/execution-contexts/{id}/notices/dismiss',
+			'executionContextNoticeDismiss',
+		],
+		[
+			'POST',
+			'/v1/execution-contexts/{id}/sharing/preview',
+			'executionContextSharePreview',
+		],
 		['GET', '/v1/execution-contexts/{id}/sharing', 'executionContextShareList'],
 		['PUT', '/v1/execution-contexts/{id}/sharing', 'executionContextShareSet'],
 		[
@@ -649,6 +728,10 @@ export const apiOperations: ReadonlyArray<ApiOperation> = [
 		tag: 'search',
 	}),
 	nativeRoute('POST', '/v1/tokens/device', 'cliLoginDeviceToken', 'none'),
+	// Use is checked per secret in the handler (grants, not a role).
+	nativeRoute('POST', '/v1/secrets/local-read', 'secretLocalRead', 'none', {
+		tag: 'secrets',
+	}),
 ]
 
 export const apiOperationsById: ReadonlyMap<string, ApiOperation> = new Map(

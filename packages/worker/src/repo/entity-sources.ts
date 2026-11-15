@@ -1,4 +1,4 @@
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
 import {
 	chunkArray,
 	maxD1BoundParameters,
@@ -26,6 +26,8 @@ function mapEntitySourceRow(row: Record<string, unknown>): EntitySourceRow {
 		repo_id: String(row['repo_id']),
 		published_commit:
 			row['published_commit'] == null ? null : String(row['published_commit']),
+		serving_commit:
+			row['serving_commit'] == null ? null : String(row['serving_commit']),
 		indexed_commit:
 			row['indexed_commit'] == null ? null : String(row['indexed_commit']),
 		manifest_path: String(row['manifest_path']),
@@ -213,6 +215,8 @@ export async function updateEntitySource(
 		sourceRoot?: string
 		lastExternalCheckAt?: string | null
 		externalCheckUntil?: string | null
+		externalCheckFailedCommit?: string | null
+		externalCheckFailedAt?: string | null
 		entityKind?: EntityKind
 		entityId?: string
 	},
@@ -239,6 +243,12 @@ export async function updateEntitySource(
 	if (input.externalCheckUntil !== undefined) {
 		add('external_check_until', input.externalCheckUntil)
 	}
+	if (input.externalCheckFailedCommit !== undefined) {
+		add('external_check_failed_commit', input.externalCheckFailedCommit)
+	}
+	if (input.externalCheckFailedAt !== undefined) {
+		add('external_check_failed_at', input.externalCheckFailedAt)
+	}
 	add('updated_at', new Date().toISOString())
 	const result = await runD1WithRetry(() =>
 		db
@@ -251,6 +261,80 @@ export async function updateEntitySource(
 			.run(),
 	)
 	return (result.meta.changes ?? 0) > 0
+}
+
+/**
+ * Move `published_commit` back from a publish that did not succeed. Guarded by
+ * compare-and-set on the failed commit so a newer publish that already won the
+ * pointer is never clobbered.
+ */
+export async function revertEntitySourcePublishedCommit(
+	db: D1Database,
+	input: {
+		id: string
+		userId: OwnerId
+		failedCommit: string
+		restoreCommit: string
+	},
+): Promise<boolean> {
+	const result = await runD1WithRetry(() =>
+		db
+			.prepare(
+				`UPDATE entity_sources
+			SET published_commit = ?, updated_at = ?
+			WHERE id = ? AND user_id = ? AND published_commit = ?${andLiveDeletedAtSql()}`,
+			)
+			.bind(
+				input.restoreCommit,
+				new Date().toISOString(),
+				input.id,
+				input.userId,
+				input.failedCommit,
+			)
+			.run(),
+	)
+	return (result.meta.changes ?? 0) > 0
+}
+
+/**
+ * Compare-and-set the serving pointer to `commit` once every artifact target
+ * for it is saved. Succeeds only while `commit` is still the published
+ * commit, so a stale rebuild cannot move serving to a superseded commit.
+ * `alsoWrite` statements run in the same D1 transaction, before the pointer
+ * moves; `thenWrite` statements run in it right after. Publish and rebuild code advance through `advanceServingCommit`
+ * (package-capabilities), which carries an app's public approval forward.
+ */
+export async function advanceEntitySourceServingCommit(
+	db: D1Database,
+	input: {
+		id: string
+		userId: OwnerId
+		commit: string
+	},
+	alsoWrite: ReadonlyArray<D1PreparedStatement> = [],
+	thenWrite: ReadonlyArray<D1PreparedStatement> = [],
+): Promise<boolean> {
+	const advance = db
+		.prepare(
+			`UPDATE entity_sources
+			SET serving_commit = ?, updated_at = ?
+			WHERE id = ? AND user_id = ? AND published_commit = ?${andLiveDeletedAtSql()}`,
+		)
+		.bind(
+			input.commit,
+			new Date().toISOString(),
+			input.id,
+			input.userId,
+			input.commit,
+		)
+	if (alsoWrite.length === 0 && thenWrite.length === 0) {
+		const result = await runD1WithRetry(() => advance.run())
+		return (result.meta.changes ?? 0) > 0
+	}
+	const results = await runD1WithRetry(() =>
+		db.batch([...alsoWrite, advance, ...thenWrite]),
+	)
+	return (results[alsoWrite.length]?.meta.changes ?? 0) > 0
 }
 
 export async function upsertEntitySource(
@@ -320,6 +404,12 @@ export type ExternalReconcileCursor = {
 	id: string
 }
 
+/** A reconcile candidate plus the last external HEAD whose checks failed. */
+export type ExternalReconcileSourceRow = EntitySourceRow & {
+	external_check_failed_commit: string | null
+	external_check_failed_at: string | null
+}
+
 export async function listEntitySourcesForExternalReconcile(
 	db: D1Database,
 	input: {
@@ -328,7 +418,7 @@ export async function listEntitySourcesForExternalReconcile(
 		after?: ExternalReconcileCursor
 		includeAll?: boolean
 	},
-): Promise<Array<EntitySourceRow>> {
+): Promise<Array<ExternalReconcileSourceRow>> {
 	// The `after` keyset lets callers page strictly forward within one pass
 	// even when a row's `last_external_check_at` write fails and the row would
 	// otherwise stay at the head of the stale ordering.
@@ -364,7 +454,17 @@ export async function listEntitySourcesForExternalReconcile(
 		)
 		.bind(...bindings)
 		.all<Record<string, unknown>>()
-	return (results ?? []).map(mapEntitySourceRow)
+	return (results ?? []).map((row) => ({
+		...mapEntitySourceRow(row),
+		external_check_failed_commit:
+			row['external_check_failed_commit'] == null
+				? null
+				: String(row['external_check_failed_commit']),
+		external_check_failed_at:
+			row['external_check_failed_at'] == null
+				? null
+				: String(row['external_check_failed_at']),
+	}))
 }
 
 export async function deleteEntitySource(

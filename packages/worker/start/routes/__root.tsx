@@ -45,6 +45,7 @@ import { refreshActiveQueries } from '../refresh-active-queries.ts'
 import { isBrowserFetchNetworkError } from '#client/browser-fetch-network-error.ts'
 import { captureClientException } from '#client/sentry-client.ts'
 import { CANONICAL_ORIGIN_META_NAME } from '#universal/document-head-markers.ts'
+import { deploySkewBuildMetaName } from '#universal/deploy-skew.ts'
 import {
 	documentCharset,
 	documentViewport,
@@ -55,6 +56,7 @@ import { NotFoundPage } from '../components/not-found-page.tsx'
 import { RouteErrorPage } from '../components/route-error-page.tsx'
 import { isPermissionDeniedError } from '#universal/permission-denied.ts'
 import { DesktopExecutionProvider } from '../components/desktop-execution.tsx'
+import { CommandProvider } from '../commands/provider.tsx'
 import { DesktopNavigation } from '../components/desktop-navigation.tsx'
 import { Toaster } from '../components/toaster.tsx'
 import { YouTubeWatchOverlay } from '../components/youtube-watch-overlay.tsx'
@@ -201,6 +203,7 @@ export const Route = createRootRouteWithContext<{
 					pathname: location.pathname,
 					searchStr: location.searchStr,
 				},
+				buildId: shell.buildId,
 				sentryConfig: shell.sentryConfig,
 				canonicalOrigin: shell.canonicalOrigin,
 				fathomSiteId: shell.fathomSiteId,
@@ -210,6 +213,14 @@ export const Route = createRootRouteWithContext<{
 	head: ({ loaderData }) => ({
 		meta: [
 			{ title: DEFAULT_DOCUMENT_TITLE },
+			...(loaderData?.buildId
+				? [
+						{
+							name: deploySkewBuildMetaName,
+							content: loaderData.buildId,
+						},
+					]
+				: []),
 			...(loaderData?.sentryConfig
 				? [
 						{
@@ -292,17 +303,26 @@ function LoadedAppLayout() {
 	// Loader data commits with the displayed matches, unlike the pending URL.
 	const pathname = shellLocation.pathname
 	const previousPathname = useRef(pathname)
+	const fileColumnNavigation = useRouterState({
+		select: (state) =>
+			(state.resolvedLocation ?? state.location).state.fileColumnNavigation,
+	})
 	useEffect(() => {
 		if (previousPathname.current === pathname) return
 		previousPathname.current = pathname
-		const frame = requestAnimationFrame(() =>
-			(
+		const frame = requestAnimationFrame(() => {
+			if (
+				fileColumnNavigation &&
+				document.activeElement?.closest('[data-file-column-browser]')
+			)
+				return
+			const target =
 				document.querySelector<HTMLElement>('[data-docs-heading]') ??
 				document.getElementById('main')
-			)?.focus({ preventScroll: true }),
-		)
+			target?.focus({ preventScroll: true })
+		})
 		return () => cancelAnimationFrame(frame)
-	}, [pathname])
+	}, [pathname, fileColumnNavigation])
 	const illustratedError = useRouterState({
 		select: (state) =>
 			state.matches.some(
@@ -328,6 +348,7 @@ function LoadedAppLayout() {
 		appShell.preserveLoginReturn ? authReturnHref : null,
 	)
 	const authShell = appShell.mode === 'auth'
+	const standalone = appShell.mode === 'standalone'
 	const focused = appShell.mode === 'focused'
 	const workspace = Boolean(workspaceLayoutNavigation(useMatches(), session))
 	const Content = workspace ? 'div' : 'main'
@@ -339,51 +360,62 @@ function LoadedAppLayout() {
 			orgSlug={session?.organizations.find((org) => org.personal)?.slug ?? null}
 			pathname={pathname}
 		>
-			<div
-				data-app-frame
-				data-app-interface={pageNavigation ? '' : undefined}
-				css={appFrameCss}
-			>
-				<a href="#main" css={visuallyHiddenUntilFocusedCss}>
-					Skip to content
-				</a>
-				{authShell || workspace ? null : (
-					<SiteHeader
-						focused={focused}
-						loggedIn={session !== null}
-						organizationSession={session}
-						displayName={session?.username || session?.email || ''}
-						username={session?.username ?? ''}
-						avatarUrl={session?.avatarUrl ?? null}
-						showAdminLink={session?.roles.includes('admin') ?? false}
-						showDemoIndicator={
-							session?.featureFlags?.['demo-indicator'] === true
-						}
-						loginHref={loginHref}
-						currentPathname={pathname}
-					/>
-				)}
-				<Content
-					id={workspace ? undefined : 'main'}
-					tabIndex={-1}
-					css={
-						workspace
-							? { width: '100%', flex: 1 }
-							: appMainCss(appShell, illustratedError)
-					}
+			<CommandProvider>
+				<div
+					data-app-frame
+					data-app-interface={pageNavigation ? '' : undefined}
+					css={[
+						appFrameCss,
+						standalone && {
+							minHeight: 'var(--app-frame-min-height, 100dvh)',
+						},
+					]}
 				>
-					<Outlet />
-				</Content>
-				{authShell || focused || workspace ? null : (
-					<SiteFooter
-						loggedIn={session !== null}
-						loginHref={loginHref}
-						signupHref={signupHref}
-						homeHref={homeHref}
+					<a href="#main" css={visuallyHiddenUntilFocusedCss}>
+						Skip to content
+					</a>
+					{authShell || standalone || workspace ? null : (
+						<SiteHeader
+							focused={focused}
+							loggedIn={session !== null}
+							organizationSession={session}
+							displayName={session?.username || session?.email || ''}
+							username={session?.username ?? ''}
+							avatarUrl={session?.avatarUrl ?? null}
+							showAdminLink={session?.roles.includes('admin') ?? false}
+							showDemoIndicator={
+								session?.featureFlags?.['demo-indicator'] === true
+							}
+							loginHref={loginHref}
+							currentPathname={pathname}
+						/>
+					)}
+					<Content
+						data-workspace-content={workspace || undefined}
+						id={workspace ? undefined : 'main'}
+						tabIndex={-1}
+						css={
+							workspace
+								? { width: '100%', flex: 1 }
+								: appMainCss(appShell, illustratedError)
+						}
+					>
+						<Outlet />
+					</Content>
+					{authShell || standalone || focused || workspace ? null : (
+						<SiteFooter
+							loggedIn={session !== null}
+							loginHref={loginHref}
+							signupHref={signupHref}
+							homeHref={homeHref}
+						/>
+					)}
+					<YouTubeWatchOverlay
+						snapshot={youtubeWatch}
+						location={shellLocation}
 					/>
-				)}
-				<YouTubeWatchOverlay snapshot={youtubeWatch} location={shellLocation} />
-			</div>
+				</div>
+			</CommandProvider>
 		</DesktopExecutionProvider>
 	)
 }

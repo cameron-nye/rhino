@@ -3,12 +3,13 @@ import {
 	normalizePackageWorkspacePath,
 	resolvePackageExportPath,
 } from '#worker/package-registry/manifest.ts'
-import { type AuthoredPackageJson } from '#worker/package-registry/types.ts'
+import type { AuthoredPackageJson } from '#worker/package-registry/types.ts'
+import type { ModuleSourceParseError } from '#worker/module-source.ts'
 import { UserCodeError } from '#worker/user-code-error.ts'
 import {
-	collectBundlerResolvedSpecifiers,
 	getBarePackageNameFromSpecifier,
 	isBarePackageImportSpecifier,
+	parseBundlerResolvedSpecifiers,
 } from './import-specifiers.ts'
 import {
 	dirname,
@@ -25,6 +26,10 @@ import { isTypeDeclarationFilePath } from './static-kody-imports.ts'
 export type PackageBundleImportTarget = {
 	path: string
 	bundleKind: 'app' | 'client' | 'callable' | 'importable'
+}
+
+export type BareImportParseFailure = ModuleSourceParseError & {
+	path: string
 }
 
 export type UndeclaredBarePackageImport = {
@@ -192,13 +197,32 @@ function resolveBundlerLocalImportPath(input: {
  * reached through relative `require('./helper')`. Unparseable sources are
  * recorded so the gate can fail closed instead of skipping them.
  */
+/** Bundler specifiers (or the parse error) per module path. */
+type BundlerSpecifiersCache = Map<
+	string,
+	ReturnType<typeof parseBundlerResolvedSpecifiers>
+>
+
+function bundlerSpecifiersFor(
+	cache: BundlerSpecifiersCache,
+	filePath: string,
+	source: string,
+) {
+	const cached = cache.get(filePath)
+	if (cached) return cached
+	const result = parseBundlerResolvedSpecifiers(source, { filePath })
+	cache.set(filePath, result)
+	return result
+}
+
 function collectBundlerReachableSourceFilePaths(input: {
 	files: Record<string, string>
 	entryPoint: string
 	rootPackage: ReturnType<typeof readRootPackage>
+	specifiersCache: BundlerSpecifiersCache
 }) {
 	const reachable = new Set<string>()
-	const unparseableFiles = new Set<string>()
+	const unparseableFiles = new Map<string, BareImportParseFailure>()
 	const stack = [
 		resolveWorkspaceSourceFilePath({
 			files: input.files,
@@ -220,12 +244,12 @@ function collectBundlerReachableSourceFilePaths(input: {
 		if (!isBundlerParsedModuleSourcePath(filePath)) {
 			continue
 		}
-		const specifiers = collectBundlerResolvedSpecifiers(source)
-		if (specifiers == null) {
-			unparseableFiles.add(filePath)
+		const parsed = bundlerSpecifiersFor(input.specifiersCache, filePath, source)
+		if (!parsed.ok) {
+			unparseableFiles.set(filePath, { path: filePath, ...parsed.error })
 			continue
 		}
-		for (const specifier of specifiers) {
+		for (const specifier of parsed.specifiers) {
 			if (specifier.startsWith(packageSpecifierPrefix)) {
 				// Dynamic import()/require() of kody:@ can be malformed or name a
 				// missing self-export. Do not abort the dependencies gate — other
@@ -262,12 +286,7 @@ function collectBundlerReachableSourceFilePaths(input: {
 			}
 		}
 	}
-	return {
-		reachable,
-		unparseableFiles: [...unparseableFiles].sort((left, right) =>
-			left.localeCompare(right),
-		),
-	}
+	return { reachable, unparseableFiles }
 }
 
 /**
@@ -285,6 +304,7 @@ export function collectUndeclaredBarePackageImports(input: {
 }): {
 	undeclared: Array<UndeclaredBarePackageImport>
 	unparseableFiles: Array<string>
+	parseFailures: Array<BareImportParseFailure>
 } {
 	const declaredDependencies =
 		input.declaredDependencies ??
@@ -295,7 +315,10 @@ export function collectUndeclaredBarePackageImports(input: {
 		string,
 		{ entryPoints: Set<string>; specifiers: Set<string> }
 	>()
-	const unparseableFiles = new Set<string>()
+	const unparseableFiles = new Map<string, BareImportParseFailure>()
+	// Entries share most modules (about 100 targets on big packages): parse
+	// each module once for the whole walk, not twice per entry.
+	const specifiersCache: BundlerSpecifiersCache = new Map()
 
 	for (const target of input.entryPoints) {
 		const entryPoint = normalizePackageWorkspacePath(target.path)
@@ -303,20 +326,21 @@ export function collectUndeclaredBarePackageImports(input: {
 			files: input.sourceFiles,
 			entryPoint,
 			rootPackage,
+			specifiersCache,
 		})
-		for (const filePath of reachable.unparseableFiles) {
-			unparseableFiles.add(filePath)
+		for (const [filePath, failure] of reachable.unparseableFiles) {
+			unparseableFiles.set(filePath, failure)
 		}
 		for (const filePath of reachable.reachable) {
 			if (!isBundlerParsedModuleSourcePath(filePath)) continue
 			const source = input.sourceFiles[filePath]
 			if (source == null) continue
-			const specifiers = collectBundlerResolvedSpecifiers(source)
-			if (specifiers == null) {
-				unparseableFiles.add(filePath)
+			const parsed = bundlerSpecifiersFor(specifiersCache, filePath, source)
+			if (!parsed.ok) {
+				unparseableFiles.set(filePath, { path: filePath, ...parsed.error })
 				continue
 			}
-			for (const specifier of specifiers) {
+			for (const specifier of parsed.specifiers) {
 				if (!isBarePackageImportSpecifier(specifier)) continue
 				const packageName = getBarePackageNameFromSpecifier(specifier)
 				if (!packageName) continue
@@ -359,8 +383,11 @@ export function collectUndeclaredBarePackageImports(input: {
 				),
 			}))
 			.sort((left, right) => left.packageName.localeCompare(right.packageName)),
-		unparseableFiles: [...unparseableFiles].sort((left, right) =>
+		unparseableFiles: [...unparseableFiles.keys()].sort((left, right) =>
 			left.localeCompare(right),
+		),
+		parseFailures: [...unparseableFiles.values()].sort((left, right) =>
+			left.path.localeCompare(right.path),
 		),
 	}
 }
@@ -378,9 +405,21 @@ export function formatUndeclaredBarePackageImportsMessage(
 	)
 }
 
-function formatUnparseableBareImportFilesMessage(files: ReadonlyArray<string>) {
+function formatBareImportParseFailure(failure: BareImportParseFailure) {
+	const location =
+		failure.line == null
+			? ''
+			: failure.column == null
+				? `:${failure.line}`
+				: `:${failure.line}:${failure.column}`
+	return `"${failure.path}${location}": ${failure.message}`
+}
+
+function formatUnparseableBareImportFilesMessage(
+	failures: ReadonlyArray<BareImportParseFailure>,
+) {
 	return (
-		`Package entry source could not be parsed for bare-import dependency checks (${formatQuotedList(files)}). ` +
+		`Package entry source could not be parsed for bare-import dependency checks (${failures.map(formatBareImportParseFailure).join('; ')}). ` +
 		'Fix the syntax so publish can verify declared dependencies before advancing published_commit.'
 	)
 }
@@ -391,14 +430,15 @@ export function validateBarePackageImportDeclarations(input: {
 	entryPoints: ReadonlyArray<PackageBundleImportTarget>
 	declaredDependencies?: ReadonlyArray<string>
 }) {
-	const { undeclared, unparseableFiles } =
+	const { undeclared, unparseableFiles, parseFailures } =
 		collectUndeclaredBarePackageImports(input)
 	if (unparseableFiles.length > 0) {
 		return {
 			ok: false as const,
-			message: formatUnparseableBareImportFilesMessage(unparseableFiles),
+			message: formatUnparseableBareImportFilesMessage(parseFailures),
 			undeclared,
 			unparseableFiles,
+			parseFailures,
 		}
 	}
 	if (undeclared.length === 0) {

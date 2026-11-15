@@ -7,11 +7,12 @@ named Kody.
 
 ## Upstream sync point
 
-Last synced to `kody-hq/kody` `5f4c0dfd103044bfe62b4c05d9f4b56df2b6c187`
-(2026-11-01, "fix: daily friction sweep for preview --url, orgCreate errors,
-typecheck heap, and rehearsal authorize"). The previous merge base was
-`6d20d3662f64d792299019451bab755591f1b193` (2026-10-30,
-"fix(execution-contexts): keep lastSeenAt fresh while a context is online").
+Last synced to `kody-hq/kody` `9facfa55f53669cd8156dee3b6401cc15611b2a6`
+(2026-11-15, "chore(license): relicense Kody under the Kody License (modified
+FSL), free for personal use (#5180)"). The previous merge base was
+`5f4c0dfd103044bfe62b4c05d9f4b56df2b6c187` (2026-11-01, "fix: daily friction
+sweep for preview --url, orgCreate errors, typecheck heap, and rehearsal
+authorize").
 
 Upstream now keeps the soft-deleted org fixture and the mailbox provider-index
 repair stamp relative to the clock, so those two test files are no longer fork
@@ -271,7 +272,7 @@ purpose.
 | `tools/disaster-recovery/trusted-d1-restore-identities.json`              | Restore allowlist is empty. Upstream trusts Kent's production D1 and the KCD drill account.                                                                                                                                                                                                             |
 | `tools/disaster-recovery/trusted-backup-manifest-public-keys.json`        | Manifest public-key registry is empty. Upstream trusts key `kody-dr-2026-07`.                                                                                                                                                                                                                           |
 | `tools/disaster-recovery/restore-trust-and-verification.node.test.ts`     | Pins the empty restore allowlist and the empty public-key registry.                                                                                                                                                                                                                                     |
-| `tools/worker-startup-bundle-budget.json`                                 | Platform and runtime startup byte ceilings cover shared worker growth since the #3459 reset and the upstream sync at 5f4c0dfd. The origin ceiling stays.                                                                                                                                                |
+| `tools/worker-startup-bundle-budget.json`                                 | Platform and runtime startup byte ceilings cover shared worker growth since the #3459 reset and the upstream sync at 9facfa55. The origin ceiling stays.                                                                                                                                                |
 | `tools/worker-startup-bundle-notes.md`                                    | Ledger note for those ceilings. The bytes are the shared upstream worker graph, not a Rhino image or a new Sentry payload.                                                                                                                                                                              |
 | `tools/startup-bundle-overage-issue.ts`                                   | Overage issues name the largest attributed sources and, when a previous baseline exists, the largest byte deltas.                                                                                                                                                                                       |
 | `tools/startup-bundle-overage-issue.node.test.ts`                         | Pins that issue body: largest sources, package rollup, and byte deltas from a previous outdir or issue snapshot.                                                                                                                                                                                        |

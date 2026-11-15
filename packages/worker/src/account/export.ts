@@ -1,3 +1,5 @@
+import { fileStoreRpc } from '#worker/files/client.ts'
+import { linkedArtifactSourceKvPrefix } from '#worker/package-runtime/linked-artifact-store.ts'
 import { getErrorMessage } from '@kody-internal/shared/error-message.ts'
 import {
 	personalOrgId,
@@ -38,17 +40,17 @@ import {
 	userMeterNamespace,
 	userMeterRpc,
 } from '#worker/entitlements/user-meter-client.ts'
-import { type UserMeterExportResult } from '#worker/entitlements/user-meter-do.ts'
+import type { UserMeterExportResult } from '#worker/entitlements/user-meter-do.ts'
 import {
 	countInternalUserMailboxRows,
 	exportInternalUserMailbox,
 } from '#worker/email/mailbox-internal-read.ts'
-import { type MailboxExportResult } from '#worker/email/mailbox-types.ts'
+import type { MailboxExportResult } from '#worker/email/mailbox-types.ts'
 import {
 	repoSessionIndexNamespace,
 	repoSessionIndexRpc,
 } from '#worker/repo/repo-session-index-client.ts'
-import { type RepoSessionIndexExportResult } from '#worker/repo/repo-session-index-do.ts'
+import type { RepoSessionIndexExportResult } from '#worker/repo/repo-session-index-do.ts'
 import { listAccountUserStorageIds } from '#worker/account/user-inventory.ts'
 import { andLiveDeletedAtSql } from '#worker/soft-delete/live-sql.ts'
 
@@ -70,6 +72,7 @@ export const accountExportSectionNames = [
 	'user_meter',
 	'mailbox',
 	'repo_session_index',
+	'file_store',
 	'oauth_grants',
 	'artifact_repos',
 	'kv_keys',
@@ -144,6 +147,7 @@ type ManifestInventoryCounts = {
 	userMeterCounters: number
 	mailboxRows: number
 	repoSessionIndexRows: number
+	fileRows: number
 	artifactRepos: number
 	kvKeys: number
 	r2Objects: number
@@ -280,6 +284,9 @@ type AccountExportDurableObjects = {
 	userMeter: UserMeterExportResult | null
 	mailbox: MailboxExportResult | null
 	repoSessionIndex: RepoSessionIndexExportResult | null
+	fileStore: Awaited<
+		ReturnType<ReturnType<typeof fileStoreRpc>['exportMetadata']>
+	> | null
 	storageRunners: Array<{
 		storageId: string
 		export: Awaited<
@@ -735,6 +742,7 @@ async function listUserBundleKvKeys(input: {
 	const prefixes = input.sourceSnapshots.flatMap((source) => [
 		`source-snapshot:v1:${source.sourceId}:`,
 		`source-manifest-snapshot:v1:${source.sourceId}:`,
+		linkedArtifactSourceKvPrefix(source.sourceId),
 	])
 	for (const prefix of prefixes) {
 		let cursor: string | undefined
@@ -914,6 +922,7 @@ async function countUserBundleKvKeys(input: {
 			for (const prefix of [
 				`source-snapshot:v1:${source.id}:`,
 				`source-manifest-snapshot:v1:${source.id}:`,
+				linkedArtifactSourceKvPrefix(source.id),
 			]) {
 				const canonical = source.published_commit
 					? `${prefix}${source.published_commit}`
@@ -964,6 +973,7 @@ async function collectManifestInventoryCounts(input: {
 		userMeterCounters,
 		mailboxRows,
 		repoSessionIndexRows,
+		fileRows,
 		artifactRepos,
 		kvKeys,
 		r2Objects,
@@ -1009,6 +1019,15 @@ async function collectManifestInventoryCounts(input: {
 				ownerId: input.userId,
 			})
 		}),
+		safeCount('file rows', async () =>
+			input.env.FILE_STORE
+				? (
+						await fileStoreRpc(input.env, input.userId).exportMetadata(
+							input.userId,
+						)
+					).files.length
+				: 0,
+		),
 		safeCount('artifact repos', async () =>
 			countScalar(
 				input.env,
@@ -1031,6 +1050,7 @@ async function collectManifestInventoryCounts(input: {
 		userMeterCounters,
 		mailboxRows,
 		repoSessionIndexRows,
+		fileRows,
 		artifactRepos,
 		kvKeys,
 		r2Objects,
@@ -1497,7 +1517,17 @@ async function exportDurableObjects(input: {
 	} catch (error) {
 		input.warnings.push(`Job manager export failed: ${getErrorMessage(error)}`)
 	}
+	let fileStore: AccountExportDurableObjects['fileStore'] = null
+	try {
+		if (input.env.FILE_STORE)
+			fileStore = await fileStoreRpc(input.env, input.userId).exportMetadata(
+				input.userId,
+			)
+	} catch (error) {
+		input.warnings.push(`File store export failed: ${getErrorMessage(error)}`)
+	}
 	return {
+		fileStore,
 		jobManager,
 		runRecords,
 		userMeter,
@@ -1586,6 +1616,16 @@ function buildManifest(input: {
 				warning.startsWith('Mailbox ') || warning.startsWith('MAILBOX '),
 		),
 		discovery: { section: 'mailbox' },
+	}
+	sections.file_store = {
+		count:
+			input.durableObjects?.fileStore?.files.length ??
+			input.inventoryCounts?.fileRows ??
+			0,
+		warnings: input.warnings.filter((warning) =>
+			warning.startsWith('File store'),
+		),
+		discovery: { section: 'file_store' },
 	}
 	sections.repo_session_index = {
 		count:
@@ -1958,6 +1998,43 @@ export async function readAccountExportSection(input: {
 			items: page.rows,
 			truncated: page.truncated,
 			nextStartAfter: page.nextStartAfter,
+			pageSize,
+			warnings,
+		}
+	}
+	if (input.section === 'file_store') {
+		const pageSize = normalizePageSize(input.pageSize)
+		const metadata = input.env.FILE_STORE
+			? await fileStoreRpc(input.env, ownerUserId).exportMetadata(ownerUserId)
+			: null
+		const files = (metadata?.files ?? []).map((file) => {
+			const collaboration =
+				metadata && 'collaboration' in metadata
+					? metadata.collaboration?.find((room) => room?.fileId === file.id)
+					: undefined
+			const publicLink =
+				metadata && 'publicLinks' in metadata
+					? metadata.publicLinks?.find(
+							([key]) => key === `public:${file.id}`,
+						)?.[1]
+					: undefined
+			return {
+				...file,
+				...(collaboration ? { collaborationState: collaboration } : {}),
+				...(publicLink ? { publicLinkHash: publicLink } : {}),
+			}
+		})
+		const after = input.startAfter
+		const remaining = files
+			.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+			.filter((file) => !after || file.id > after)
+		const items = remaining.slice(0, pageSize)
+		const truncated = remaining.length > items.length
+		return {
+			section: input.section,
+			items,
+			truncated,
+			nextStartAfter: truncated ? items.at(-1)!.id : null,
 			pageSize,
 			warnings,
 		}

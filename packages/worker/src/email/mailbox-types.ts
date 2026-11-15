@@ -1,20 +1,20 @@
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
-import {
-	type EmailClassification,
-	type EmailDeliveryEventType,
-	type EmailDeliveryStatus,
-	type EmailDirection,
-	type EmailMessageView,
-	type EmailProcessingStatus,
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import type {
+	EmailClassification,
+	EmailDeliveryEventType,
+	EmailDeliveryStatus,
+	EmailDirection,
+	EmailMessageView,
+	EmailProcessingStatus,
 } from './types.ts'
-import { type DurableObjectPitrRpc } from '#worker/dr/do-pitr.ts'
-import { type MailboxInboundDeliveryLedgerRpc } from './mailbox-inbound-ledger.ts'
-import { type MailboxInboundEffectLedgerRpc } from './mailbox-inbound-effect-ledger.ts'
-import { type MailboxProviderIndexRepairStatus } from './mailbox-provider-index-repair.ts'
-import {
-	type MailboxInboundDeliveryState,
-	type MailboxStorageKind,
-	type MailboxSubscriptionEffectState,
+import type { DurableObjectPitrRpc } from '#worker/dr/do-pitr.ts'
+import type { MailboxInboundDeliveryLedgerRpc } from './mailbox-inbound-ledger.ts'
+import type { MailboxInboundEffectLedgerRpc } from './mailbox-inbound-effect-ledger.ts'
+import type { MailboxProviderIndexRepairStatus } from './mailbox-provider-index-repair.ts'
+import type {
+	MailboxInboundDeliveryState,
+	MailboxStorageKind,
+	MailboxSubscriptionEffectState,
 } from './mailbox-type-helpers.ts'
 
 export * from './mailbox-type-helpers.ts'
@@ -361,6 +361,8 @@ export type MailboxRunRetentionNowResult = {
 
 export type MailboxListMessagesInput = {
 	inboxId?: string | null
+	/** Messages on one thread only. */
+	threadId?: string | null
 	direction?: EmailDirection | null
 	processingStatus?: EmailProcessingStatus | null
 	deliveryStatus?: EmailDeliveryStatus | null
@@ -497,12 +499,37 @@ export type MailboxUpsertDeliveryEventsResult = {
 	results: Array<MailboxUpsertDeliveryEventBatchItemResult>
 }
 
+/**
+ * Stored-only header (never sent to the provider) that marks an outbound
+ * reply-all message in the sent log.
+ */
+export const replyAllStoredHeader = 'X-Kody-Reply-All'
+
+/**
+ * Refuse the write, in the same transaction, when the thread already has
+ * `max` reply-all sends created at or after `since`; otherwise record this
+ * send in the reply-all ledger.
+ */
+export type MailboxThreadReplyAllLimit = {
+	threadId: string
+	since: string
+	max: number
+}
+
+export type MailboxUpsertMessageGraphResult = {
+	ok: true
+	accepted: boolean
+	/** Set when {@link MailboxThreadReplyAllLimit} refused the write. */
+	threadReplyAllLimited?: true
+}
+
 export type MailboxUpsertMessageGraphInput =
 	| {
 			ownerId: OwnerId
 			thread?: MailboxThreadInput | null
 			message: MailboxMessageInput
 			attachments?: Array<MailboxAttachmentInput>
+			threadReplyAllLimit?: MailboxThreadReplyAllLimit
 			/** DR restore writes stay inert until finalizeRestore. */
 			restore?: true
 	  }
@@ -526,7 +553,7 @@ type MailboxCoreRpc = {
 	 */
 	upsertMessageGraph: (
 		input: MailboxUpsertMessageGraphInput,
-	) => Promise<{ ok: true; accepted: boolean }>
+	) => Promise<MailboxUpsertMessageGraphResult>
 	/**
 	 * Authoritative USER inbound graph commit. The active `storing` lease and
 	 * graph identity are checked in the same SQLite transaction as all graph

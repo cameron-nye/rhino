@@ -25,7 +25,7 @@ import {
 import { applyAllMigrations } from '#worker/test-support/apply-all-migrations.ts'
 import { createD1FromSqlite } from '#worker/test-support/create-d1-from-sqlite.ts'
 import { createInMemoryRepoSessionIndexEnv } from '#worker/test-support/repo-session-index.ts'
-import { type RepoSessionRow } from '#worker/repo/types.ts'
+import type { RepoSessionRow } from '#worker/repo/types.ts'
 
 function createRetentionDb() {
 	const sqlite = new DatabaseSync(':memory:')
@@ -61,8 +61,18 @@ function createRetentionDb() {
 			entry_point TEXT NOT NULL,
 			kv_key TEXT NOT NULL,
 			dependencies_json TEXT NOT NULL DEFAULT '[]',
+			total_bytes INTEGER,
+			built_in TEXT,
+			built_context_name TEXT,
+			bundle_sha256 TEXT,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
+		);
+		CREATE TABLE community_listings (
+			id TEXT PRIMARY KEY,
+			source_id TEXT NOT NULL,
+			pinned_commit TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active'
 		);
 		CREATE TABLE usage_rollups (
 			user_id TEXT NOT NULL,
@@ -102,6 +112,16 @@ function createRetentionDb() {
 			event_id TEXT PRIMARY KEY NOT NULL,
 			event_type TEXT NOT NULL,
 			processed_at TEXT NOT NULL
+		);
+		CREATE TABLE credential_local_read_events (
+			id TEXT PRIMARY KEY NOT NULL,
+			credential_id TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);
+		CREATE TABLE credential_raw_signing_events (
+			id TEXT PRIMARY KEY NOT NULL,
+			credential_id TEXT NOT NULL,
+			created_at TEXT NOT NULL
 		);
 		CREATE TABLE platform_feedback (
 			id TEXT PRIMARY KEY NOT NULL,
@@ -610,6 +630,43 @@ test('published bundle artifact retention deletes stale rows, KV blobs, and sour
 	])
 })
 
+test("published bundle retention deletes a commit's linked dependency modules with its last artifact", async () => {
+	const { sqlite, db } = createRetentionDb()
+	const stored = new Set([
+		'linked-artifact:v1:source-gone:commit-old:hash-a',
+		'linked-artifact:v1:source-kept:commit-old:hash-b',
+	])
+	const env = {
+		APP_DB: db,
+		BUNDLE_ARTIFACTS_KV: {
+			delete: async (key: string) => void stored.delete(key),
+			list: async ({ prefix }: { prefix: string }) => ({
+				keys: [...stored]
+					.filter((name) => name.startsWith(prefix))
+					.map((name) => ({ name })),
+				list_complete: true,
+			}),
+		},
+		REPO_SESSION_INDEX:
+			createInMemoryRepoSessionIndexEnv(db).REPO_SESSION_INDEX,
+	} as unknown as Pick<Env, 'APP_DB' | 'BUNDLE_ARTIFACTS_KV'>
+	const stale = publishedBundleArtifactRetentionDays + 1
+	insertRows(sqlite, 'published_bundle_artifacts', artifactColumns, [
+		artifactRow('gone', 'source-gone', 'commit-old', stale),
+		artifactRow('kept-old', 'source-kept', 'commit-old', stale),
+		artifactRow('kept-new', 'source-kept', 'commit-old', stale - 1),
+	])
+
+	await prunePublishedBundleArtifactsForRetention({ env, now, batchSize: 10 })
+
+	expect(selectColumn(sqlite, 'published_bundle_artifacts', 'id')).toEqual([
+		'kept-new',
+	])
+	expect([...stored]).toEqual([
+		'linked-artifact:v1:source-kept:commit-old:hash-b',
+	])
+})
+
 test('published bundle retention keeps artifacts while entity_sources are soft-deleted', async () => {
 	const { sqlite, db } = createRetentionDb()
 	const kvDelete = vi.fn(async () => undefined)
@@ -652,6 +709,63 @@ test('published bundle retention keeps artifacts while entity_sources are soft-d
 	expect(kvDelete).not.toHaveBeenCalled()
 	expect(selectColumn(sqlite, 'published_bundle_artifacts', 'id')).toEqual([
 		'artifact-restore-window',
+	])
+})
+
+test('published bundle retention keeps the commit an active community listing pins', async () => {
+	const { sqlite, db } = createRetentionDb()
+	const kvDelete = vi.fn(async () => undefined)
+	const env = {
+		APP_DB: db,
+		BUNDLE_ARTIFACTS_KV: { delete: kvDelete },
+		REPO_SESSION_INDEX:
+			createInMemoryRepoSessionIndexEnv(db).REPO_SESSION_INDEX,
+	} as unknown as Pick<Env, 'APP_DB' | 'BUNDLE_ARTIFACTS_KV'>
+	insertRows(sqlite, 'entity_sources', entitySourceColumns, [
+		entitySourceRow('source-listed', 'commit-current'),
+		entitySourceRow('source-delisted', 'commit-current'),
+	])
+	insertRows(
+		sqlite,
+		'community_listings',
+		['id', 'source_id', 'pinned_commit', 'status'],
+		[
+			['listing-active', 'source-listed', 'commit-pinned', 'active'],
+			['listing-delisted', 'source-delisted', 'commit-pinned', 'delisted'],
+		],
+	)
+	const stale = publishedBundleArtifactRetentionDays + 1
+	insertRows(sqlite, 'published_bundle_artifacts', artifactColumns, [
+		artifactRow('artifact-pinned', 'source-listed', 'commit-pinned', stale),
+		artifactRow('artifact-unpinned', 'source-listed', 'commit-old', stale),
+		artifactRow('artifact-delisted', 'source-delisted', 'commit-pinned', stale),
+	])
+
+	expect(
+		await prunePublishedBundleArtifactsForRetention({
+			env,
+			now,
+			batchSize: 10,
+		}),
+	).toEqual({
+		deletedRows: 2,
+		deletedKvKeys: 2,
+		deletedSnapshotKvKeys: 8,
+		kvDeleteErrors: 0,
+		hasMore: false,
+	})
+	expect(kvDelete).not.toHaveBeenCalledWith('kv:artifact-pinned')
+	expect(kvDelete).not.toHaveBeenCalledWith(
+		'source-snapshot:v1:source-listed:commit-pinned',
+	)
+	expect(kvDelete).not.toHaveBeenCalledWith(
+		'source-manifest-snapshot:v1:source-listed:commit-pinned',
+	)
+	expect(kvDelete).toHaveBeenCalledWith(
+		'source-snapshot:v1:source-delisted:commit-pinned',
+	)
+	expect(selectColumn(sqlite, 'published_bundle_artifacts', 'id')).toEqual([
+		'artifact-pinned',
 	])
 })
 

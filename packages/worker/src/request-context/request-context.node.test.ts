@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { type McpUserContext } from '@kody-internal/shared/chat.ts'
+import type { McpUserContext } from '@kody-internal/shared/chat.ts'
 import {
 	ownerIdFromStored,
 	personIdFromStored,
@@ -205,7 +205,7 @@ test('downstream runs keep the starter role instead of the org identity Owner ro
 		}).membership,
 	).toEqual({ role: 'owner' })
 	expect(
-		parseRequestLineage({ ...legacy, membership: { role: 'admin' } }),
+		parseRequestLineage({ ...legacy, membership: { role: 'superuser' } }),
 	).toBeNull()
 })
 
@@ -473,4 +473,41 @@ test('a triggered run as a sub-profile records its whole chain', () => {
 		profileId: 'prf_child',
 		profileChain: ['prf_root', 'prf_child'],
 	})
+})
+
+test('file storage carries its connection identity and only credential-use scope', () => {
+	const request = deriveRequestContext({
+		user,
+		source: { kind: 'file-storage', connectionId: 'storage-connection' },
+		scopes: ['secret:use'],
+	})
+	expect(request.credential).toMatchObject({
+		kind: 'file-storage',
+		id: 'storage-connection',
+		scopes: ['secret:use'],
+	})
+	expect(request.actor?.userId).toBe(user.userId)
+	expect(parseRequestLineage(requestLineage(request))?.credential.kind).toBe(
+		'file-storage',
+	)
+})
+
+test('a persisted lineage drops retired scopes instead of failing closed', () => {
+	const run = deriveRequestContext({
+		user: { userId: personIdFromStored('d'.repeat(64)), username: 'dee' },
+		source: { kind: 'mcp-oauth' },
+		orgBinding: {
+			org: { id: ownerIdFromStored(stableId), slug: 'ada' },
+			role: 'member',
+		},
+	})
+	const lineage = JSON.parse(JSON.stringify(requestLineage(run))) as {
+		credential: { scopes: Array<string> | null }
+	}
+	lineage.credential.scopes = ['job:create', 'package:read']
+	expect(parseRequestLineage(lineage)?.credential.scopes).toEqual([
+		'package:read',
+	])
+	lineage.credential.scopes = ['job:launch']
+	expect(parseRequestLineage(lineage)).toBeNull()
 })

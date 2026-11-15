@@ -1,20 +1,22 @@
+import { fileStoreRpc } from '#worker/files/client.ts'
 /**
  * soft-delete-read-filter: opt-out
  *
  * Account deletion / purge inventory must enumerate tombstoned rows so KV, R2,
  * and DO cleanup still run after soft-delete.
  */
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
 import { accountUserOwnedR2Surfaces } from '#worker/account/user-owned-surfaces.ts'
 import { buildCommunityIconR2Key } from '#worker/community/community-icon.ts'
 import {
 	buildIdentityIconR2Key,
 	identityIconCommitForKind,
 } from '#worker/repo/identity-icon.ts'
-import { type EntityKind } from '#worker/repo/types.ts'
+import type { EntityKind } from '#worker/repo/types.ts'
 import { listAllMailboxEmailObjectRefs } from './mailbox-r2-references.ts'
 
-export type AccountR2Binding = 'EMAIL_BLOBS' | 'COMMUNITY_ASSETS'
+/** R2 bindings `collectAccountR2Inventory` can name. */
+export type AccountR2Binding = 'EMAIL_BLOBS' | 'COMMUNITY_ASSETS' | 'FILE_BLOBS'
 
 export type AccountR2ObjectRef = {
 	surfaceId: (typeof accountUserOwnedR2Surfaces)[number]['id']
@@ -140,6 +142,13 @@ async function listUserIdentityIcons(env: Env, userId: OwnerId) {
 	}
 }
 
+/**
+ * User-owned R2 objects for account deletion and export: FileStore revision
+ * keys (labeled `FILE_BLOBS`; bytes may live in `FILE_BLOBS` or a configured
+ * provider) when `FILE_STORE` is bound, mailbox MIME and attachments in
+ * `EMAIL_BLOBS`, and community/identity icons plus the profile avatar in
+ * `COMMUNITY_ASSETS`. File keys come from `FileStore.inventory`, not D1.
+ */
 export async function collectAccountR2Inventory(input: {
 	env: Env
 	userId: OwnerId
@@ -161,7 +170,15 @@ export async function collectAccountR2Inventory(input: {
 				.first<{ avatar_key: string | null }>(),
 		])
 
+	const fileObjects = input.env.FILE_STORE
+		? await fileStoreRpc(input.env, input.userId).inventory(input.userId)
+		: []
 	const objects: Array<AccountR2ObjectRef> = [
+		...fileObjects.map((key) => ({
+			surfaceId: 'file_revision' as const,
+			binding: 'FILE_BLOBS' as const,
+			key,
+		})),
 		...emailBlobReferences,
 		...communityListings.flatMap((listing) =>
 			[listing.pinnedCommit, listing.iconCommit].map((commit) => ({

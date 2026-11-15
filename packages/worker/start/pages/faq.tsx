@@ -1,8 +1,8 @@
 /** @jsxImportSource @emotion/react */
 import { SiteLink } from '../components/site-link.tsx'
-import { type CSSObject } from '@emotion/react'
+import type { CSSObject } from '@emotion/react'
 import { revealRef } from '../components/reveal.ts'
-import { type ReactNode, type CSSProperties } from 'react'
+import type { ReactNode, CSSProperties } from 'react'
 import { formatMinJobInterval, planLimits } from '#universal/plans.ts'
 import { publicSignupHref } from '#universal/public-signup-copy.ts'
 import { routes } from '#universal/routes.ts'
@@ -189,7 +189,8 @@ const faqItems: ReadonlyArray<FaqItem> = [
 					as names, hosts, and allowlists only.
 				</p>
 				<p>
-					Kody is Fair Source. The{' '}
+					Kody is source-available under a license based on the Functional
+					Source License. The{' '}
 					<SiteLink
 						href="https://github.com/kody-hq/kody"
 						target="_blank"
@@ -197,7 +198,9 @@ const faqItems: ReadonlyArray<FaqItem> = [
 					>
 						source is on GitHub
 					</SiteLink>
-					: you can read it, fork it, and run your own deployment.
+					: you can read it and fork it, and running your own deployment is free
+					for personal, family, nonprofit, and classroom use. For any other use,
+					email support@kody.codes.
 				</p>
 			</>
 		),

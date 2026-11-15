@@ -36,9 +36,12 @@ platform-assigned sender address.
   transactional sender (`kody@<apex>`, used for verification, password-reset,
   billing, entitlement warnings, usage-campaign nudges (Kody tips, with an
   unsubscribe footer and `List-Unsubscribe` headers), and platform-feedback
-  resolve/dismiss mail) and the operator-owned system inboxes (`kody`,
-  `support`, `abuse`, `postmaster`, `security`, `admin`, and `psl` at the apex
-  route to Kody's system inbox). `team@<apex>` is an inbound-only alias of
+  resolve/dismiss mail) and the operator-owned system inboxes
+  (`systemEmailLocals` at the apex: `kody`, `support`, `abuse`, `dmca`,
+  `postmaster`, `security`, `admin`, `psl`, `kent`, and `news`) route to Kody's
+  system inbox. `kent@` is the exception: a zone Email Routing rule forwards it
+  straight to Kent, and the Worker stores it in the system inbox only as a
+  fallback if that rule is removed. `team@<apex>` is an inbound-only alias of
   `support@` (same inbox; original To kept; not a send-as address). Mail from
   `kody@<apex>` sets `Reply-To: support@<apex>` unless the caller supplies a
   different Reply-To, so human replies land at support rather than at the
@@ -69,6 +72,36 @@ platform-assigned sender address.
     `emailSend` still wins. Base-address mail sets no `Reply-To`.
   - Replies keep `In-Reply-To` (the original `Message-ID`) and `References` (the
     original's references plus its `Message-ID`, deduplicated).
+
+## Reply-all
+
+`emailReply` with `reply_all: true` answers everyone on the stored message.
+
+- Recipients come only from that message. Its Reply-To (or From) and its To go
+  on To, and its Cc stays on Cc. This inbox's own addresses (`{handle}@` and any
+  `{handle}+tag@`) are removed. Bcc is never used.
+- `drop_recipients` leaves listed addresses off. Each one must already be a
+  recipient of the stored message. `to`, `cc`, and `bcc` are refused, so a
+  caller can never add a recipient. At least one To recipient must remain.
+- Reply-all is allowed only on a thread the inbox owner put the inbox on. Some
+  inbound message on the same thread (threaded by `Message-ID`, `In-Reply-To`,
+  and `References`) must come from one of the owner's verified email
+  destinations, with an address of this inbox (not a member's personal address,
+  for a team inbox) in To or Cc. Its From must authenticate (DMARC pass, or
+  aligned SPF), so a forged From does not count, and Bcc-ing the inbox does not
+  count. Once that is true, later messages on the thread from other participants
+  also allow reply-all.
+- On a thread the owner has never been on (for example a stranger Ccs the inbox
+  on mail to other people), reply-all is refused with `reply_all_not_allowed`,
+  before any daily send quota or provider send. A reply to the sender only still
+  works.
+- Reply-all is capped at 5 sends per thread in a rolling 24 hours, failed
+  attempts included, and deleting a sent reply does not free its slot
+  (`reply_all_thread_limit`). It also counts toward the plan's
+  `email_sends_per_day`.
+- The reply keeps `In-Reply-To` and `References`, so it stays on that thread.
+  The stored sent message records its To and Cc (`emailMessageGet`), and the
+  `send_requested` delivery event records both lists.
 
 ## Capabilities
 
@@ -111,14 +144,15 @@ Use the MCP `email` domain:
   attachment bytes) must fit the plan's `email_message_bytes` per-message cap.
   Manage destinations from `/@<slug>/-/email` as well. Unverified extras never
   receive mail.
-- `emailReply` replies to a stored inbound message. The recipient always comes
-  from the stored message. Optional `attachments` (up to 10 of
-  `{ filename, content_type, content_base64 }`) are sent with the reply and
-  stored as `external` attachments readable later via `emailAttachmentGet`. With
-  attachments, the whole message (bodies plus decoded attachment bytes) must fit
-  the plan's `email_message_bytes` per-message cap. A quarantined or spam
-  original is refused before any send or daily send quota is used
-  (`quarantined_inbound_reply`): replies to that mail usually reach spoofed
+- `emailReply` replies to a stored inbound message. Recipients always come from
+  the stored message: by default only its sender (Reply-To, else From). See
+  [Reply-all](#reply-all) to answer everyone on the thread. Optional
+  `attachments` (up to 10 of `{ filename, content_type, content_base64 }`) are
+  sent with the reply and stored as `external` attachments readable later via
+  `emailAttachmentGet`. With attachments, the whole message (bodies plus decoded
+  attachment bytes) must fit the plan's `email_message_bytes` per-message cap. A
+  quarantined or spam original is refused before any send or daily send quota is
+  used (`quarantined_inbound_reply`): replies to that mail usually reach spoofed
   senders. Release it first with `emailMessageClassify`
   (`classification: "accepted"`) or Not spam on `/@<slug>/-/email`, then reply.
   The same refusal applies to package runtime `email.reply`, which calls
@@ -218,10 +252,16 @@ Inbound storage is quota-gated per user:
   account to address external recipients, and only recipients taken from stored
   inbound mail that is not quarantined. A quarantined original is refused
   (`quarantined_inbound_reply`) before the daily send quota or the provider is
-  touched. Admins have a separate operator channel (`adminSystemEmailSend`) that
-  speaks for the platform rather than for any user account: it sends from a
-  reserved system sender, uses no user mailbox or plan entitlement, is
-  audit-logged, and is capped per sender per UTC day.
+  touched. Reply-all adds the stored message's To and Cc only on threads the
+  owner put the inbox on ([Reply-all](#reply-all)). Admins have a separate
+  operator channel (`adminSystemEmailSend`) that speaks for the platform rather
+  than for any user account: it sends from a reserved transactional system
+  sender, uses no user mailbox or plan entitlement, is audit-logged, and is
+  capped per sender per UTC day. What's New in Kody mail is a separate channel:
+  `adminWhatsNewEmailSend` sends from `news@` to one recipient, uses a dedicated
+  daily counter, and is not available through `adminSystemEmailSend`. Consent
+  lives on the user (`whats_new_email_opt_in`); only site admins can list
+  recipients, change consent, or send.
 - Outbound sends consume a per-day entitlement. The `max` plan allows 10,000
   send attempts per UTC day.
 - A successful send request has `processing_status: "sent"`. Cloudflare delivery
@@ -532,12 +572,12 @@ do not dispatch after a newer delivery state has already been stored.
 
 ## `email.system-message.received` package subscription (admins)
 
-Mail stored in the operator-owned system inbox (`kody`, `support`, `abuse`,
-`postmaster`, `security`, `admin`, and `psl` at the apex) dispatches the
-separate package subscription topic `email.system-message.received` when the
-message is accepted. It fans out to packages saved by users who hold the admin
-role at dispatch time — a non-admin saving the same subscription never receives
-system mail, and a revoked admin stops receiving immediately.
+Mail stored in the operator-owned system inbox (`systemEmailLocals` at the apex)
+dispatches the separate package subscription topic
+`email.system-message.received` when the message is accepted. It fans out to
+packages saved by users who hold the admin role at dispatch time — a non-admin
+saving the same subscription never receives system mail, and a revoked admin
+stops receiving immediately.
 
 Quarantined system-inbox mail is stored for operators but never dispatches
 `email.system-message.received` (or any other admin package subscription).
@@ -583,10 +623,30 @@ retries do not recreate the message.
 ## `email.system-message.sent` package subscription (admins)
 
 A successful send from a reserved system sender (`adminSystemEmailSend` /
-`sendSystemEmail`) fans `email.system-message.sent` to packages saved by users
-who hold the admin role at dispatch time. Raw capability calls and utility
-wrappers both go through that send path, so archive packages see every operator
-send.
+`sendSystemEmail`, and `adminWhatsNewEmailSend` / `sendNewsletterEmail`) fans
+`email.system-message.sent` to packages saved by users who hold the admin role
+at dispatch time. Raw capability calls and utility wrappers both go through that
+send path. Dispatch is best-effort after the provider send already succeeded: a
+failed invoke is logged and does not fail the send, so archives can miss a
+message and the inbound system-mail graph does not retain its contents.
+
+Each send also records one `system_email_sends` row per recipient so Cloudflare
+delivery reports match it. A recipient that hard-bounced repeatedly is refused
+before the send (see
+[Authentication](../contributing/architecture/authentication.md) for the
+suppression levels); `adminEmailSuppressionList` shows suppressed addresses and
+`adminEmailSuppressionClear` lifts one. `adminSystemEmailSendList` traces those
+rows: each send's provider message id, its latest Cloudflare delivery report
+(null until one matches), and the recipient's bounce or suppression state.
+
+Custom `headers` on system sends must be ones Cloudflare Email Sending accepts
+([email headers](https://developers.cloudflare.com/email-service/reference/headers/)).
+A header with its own field (Reply-To, From, To, Cc, Bcc, Subject), one
+Cloudflare generates (Message-ID, Date, and the other platform headers), an
+invalid name, or an empty or multi-line value is refused as a caller error
+before the daily counter is consumed. A Cloudflare HTTP 400 (codes 10001, 10200,
+10201, 10202) is also a caller error naming the code and likely cause, with the
+counter refunded; 401, 403, 429, and 5xx stay server failures.
 
 Outbound system mail is not stored on the dedicated inbound `system_email_*`
 graph, so this topic carries the sent copy (recipients, subject, text, and HTML)

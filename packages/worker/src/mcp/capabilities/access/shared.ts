@@ -1,6 +1,8 @@
-import { type McpCallerContext } from '@kody-internal/shared/chat.ts'
+import { statesOf } from '@kody-internal/shared/state-machine.ts'
+import type { McpCallerContext } from '@kody-internal/shared/chat.ts'
 import {
 	grantPresets,
+	orgWideManagePermissions,
 	resolveGrantPermissions,
 	type GrantPreset,
 } from '@kody-internal/shared/grant-presets.ts'
@@ -9,12 +11,13 @@ import {
 	type OrgPermission,
 	type OrgResourceType,
 } from '@kody-internal/shared/org-permissions.ts'
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
 import { sha256Hex } from '@kody-internal/shared/sha256.ts'
 import { toHex } from '@kody-internal/shared/hex.ts'
 import { z } from 'zod'
+import { inviteState } from '#worker/orgs/invite-state.ts'
 import { McpCallerError } from '#mcp/caller-error.ts'
-import { type CapabilityContext } from '#mcp/capabilities/types.ts'
+import type { CapabilityContext } from '#mcp/capabilities/types.ts'
 import {
 	requireMcpRequest,
 	requireMcpUser,
@@ -22,6 +25,7 @@ import {
 import {
 	authorize,
 	computeEffectivePermissions,
+	hasOwnerAuthority,
 	type OrgResource,
 } from '#worker/authorization/authorize.ts'
 import {
@@ -47,6 +51,7 @@ import {
 	OrgSlugValidationError,
 } from '#worker/orgs/access-writes.ts'
 import { andLiveDeletedAtSql } from '#worker/soft-delete/live-sql.ts'
+import { fileStoreRpc } from '#worker/files/client.ts'
 import { assertMemoryGrantsAllowedOnOrg } from '#mcp/memory/memory-owner.ts'
 
 export const grantPresetSchema = z.enum(grantPresets)
@@ -96,7 +101,8 @@ export async function resolveGrantTarget(
 	}
 }
 
-export const orgRoleSchema = z.enum(['owner', 'member', 'billing'])
+/** Org membership roles, including Admin (Owner authority without `org:delete`). */
+export const orgRoleSchema = z.enum(['owner', 'admin', 'member', 'billing'])
 
 export const accessGrantSchema = z.object({
 	id: z.string(),
@@ -113,10 +119,11 @@ export const accessGrantSchema = z.object({
 	allow_changes_despite_unmappable_credentials: z
 		.boolean()
 		.describe(
-			'True when an org Owner let this subject change or publish the package even while it has unmappable credentials.',
+			'True when an org Owner or Admin let this subject change or publish the package even while it has unmappable credentials.',
 		),
 })
 
+/** Invite payload. `status` follows `inviteState` (pending, accepted, revoked, expired). */
 export const inviteSchema = z.object({
 	id: z.string(),
 	org_id: z.string(),
@@ -130,7 +137,7 @@ export const inviteSchema = z.object({
 	permissions: z.array(z.string()).nullable(),
 	invitee_email: z.string().nullable(),
 	invitee_username: z.string().nullable(),
-	status: z.enum(['pending', 'accepted', 'revoked', 'expired']),
+	status: z.enum(statesOf(inviteState)),
 	expires_at: z.string(),
 })
 
@@ -213,6 +220,8 @@ export async function requireOrgPermission(
 
 function manageAccessPermission(resourceType: OrgResourceType): OrgPermission {
 	switch (resourceType) {
+		case 'file':
+			return 'file:manage_access'
 		case 'package':
 			return 'package:manage_access'
 		case 'app':
@@ -290,6 +299,19 @@ async function grantTargetCheck(
 				family,
 				permission: manageAccessPermission(family),
 				resource: credentialResource(orgId, credential),
+			}
+		}
+		case 'file': {
+			const file = await fileStoreRpc(ctx.env, orgId).metadata(
+				orgId,
+				resourceId,
+			)
+			if (!file?.revisionId && purpose === 'grant')
+				throw new McpCallerError('File was not found in this organization.')
+			return {
+				family: 'file',
+				permission: 'file:manage_access',
+				resource: { type: 'file', id: resourceId, orgId },
 			}
 		}
 		case 'execution_context':
@@ -371,15 +393,29 @@ async function authorizeGrantChange(
 		resourceId,
 		purpose,
 	)
-	await authorize({ env: ctx.env, request }, check.permission, check.resource)
+	if (resourceType === 'file') {
+		const { fileCollaborationAccess } =
+			await import('#worker/files/collaboration-access.ts')
+		const { access } = await fileCollaborationAccess(
+			ctx.env,
+			request,
+			resourceId,
+		)
+		if (!access.manage)
+			throw new McpCallerError('File access management is required.')
+	} else
+		await authorize({ env: ctx.env, request }, check.permission, check.resource)
 	return { user, request, db: ctx.env.APP_DB, family: check.family }
 }
 
 /**
- * Org-level permissions only an Owner may put on an org grant. org:write and
- * org:delete would let a delegate elevate past Owner; member:write would let a
- * delegate re-delegate; member:delete is an Owner-held control a member:write
- * holder must not hand out (to anyone, including themselves). billing:* never
+ * Org-level permissions that need Owner authority to put on an org grant.
+ * Admin may hand out all of these except `org:delete`. `org:write` and
+ * `org:delete` would let a delegate elevate past Owner; `member:write` would
+ * let a delegate re-delegate; `member:delete` is an Owner-held control a
+ * `member:write` holder must not hand out (to anyone, including themselves).
+ * The org-wide package and app manage permissions reach every package anyone
+ * in the org made, so only Owner authority hands them out. `billing:*` never
  * appears here because it is not grantable on an org grant at all.
  */
 const ownerOnlyOrgGrantPermissions: ReadonlySet<OrgPermission> =
@@ -388,6 +424,7 @@ const ownerOnlyOrgGrantPermissions: ReadonlySet<OrgPermission> =
 		'org:write',
 		'member:write',
 		'member:delete',
+		...orgWideManagePermissions,
 	])
 
 /**
@@ -407,8 +444,9 @@ export function grantChangesMemberOrBilling(input: {
 }
 
 /**
- * Resolve grant permissions for a resource, and require an Owner when an
- * organization grant includes any of `ownerOnlyOrgGrantPermissions`.
+ * Resolve grant permissions for a resource, and require Owner authority when
+ * an organization grant includes any of `ownerOnlyOrgGrantPermissions`.
+ * Admin may grant those except `org:delete`, which stays Owner-only.
  */
 export async function resolveAuthorizedGrantPermissions(
 	ctx: GrantChangeContext,
@@ -416,6 +454,8 @@ export async function resolveAuthorizedGrantPermissions(
 		family: OrgResourceType | 'org'
 		preset?: GrantPreset | null
 		permissions: Array<OrgPermission> | null
+		/** Already on this subject's grant; keeping them needs no Owner. */
+		alreadyHeld?: ReadonlyArray<OrgPermission>
 	},
 ) {
 	let permissions: ReadonlyArray<OrgPermission>
@@ -431,8 +471,10 @@ export async function resolveAuthorizedGrantPermissions(
 		)
 	}
 	if (input.family !== 'org') return permissions
-	const ownerOnly = permissions.filter((permission) =>
-		ownerOnlyOrgGrantPermissions.has(permission),
+	const ownerOnly = permissions.filter(
+		(permission) =>
+			ownerOnlyOrgGrantPermissions.has(permission) &&
+			!input.alreadyHeld?.includes(permission),
 	)
 	if (ownerOnly.length === 0) return permissions
 	const request = requireMcpRequest(ctx.callerContext)
@@ -440,7 +482,12 @@ export async function resolveAuthorizedGrantPermissions(
 		env: ctx.env,
 		request,
 	})
-	if (!access.isOwner) {
+	// An Admin holds every Owner permission but org:delete, so it may hand
+	// out the rest.
+	const allowed = access.isOwner
+		? true
+		: hasOwnerAuthority(access) && !ownerOnly.includes('org:delete')
+	if (!allowed) {
 		throw new McpCallerError(
 			`Only an Owner can grant ${ownerOnly.join(', ')} on an organization.`,
 		)

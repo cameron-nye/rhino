@@ -52,8 +52,8 @@ docs index is at `/llms.txt`.
 > Your Personal Software Factory
 
 Also watch:
-[The home your agents share](https://www.youtube.com/watch?v=6PGKZDcPsvE) and
-[Personal software, connected to everything.](https://www.youtube.com/watch?v=MGOj4NwV0uk).
+[The home your agents share](https://www.youtube.com/watch?v=piChJd1ZIa0) and
+[Personal software, connected to everything.](https://www.youtube.com/watch?v=rRUs0Ui6tl4).
 
 ## What Kody is
 
@@ -76,8 +76,10 @@ the things that should not live in one chat window:
 - **An inbox** — every account gets an email address; mail in can start work,
   mail out can tell you it finished.
 
-Kody is Fair Source: the source is available to read, fork, and self-host, and
-each version converts to the Apache License 2.0 after two years. Kody runs no
+Kody is source-available under the Kody License, based on the Functional Source
+License: reading, forking, and self-hosting are free for personal, family,
+nonprofit, and classroom use, and each version converts to the Apache License
+2.0 after two years. For any other use, email support@kody.codes. Kody runs no
 chat-model agent loop and bills no chat tokens. Search and indexing use a small
 embedding model; that is not a chat model and is not billed as inference.
 
@@ -86,6 +88,9 @@ embedding model; that is not a chat model and is not billed as inference.
 Personal agents like OpenClaw, OpenMuse, Claude Desktop, Cursor, and Codex are
 where you talk, think, and act in the moment. Kody is where the results live
 afterward. Each is better with the other.
+
+> [!WATCH] https://www.youtube.com/watch?v=ioddamBaK8M Watch: Bots and Kody:
+> share what your bot builds with your team and agents
 
 Your agent is good at:
 

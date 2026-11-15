@@ -1,8 +1,9 @@
 /** @jsxImportSource @emotion/react */
+import { CommandTrigger } from '../commands/provider.tsx'
 import { DemoIndicator } from './demo-indicator.tsx'
 import { workspaceHomeHref } from '#client/routes/account-rail.ts'
 import { dismissOpenPopoverPanel } from '#client/popover-open.ts'
-import { type CSSObject } from '@emotion/react'
+import type { CSSObject } from '@emotion/react'
 import { BrandContextMenu } from './brand-context-menu.tsx'
 import { FeaturesMenu } from './features-menu.tsx'
 import { rhinoWordmarkFontFamily } from '../brand/rhino-mark.ts'
@@ -13,12 +14,8 @@ import {
 } from '../brand/rhino-personal.ts'
 import { KodyMark } from './kody-mark.tsx'
 import { SiteLink } from './site-link.tsx'
-import { useEffect, useState } from 'react'
-import {
-	PhoneAccountGroups,
-	AccountMenu,
-	type OrganizationSession,
-} from './org-switcher.tsx'
+import { lazy, Suspense, useEffect, useState } from 'react'
+import type { OrganizationSession } from './org-switcher.tsx'
 import {
 	colors,
 	shadows,
@@ -120,12 +117,26 @@ export function SiteHeader(props: SiteHeaderProps) {
 								<SiteLink href={workspaceHref} css={navLoginCss}>
 									Workspace
 								</SiteLink>
-								<AccountMenu
-									username={props.username}
-									displayName={props.displayName}
-									avatarUrl={props.avatarUrl}
-									organizations={props.organizationSession?.organizations ?? []}
-								/>
+								<div css={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+									<CommandTrigger />
+									<Suspense
+										fallback={
+											<span
+												aria-hidden="true"
+												css={{ width: 44, height: 44 }}
+											/>
+										}
+									>
+										<AccountMenu
+											username={props.username}
+											displayName={props.displayName}
+											avatarUrl={props.avatarUrl}
+											organizations={
+												props.organizationSession?.organizations ?? []
+											}
+										/>
+									</Suspense>
+								</div>
 							</>
 						) : (
 							<SiteLink href={props.loginHref} css={navLoginCss}>
@@ -174,12 +185,23 @@ export function SiteHeader(props: SiteHeaderProps) {
 							<SiteLink href={workspaceHref} css={navLoginCss}>
 								Workspace
 							</SiteLink>
-							<AccountMenu
-								organizations={props.organizationSession?.organizations ?? []}
-								username={props.username}
-								displayName={props.displayName}
-								avatarUrl={props.avatarUrl}
-							/>
+							<div css={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+								<CommandTrigger />
+								<Suspense
+									fallback={
+										<span aria-hidden="true" css={{ width: 44, height: 44 }} />
+									}
+								>
+									<AccountMenu
+										organizations={
+											props.organizationSession?.organizations ?? []
+										}
+										username={props.username}
+										displayName={props.displayName}
+										avatarUrl={props.avatarUrl}
+									/>
+								</Suspense>
+							</div>
 							{props.showDemoIndicator ? <DemoIndicator /> : null}
 						</>
 					) : (
@@ -234,10 +256,12 @@ export function SiteHeader(props: SiteHeaderProps) {
 						) : null}
 					</div>
 					{props.organizationSession ? (
-						<PhoneAccountGroups
-							session={props.organizationSession}
-							currentPathname={props.currentPathname}
-						/>
+						<Suspense fallback={null}>
+							<PhoneAccountGroups
+								session={props.organizationSession}
+								currentPathname={props.currentPathname}
+							/>
+						</Suspense>
 					) : (
 						<div css={menuGroupCss}>
 							<SiteLink href={props.loginHref}>Log in</SiteLink>
@@ -249,11 +273,26 @@ export function SiteHeader(props: SiteHeaderProps) {
 	)
 }
 
+// Signed-out pages can render their header without loading the account menu.
+const AccountMenu = lazy(() =>
+	import('./org-switcher.tsx').then((module) => ({
+		default: module.AccountMenu,
+	})),
+)
+const PhoneAccountGroups = lazy(() =>
+	import('./org-switcher.tsx').then((module) => ({
+		default: module.PhoneAccountGroups,
+	})),
+)
+
 const headerCss: CSSObject = {
 	position: 'sticky' as const,
-	top: 0,
+	top: 'var(--desktop-toolbar-height, 0px)',
 	zIndex: 10,
-	background: `oklch(from ${colors.background} l c h / 0.85)`,
+	background: colors.background,
+	'@supports (background: oklch(from white l c h / 0.85))': {
+		background: `oklch(from ${colors.background} l c h / 0.85)`,
+	},
 	'@supports (backdrop-filter: blur(1px))': {
 		backdropFilter: 'blur(14px)',
 	},
@@ -263,7 +302,6 @@ const navCss: CSSObject = {
 	maxWidth: layoutMaxWidths.extended,
 	marginInline: 'auto',
 	padding: `${siteHeaderNavPaddingBlock} ${pageGutter}`,
-	paddingLeft: `max(${pageGutter}, calc(var(--desktop-corner-width, 0px) - max(0px, (100vw - ${layoutMaxWidths.extended}) / 2)))`,
 	display: 'flex',
 	alignItems: 'center',
 	gap: '1.8rem',

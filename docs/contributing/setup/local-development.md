@@ -60,15 +60,17 @@ Prerequisites, install, and `npm run dev` notes. See the
   API mock Worker for the internal Cloudflare API client, local email sending,
   and Artifacts REST repo create/get/list/token/fork calls. Those REST calls do
   not hit the live Cloudflare Artifacts control plane during normal local
-  development. The mock covers only the REST control plane; repo-session git
-  clone/pull/push flows need a real Git-capable Artifacts remote and are not
-  fully simulated by the local mock. Password reset and email-verification
-  messages send through the same Cloudflare Email API helper. Both send from
-  `kody@<SYSTEM_EMAIL_DOMAIN>` (falling back to the `APP_BASE_URL` hostname) and
-  put that same sending domain on action and asset links when
-  `SYSTEM_EMAIL_DOMAIN` is set, so a stale `APP_BASE_URL` cannot pin a retired
-  hostname into the message. Local `npm run dev` keeps those action and asset
-  links on the request origin so they stay clickable. Set
+  development. `cli.ts` also serves mock git remotes from
+  `.wrangler/state/mock-artifacts-git`, so plain-repo `repoOpenSession`
+  clone/push works locally. Saved-package repo sessions still use mock source
+  snapshots — use a preview for that namespace. See
+  [Local limitations](../cloud-agents.md#local-limitations). Password reset and
+  email-verification messages send through the same Cloudflare Email API helper.
+  Both send from `kody@<SYSTEM_EMAIL_DOMAIN>` (falling back to the
+  `APP_BASE_URL` hostname) and put that same sending domain on action and asset
+  links when `SYSTEM_EMAIL_DOMAIN` is set, so a stale `APP_BASE_URL` cannot pin
+  a retired hostname into the message. Local `npm run dev` keeps those action
+  and asset links on the request origin so they stay clickable. Set
   `SKIP_CLOUDFLARE_MOCK=1` to skip the local Cloudflare mock entirely. Vite
   streams origin logs live; the background mock buffers logs and only prints
   them if that child process exits with an error.
@@ -121,8 +123,10 @@ On each `npm run dev` start:
   replay (`tools/local-dev-migrations.ts`: transfers become
   `new_sqlite_classes`, create-then-delete pairs such as
   `PackageServiceInstance` are elided), and injects `APP_BASE_URL`,
-  `COOKIE_SECRET`, `SECRET_STORE_KEY`, and `WRANGLER_IS_LOCAL_DEV` from the
-  process env. It also rewrites remaining `script_name: "kody"` refs to the
+  `COOKIE_SECRET`, `SECRET_STORE_KEY`, `ECP_FRAME_SIGNING_KEYS`,
+  `PACKAGE_APP_BASE_URL`, and `WRANGLER_IS_LOCAL_DEV` from the process env
+  (`npm run dev` loads `packages/worker/.env` into it; `.dev.vars` never reaches
+  siblings). It also rewrites remaining `script_name: "kody"` refs to the
   primary's dev name (`kody-<env>`).
 - Jobs and highlight get the same name pin via
   `tools/local-auxiliary-dev-config.ts` (`kody-jobs` / `kody-highlight`, not

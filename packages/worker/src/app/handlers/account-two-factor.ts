@@ -3,7 +3,7 @@ import {
 	checkRateLimit,
 	twoFactorVerifyRateLimitConfig,
 } from '#app/rate-limit.ts'
-import { type AuthenticatedAppUser } from '#app/authenticated-user.ts'
+import type { AuthenticatedAppUser } from '#app/authenticated-user.ts'
 import {
 	cancelTwoFactorSetup,
 	confirmTwoFactorSetup,
@@ -14,8 +14,8 @@ import {
 	twoFactorSetupVerificationType,
 	twoFactorVerificationType,
 	verifyTwoFactorCode,
-} from '#app/two-factor.ts'
-import { type AccountTwoFactorLoaderData } from '#universal/loader-data.ts'
+} from '#worker/identity/two-factor.ts'
+import type { AccountTwoFactorLoaderData } from '#universal/loader-data.ts'
 import {
 	auditDatabaseFromEnv,
 	getRequestIp,
@@ -83,7 +83,7 @@ export async function startAccountTwoFactorSetup({
 		}
 	}
 	const { otpUri, secret } = await createTwoFactorSetup({
-		db: env.APP_DB,
+		env,
 		userId: user.userId,
 		accountName: user.email,
 		issuer: url.hostname,
@@ -135,7 +135,7 @@ export async function confirmAccountTwoFactorSetup({
 		return { ok: false, error: 'No two-factor setup is in progress.' }
 	}
 	const codeValid = await verifyTwoFactorCode({
-		db: env.APP_DB,
+		env,
 		userId: user.userId,
 		code,
 		type: twoFactorSetupVerificationType,
@@ -206,7 +206,7 @@ export async function disableAccountTwoFactor({
 		return { ok: false, error: 'Verification code is required.' }
 	}
 	const codeValid = await verifyTwoFactorCode({
-		db: env.APP_DB,
+		env,
 		userId: user.userId,
 		code,
 		type: twoFactorVerificationType,

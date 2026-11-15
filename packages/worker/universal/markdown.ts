@@ -1,5 +1,5 @@
 import { parseMarkdown } from '@tanstack/markdown/parser'
-import { type MarkdownExtension } from '@tanstack/markdown'
+import type { MarkdownExtension } from '@tanstack/markdown'
 import { firstPartyDetailsExtension } from './markdown-first-party.ts'
 
 /** Keep explicit angle links supported without enabling arbitrary HTML. */
@@ -27,7 +27,7 @@ const docQuotes: MarkdownExtension = {
 	name: 'kody-doc-quotes',
 	parseBlock(context) {
 		if (
-			!/^\s*>\s*\[!(?:WATCH|DIAGRAM|NOTE|TIP|IMPORTANT|WARNING)\]/.test(
+			!/^\s*>\s*\[!(?:WATCH|WATCH-VERTICAL|DIAGRAM|NOTE|TIP|IMPORTANT|WARNING)\]/.test(
 				context.lines[context.index] ?? '',
 			)
 		)

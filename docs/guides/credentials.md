@@ -28,6 +28,9 @@ only over HTTPS. Agents, packages, logs, and tool output never see it. The one
 thing code can get back is a signature from a signing credential: a token
 derived from the key, never the key. Treat it like any other bearer token.
 
+> [!WATCH] https://www.youtube.com/watch?v=YlbJd-amFoQ Watch: Kody packages and
+> credentials: declare, map, and lock
+
 ## The kinds
 
 | Kind       | What it holds                                                | How code uses it                                           |
@@ -144,6 +147,14 @@ is a literal, whose body is not a literal (or `JSON.stringify` /
 that build headers in a variable and header spreads — the scanner cannot see
 `headers-only` on those bags. Variable whole-`init` values (`fetch(url, init)`)
 are still skipped. The warning does not fail the check or block publish.
+
+Publish fails when a fetch puts a credential placeholder in the request body,
+URL path, URL query, or whole URL. The error lists each file, line, and
+credential name (never a value) and says to send the credential in a request
+header instead. Community installs and platform codemods only warn, so existing
+published packages keep running and republishing; the next authoring publish has
+to move the credential. The switch is
+`secretPlaceholderRequestPlacementPublishMode` in the publish check.
 
 Each credential also stores an allowed **fill placement** (headers, optionally
 named; query; path; and/or body). New credentials default to headers-only. The
@@ -338,6 +349,10 @@ To check whether the flag is on for an org, call `packageGet` on one of its
 packages: `credentials.suppliersEnabled` is `true` when it is. While it is
 `false`, `supplier` and `required` are ignored and needs resolve without a
 supplier.
+
+`packageGet` also lists `credentials.invalidSlots`: published `kody.credentials`
+slots that fail the current slot schema, each with its validation message.
+Nothing fills those slots; fix them and republish.
 
 Executor needs default to required. Set `required: false` to make a need
 optional. Required needs cannot be skipped in consent, and the app does not
@@ -578,11 +593,11 @@ the sealed token in the run that minted it and mint it again next run.
 
 ### Signing
 
-For APIs that want a signed JWT or an HMAC. Code gets the signature, never the
-key. Declare `kind: "signing"` for JWT key material. HMAC also works through
-`sign({ type: "hmac", ... })` on an ordinary Key (`secret`) — the same Key a
-webhook `verification.secretName` already uses — so you do not need to re-kind a
-webhook consumer secret as `signing`.
+For APIs that want a signed JWT, an HMAC, or an RSA-signed HTTP request. Code
+gets the signature, never the key. Declare `kind: "signing"` for JWT key
+material. HMAC also works through `sign({ type: "hmac", ... })` on an ordinary
+Key (`secret`) — the same Key a webhook `verification.secretName` already uses —
+so you do not need to re-kind a webhook consumer secret as `signing`.
 
 ```ts
 const appleMusic = await credential('apple-music')
@@ -610,6 +625,46 @@ const signature = await partner.sign({
 JWTs support `RS*`, `PS*`, `ES*`, `EdDSA` (PKCS#8 PEM private keys), and `HS256`
 / `HS384` / `HS512`. Kody signs only for one of the credential's hosts; pass
 `host` to pick one, or it uses the first exact host.
+
+For APIs that sign whole HTTP requests with an RSA key, like Oracle Cloud, use
+`http-signature`. Code describes the request; Kody builds the draft-cavage
+signing string, checks the url host is one of the credential's hosts, and
+returns only the headers to add. The signature always covers `(request-target)`
+and `host`, so it is not valid for any other request.
+
+```ts
+const oci = await credential('oracle-api-key')
+const url = `https://iaas.us-ashburn-1.oraclecloud.com/20160918/instances?compartmentId=${compartmentId}`
+const headers = await oci.sign({
+	type: 'http-signature',
+	keyId: `${tenancyOcid}/${userOcid}/${fingerprint}`,
+	method: 'GET',
+	url,
+})
+await fetch(url, { headers })
+```
+
+`profile: 'oracle'` (the default) signs `date (request-target) host`, and for
+`POST`, `PUT`, and `PATCH` also `content-length content-type x-content-sha256`
+over `body`, and puts the signature in `Authorization`. `profile: 'generic'`
+signs `(request-target) host date` plus `digest` for a body, in a `Signature`
+header. `signedHeaders` picks other headers, and `placement` picks the header.
+Kody adds `date`, the body digest, and the length when missing, and refuses a
+digest or length that does not match the body. Send the body exactly as signed.
+The key is an unencrypted RSA PEM (`BEGIN PRIVATE KEY` or
+`BEGIN RSA PRIVATE KEY`). A redirect to another URL needs a new signature, and
+Kody signs it only if that host is one of the credential's hosts.
+
+Raw signing, `sign({ type: 'rsa-sha256', message })`, signs any string with the
+key and returns the RSA-SHA256 signature (`encoding` is `base64`, `base64url`,
+or `hex`). It is off for every credential. Only an owner of the account or org,
+signed in on the website, can turn it on, under **Raw signing** on the
+credential's page, because a key that signs anything can impersonate its
+identity for requests outside the credential's hosts. Agents, API tokens, MCP,
+and packages cannot turn it on. Every raw signature and refusal is listed on
+that page for 90 days, with who, how, the package, and the message size; never
+the key, the message, or the signature. Turning it off stops new signatures at
+once. See [ADR 0099](../contributing/decisions/0099-rsa-request-signing.md).
 
 ## Creating credentials
 
@@ -784,6 +839,16 @@ that org only in your own runs: through `credential(key)`, through
 first. Nobody else there can use it, Owners and Automation included.
 `credentialOrgRevoke` removes the grant.
 
+There is no "assign to org" control that moves a credential from one workspace
+to another. If a connection or secret was created under the wrong workspace,
+reconnect or create it under the right org (use that org's Credentials / Connect
+pages, or pass `--org` / `?org=`). Granting a personal credential into a team
+org shares it for your own runs there; it does not transfer ownership.
+
+Grant APIs (`credentialOrgGrant`, `credentialOrgRevoke`,
+`credentialOrgGrantList`) are in
+[Personal credentials in a team org](../use/secrets-and-values.md#personal-credentials-in-a-team-org).
+
 When a team org has registered an OAuth app, each Member can connect their own
 account through it (**Connect your own account** on the app's page, or
 `/connect/oauth?org=<org>&app=<app>&mode=personal`). The connection is yours and
@@ -795,6 +860,51 @@ use it or read its tokens. Revoking, leaving the org, or deleting the app wipes
 it and revokes it with the provider where the provider supports that. See
 [OAuth](./oauth.md#connect-your-own-account-through-an-orgs-app).
 
+## Large bodies on local execute
+
+`kody execute --local` sends a `credential()` fetch through Kody's gateway
+without copying or base64-encoding the body. This is what a resumable upload can
+rely on:
+
+- **Body types**: `ArrayBuffer`, typed arrays, `DataView`, `Blob`,
+  `ReadableStream`, and `string`. Binary and stream bodies stream with
+  backpressure through the gateway stream hop as the object you passed. Other
+  bodies up to 3 MiB take a JSON hop (base64 plus envelope fits the 5 MiB API
+  limit); larger ones stream.
+- **Size and time**: up to 100 MiB per request (the Worker upload limit; above
+  it the request throws `payload_too_large`). The gateway allows 5 minutes per
+  request and aborts after 60 seconds with no bytes.
+- **Memory**: the transport holds no copy of an in-memory body and a fixed
+  socket-buffer window for a stream, so memory does not grow with body size or
+  with how many requests run in a row.
+- **Responses**: the body streams back. Read it or call
+  `response.body?.cancel()`; the transport cancels the copies it makes itself.
+- **Statuses**: every HTTP status from the service (including `308`, `401`,
+  `429`, and `5xx`) comes back as a `Response`. With `redirect: 'manual'`, a
+  `308` comes back as it is, `Location` and `Range` included.
+- **Retries**: none, except the one OAuth refresh replay on a `401`. That replay
+  resends in-memory bodies (any size, the same object). A `ReadableStream` body
+  is sent once: the client refreshes the token and returns the `401`, so resend
+  it yourself. A redirect that would resend a stream body also comes back to
+  you.
+- **Errors**: a failure that is not an HTTP status throws one of:
+
+| `name`             | `code`                                                         | When                                                              |
+| ------------------ | -------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `AbortError`       | (none)                                                         | Your `AbortSignal` fired. The upload and the gateway hop stop.    |
+| `KodyGatewayError` | Kody's error code (`payload_too_large`, `host_not_allowed`, …) | Kody refused or failed the hop. `status` is Kody's HTTP status.   |
+| `KodyGatewayError` | `gateway_fetch_failed`, `gateway_failed`                       | The CLI could not finish the hop to Kody (network, disconnect).   |
+| `KodyGatewayError` | `stream_host_missing`                                          | The CLI is too old to stream this body. Upgrade `@kodycodes/cli`. |
+
+Each has `mayHaveReachedOrigin` (boolean). `false` means no byte of this request
+reached the service, so it is safe to resend. `true` means some may have: ask
+the service for its state (for a resumable upload, query the session's received
+range) before resending.
+
+Use chunks that are a multiple of 256 KiB; 8 MiB is a good default. Bigger
+chunks mean fewer requests but more to resend after a failure, and each must
+stay under 100 MiB.
+
 ## Limits
 
 - Using a personal MCP server through `credential()`. Add the MCP server to the
@@ -804,17 +914,17 @@ it and revokes it with the provider where the provider supports that. See
 - Declaring OAuth scopes on a need. A missing scope shows up as a 401 or 403
   with `x-kody-credential-hint`.
 
-## Leftover secret mounts
+## Secret mounts for bundled dependents
 
-Older packages declared `kody.secretMounts` and read them with
-`packageSecrets.get`. That call returns an opaque `{{secret:…}}` ref. A
-dependent that statically imported the package bundled that call. The bundled
-copy still resolves the alias against the dependency's **current** published
-manifest, not the commit it was built from.
+Packages that declare `kody.secretMounts` and read them with
+`packageSecrets.get` get an opaque `{{secret:…}}` ref. A dependent that
+statically imported the package bundled that call. The bundled copy still
+resolves the alias against the dependency's **current** published manifest, not
+the commit it was built from.
 
 Publish may keep those mount declarations when the package's own source uses
-`kody.credentials` and does not call `packageSecrets.get`. Keeping a mount is a
-compatibility lane for those stale bundles. It grants nothing new:
+`kody.credentials` and does not call `packageSecrets.get`. A kept mount grants
+nothing new:
 
 - Resolution still reads only the mounts on the current manifest. There is no
   alias fallback, no history of old mounts, and no commit-pinned lookup.

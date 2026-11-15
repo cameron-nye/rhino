@@ -1,5 +1,6 @@
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
 import { getAppBaseUrl } from '#worker/app-base-url.ts'
+import { readRequestBodyUpTo } from '#worker/read-request-body-up-to.ts'
 import {
 	AccountDeletionInProgressError,
 	assertAccountWritable,
@@ -44,9 +45,12 @@ import {
 	verifyWebhookHmacSignature,
 } from './crypto.ts'
 import {
+	type AckWebhookDelivery,
 	dispatchWebhookInvocation,
+	markAckWebhookDelivery,
 	readWebhookInvocationResult,
 	recordWebhookDelivery,
+	webhookAckQueuedHoldMs,
 } from './delivery.ts'
 import {
 	createWebhookDispatchQueueMessage,
@@ -397,26 +401,15 @@ async function readBodyWithCap(
 	| { ok: true; bytes: Uint8Array }
 	| { ok: false; response: Response; payloadBytes: number }
 > {
-	const contentLengthHeader = request.headers.get('content-length')
-	if (contentLengthHeader) {
-		const contentLength = Number(contentLengthHeader)
-		if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-			return {
-				ok: false,
-				response: tooLargeResponse(),
-				payloadBytes: contentLength,
-			}
-		}
-	}
-	const buffer = await request.arrayBuffer()
-	if (buffer.byteLength > maxBytes) {
+	const read = await readRequestBodyUpTo(request, maxBytes)
+	if (!read.ok) {
 		return {
 			ok: false,
 			response: tooLargeResponse(),
-			payloadBytes: buffer.byteLength,
+			payloadBytes: read.byteLength,
 		}
 	}
-	return { ok: true, bytes: new Uint8Array(buffer) }
+	return { ok: true, bytes: read.bytes }
 }
 
 async function runWithTimeout<T>(
@@ -1069,12 +1062,58 @@ export async function handleWebhookIngressRequest(
 			})
 			return ackQueueMessageTooLargeResponse()
 		}
+		const ackDelivery: AckWebhookDelivery = {
+			endpoint: message.endpoint,
+			kodyId: savedPackage.kodyId,
+			deliveryId,
+			payloadBytes: bodyBytes.byteLength,
+			receivedAt,
+		}
+		// The row exists before the 202 so an accepted delivery is never
+		// invisible, even when its consumer is killed before it records.
+		const accepted = await markAckWebhookDelivery({
+			env,
+			delivery: ackDelivery,
+			state: 'accepted',
+			holdMs: webhookAckQueuedHoldMs,
+			enablement: plan.runs[0],
+		})
+		if (!accepted) {
+			if (message.payloadKvKey) {
+				await deleteWebhookDispatchPayload({
+					kv: env.BUNDLE_ARTIFACTS_KV,
+					key: message.payloadKvKey,
+				}).catch((error) => {
+					console.error('webhook-dispatch-payload-delete-failed', {
+						endpointId: liveEndpoint.id,
+						error,
+					})
+				})
+			}
+			console.error('webhook-dispatch-accept-record-failed', {
+				endpointId: liveEndpoint.id,
+				deliveryId,
+			})
+			return dispatchUnavailableResponse()
+		}
 		try {
 			await enqueueWebhookDispatch({
 				queue: env.WEBHOOK_DISPATCH_QUEUE,
 				message,
 			})
 		} catch (error) {
+			await recordWebhookDelivery({
+				env,
+				endpoint: liveEndpoint,
+				kodyId: savedPackage.kodyId,
+				outcome: 'failed',
+				httpStatus: 503,
+				error: 'dispatch_unavailable',
+				payloadBytes: bodyBytes.byteLength,
+				invocationId: deliveryId,
+				startedAt: receivedAt,
+				waitUntil,
+			})
 			if (message.payloadKvKey) {
 				await deleteWebhookDispatchPayload({
 					kv: env.BUNDLE_ARTIFACTS_KV,
@@ -1092,46 +1131,17 @@ export async function handleWebhookIngressRequest(
 			})
 			return dispatchUnavailableResponse()
 		}
-		// The queue send has resolved. Record acceptance and retire rotate
-		// overlap after the 202 so a sender that drops the connection at about
-		// 2 seconds still sees success, and so the delivery log survives that
-		// disconnect. Without ctx (the Start route), await the follow-up so
-		// the row and retire still happen.
-		const acceptedFollowUp = Promise.all([
-			recordWebhookDelivery({
-				env,
-				endpoint: liveEndpoint,
-				kodyId: savedPackage.kodyId,
-				outcome: 'accepted',
-				httpStatus: 202,
-				payloadBytes: bodyBytes.byteLength,
-				invocationId: deliveryId,
-				startedAt: receivedAt,
-			}).catch((error: unknown) => {
-				console.error('webhook-acceptance-record-failed', {
-					endpointId: liveEndpoint.id,
-					error,
-				})
-			}),
-			retirePreviousWebhookUrlIfConfirmed({
-				env,
-				endpoint: liveEndpoint,
-				secretMatch,
-			}).catch((error: unknown) => {
-				console.error('webhook-previous-url-retire-failed', {
-					endpointId: liveEndpoint.id,
-					error,
-				})
-			}),
-			retirePreviousWebhookHmacIfConfirmed({
-				env,
-				endpoint: liveEndpoint,
-				matchedSource: matchedHmacSource,
-				previousHmacSecretEncrypted: observedPreviousHmacCiphertext,
-			}),
-		])
-		if (waitUntil) waitUntil(acceptedFollowUp)
-		else await acceptedFollowUp
+		await retirePreviousWebhookUrlIfConfirmed({
+			env,
+			endpoint: liveEndpoint,
+			secretMatch,
+		})
+		await retirePreviousWebhookHmacIfConfirmed({
+			env,
+			endpoint: liveEndpoint,
+			matchedSource: matchedHmacSource,
+			previousHmacSecretEncrypted: observedPreviousHmacCiphertext,
+		})
 		return jsonResponse({ ok: true }, { status: 202 })
 	}
 
@@ -1178,7 +1188,7 @@ export async function handleWebhookIngressRequest(
 		const placementRefusal = ok
 			? null
 			: readCredentialPlacementRefusalFromInvocationBody(response.body)
-		await recordWebhookDelivery({
+		const deliveryRun = await recordWebhookDelivery({
 			env,
 			endpoint: liveEndpoint,
 			kodyId: savedPackage.kodyId,
@@ -1202,11 +1212,9 @@ export async function handleWebhookIngressRequest(
 				{
 					ok: false,
 					error: placementRefusal
-						? buildCredentialPlacementRefusedWebhookError(placementRefusal.slot)
-						: {
-								code: 'invocation_failed',
-								message: 'Bound package export invocation failed.',
-							},
+						? buildCredentialPlacementRefusedWebhookError(placementRefusal)
+						: invocationFailedWebhookError,
+					...webhookRunReference(deliveryRun),
 				},
 				{ status: 502 },
 			)
@@ -1222,7 +1230,7 @@ export async function handleWebhookIngressRequest(
 		})
 		return jsonResponse(response.body, { status: response.status })
 	} catch (error) {
-		await recordWebhookDelivery({
+		const deliveryRun = await recordWebhookDelivery({
 			env,
 			endpoint: liveEndpoint,
 			kodyId: savedPackage.kodyId,
@@ -1237,12 +1245,25 @@ export async function handleWebhookIngressRequest(
 		return jsonResponse(
 			{
 				ok: false,
-				error: {
-					code: 'invocation_failed',
-					message: 'Bound package export invocation failed.',
-				},
+				error: invocationFailedWebhookError,
+				...webhookRunReference(deliveryRun),
 			},
 			{ status: 502 },
 		)
 	}
+}
+
+const invocationFailedWebhookError = {
+	code: 'invocation_failed',
+	message:
+		'Bound package export invocation failed. The package owner can open this run in Activity to see why.',
+}
+
+/**
+ * The delivery run's id, so a caller can hand the owner a reference to the
+ * Activity run that holds the full error. Omitted when the run was not
+ * recorded.
+ */
+function webhookRunReference(run: { id: string } | null) {
+	return run ? { runId: run.id } : {}
 }

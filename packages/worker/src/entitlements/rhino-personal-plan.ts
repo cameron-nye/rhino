@@ -4,7 +4,7 @@
  * plan math stays in `#universal/plans.ts`. Set {@link rhinoPersonalUse}
  * false to resolve the stored plan again.
  */
-import { type PlanName } from '#universal/plans.ts'
+import type { PlanName } from '#universal/plans.ts'
 import { rhinoPersonalUse } from '../../start/brand/rhino-personal.ts'
 
 export function resolveRhinoPersonalUsePlan(plan: PlanName): PlanName {

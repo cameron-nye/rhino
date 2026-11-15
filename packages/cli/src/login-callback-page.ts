@@ -17,7 +17,7 @@ export type LoginCallbackAccount = {
 	username?: string
 }
 
-export type LoginCallbackSuccess = {
+type LoginCallbackSuccess = {
 	kind: 'success'
 	org?: string
 	account?: LoginCallbackAccount
@@ -30,7 +30,7 @@ export type LoginCallbackErrorKind =
 	| 'failed'
 	| 'save_failed'
 
-export type LoginCallbackError = {
+type LoginCallbackError = {
 	kind: 'error'
 	error: LoginCallbackErrorKind
 }

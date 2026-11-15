@@ -30,15 +30,16 @@ import {
 	getSavedPackageById,
 	updateSavedPackage,
 } from '#worker/package-registry/repo.ts'
-import { type SavedPackageRecord } from '#worker/package-registry/types.ts'
+import type { SavedPackageRecord } from '#worker/package-registry/types.ts'
 import { getEntitySourceById } from '#worker/repo/entity-sources.ts'
+import { isArtifactsHeadChangedBeforePublishMessage } from '#worker/repo/publish-concurrency-caller-error.ts'
 import { repoSessionRpc } from '#worker/repo/repo-session-rpc.ts'
 import { getRepoSessionById } from '#worker/repo/repo-sessions.ts'
-import {
-	type RepoExternalPublishResult,
-	type RepoSessionPublishResult,
+import type {
+	RepoExternalPublishResult,
+	RepoSessionPublishResult,
 } from '#worker/repo/types.ts'
-import { type AccountPackagePendingApproval } from '#universal/loader-data.ts'
+import type { AccountPackagePendingApproval } from '#universal/loader-data.ts'
 
 function reasonLabel(reason: PackageApprovalReason) {
 	switch (reason) {
@@ -194,6 +195,9 @@ export async function approveCredentialNeedsRequest(input: {
 	if (!approval || approval.reason !== 'credential_needs_changed') {
 		return { ok: false, status: 404, error: 'Approval request not found.' }
 	}
+	// A repeat click (often after the page timed out while this approval was
+	// still finishing) must not report a failure for work that landed.
+	if (approval.status === 'approved') return { ok: true }
 	if (approval.status !== 'pending') {
 		return {
 			ok: false,
@@ -326,9 +330,12 @@ export async function approveCredentialNeedsRequest(input: {
 				requestUrl: input.request.url,
 			}),
 			rebuildPackageArtifacts: true,
+			// The rebuild below bundles every target; validating them first too
+			// doubled the approval time past the page's request timeout.
+			deferBundleCheckToRebuild: true,
 		})
 	} catch (error) {
-		if (getErrorMessage(error).includes('Artifacts HEAD changed from')) {
+		if (isArtifactsHeadChangedBeforePublishMessage(getErrorMessage(error))) {
 			return await supersede()
 		}
 		throw error
@@ -385,6 +392,7 @@ export async function approveWentPublicRequest(input: {
 	if (!approval || approval.reason !== 'went_public') {
 		return { ok: false, status: 404, error: 'Approval request not found.' }
 	}
+	if (approval.status === 'approved') return { ok: true }
 	if (approval.status !== 'pending') {
 		return {
 			ok: false,
@@ -492,6 +500,12 @@ export async function approveWentPublicRequest(input: {
 		resolvedByUserId: input.actorUserId,
 	})
 	if (!resolved) {
+		const current = await getPackageApprovalRequest(input.env.APP_DB, {
+			id: approval.id,
+			packageId: input.savedPackage.id,
+			ownerUserId: input.ownerUserId,
+		})
+		if (current?.status === 'approved') return { ok: true }
 		return {
 			ok: false,
 			status: 409,

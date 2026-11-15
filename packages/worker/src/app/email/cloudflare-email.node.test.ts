@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { consoleInfo, consoleWarn } from '#worker/test-support/console-spies.ts'
 import { createMswNodeServer } from '#worker/test-support/msw-node-server.ts'
@@ -287,3 +287,60 @@ test('sendCloudflareEmail defaults Reply-To to support@ when From is kody@ unles
 		['alice@inbox.kody.codes', undefined, false, false],
 	])
 })
+
+test('sendCloudflareEmail preserves one retry for transactional transport failures by default', async () => {
+	consoleWarn.mockImplementation(() => {})
+	const lost = () =>
+		Object.assign(new Error('Network connection lost.'), { retryable: true })
+	const fetchSpy = vi
+		.spyOn(globalThis, 'fetch')
+		.mockRejectedValueOnce(lost())
+		.mockResolvedValueOnce(
+			Response.json({
+				success: true,
+				errors: [],
+				result: { delivered: ['user@example.com'], permanent_bounces: [] },
+			}),
+		)
+		.mockRejectedValueOnce(lost())
+		.mockRejectedValueOnce(lost())
+	try {
+		expect(
+			await sendCloudflareEmail(testApiConfig, message('Retry once')),
+		).toMatchObject({ ok: true })
+		expect(fetchSpy).toHaveBeenCalledTimes(2)
+
+		expect(
+			await sendCloudflareEmail(testApiConfig, message('Retry exhausted')),
+		).toEqual({ ok: false, error: 'Network connection lost.' })
+		expect(fetchSpy).toHaveBeenCalledTimes(4)
+	} finally {
+		fetchSpy.mockRestore()
+	}
+})
+
+test.each([true, false])(
+	'sendCloudflareEmail disables transport retries when requested (retryable=%s)',
+	async (retryable) => {
+		consoleWarn.mockImplementation(() => {})
+		const lost = Object.assign(new Error('Network connection lost.'), {
+			retryable,
+		})
+		const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(lost)
+		try {
+			expect(
+				await sendCloudflareEmail(
+					{ ...testApiConfig, retryTransportErrors: false },
+					message('Newsletter', { from: 'news@kody.dev' }),
+				),
+			).toEqual({ ok: false, error: 'Network connection lost.' })
+			expect(fetchSpy).toHaveBeenCalledTimes(1)
+			expect(consoleWarn).toHaveBeenCalledExactlyOnceWith(
+				'cloudflare-email-api-request-failed',
+				lost,
+			)
+		} finally {
+			fetchSpy.mockRestore()
+		}
+	},
+)

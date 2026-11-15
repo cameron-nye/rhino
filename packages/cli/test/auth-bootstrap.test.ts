@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
-import { type AddressInfo } from 'node:net'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, test } from 'node:test'
@@ -15,18 +15,34 @@ import {
 	resolveCliTokenLifetime,
 } from '../src/auth-bootstrap.js'
 import {
+	deleteStoredApiToken,
 	loadStoredApiToken,
 	parseStoredApiToken,
 	saveStoredApiToken,
-	type StoredApiToken,
 } from '../src/api-token-store.js'
 import { resolveLocalExecuteBearer, runCli } from '../src/cli.js'
-import { createFileBackend } from '../src/store.js'
+import {
+	createFileBackend,
+	deleteCredentials,
+	loadCredentials,
+} from '../src/store.js'
 import { redact } from '../src/redact.js'
 
 /** Matches platform `kody_bc_<16>_<32 base64url>`. */
 const goodCode = `kody_bc_${'a'.repeat(16)}_${'B'.repeat(32)}`
 const goodToken = 'kody_at_test_secret_value_do_not_print'
+
+const unreachableMcpUrl = 'http://127.0.0.1:9/unreachable-mcp'
+
+/**
+ * Windows keeps the saved CLI credential in the per-user OS keyring, not under
+ * HOME, so drop anything a runCli test saved before the next test runs.
+ */
+function clearSavedCredentials(mcpUrl: string) {
+	for (let i = 0; i < 5; i++) {
+		if (!deleteCredentials(mcpUrl).deleted) return
+	}
+}
 
 type RedeemRequest = {
 	method: string
@@ -63,7 +79,10 @@ before(async () => {
 			authorization: request.headers.authorization ?? null,
 			body,
 		})
-		response.writeHead(redeemStatus, { 'content-type': 'application/json' })
+		response.writeHead(redeemStatus, {
+			'content-type': 'application/json',
+			connection: 'close',
+		})
 		response.end(JSON.stringify(redeemBody))
 	})
 	await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -196,16 +215,51 @@ test('authBootstrap redeems and stores without exposing the token in returned me
 	assert.equal(result.stored.createdVia, 'cli-bootstrap')
 	assert.deepEqual(result.stored.scopes, ['account:read', 'local-execute'])
 	assert.deepEqual(requests[0]?.body, { code: goodCode, lifetime: 'short' })
-	const loaded = loadStoredApiToken(apiUrl, backend)
-	assert.equal(loaded?.token, goodToken)
-	assert.equal(loaded?.tokenId, 'tok_bootstrap_1')
+	// Saved in the slot and shape `kody login` uses, not a separate API-token slot.
+	const loaded = loadCredentials(undefined, backend)
+	assert.equal(loaded?.accessToken, goodToken)
+	assert.equal(loaded?.refreshToken, undefined)
+	assert.equal(loaded?.scope, 'account:read local-execute')
 	assert.ok(backend.path)
-	const onDisk = JSON.parse(
-		readFileSync(backend.path, 'utf8'),
-	) as StoredApiToken
-	assert.equal(onDisk.token, goodToken)
-	assert.equal(onDisk.version, 1)
-	assert.equal('lifetime' in onDisk, false)
+	assert.match(readFileSync(backend.path, 'utf8'), /"accessToken"/)
+})
+
+test('authBootstrap saves the login org the redeem response names', async () => {
+	reset()
+	redeemBody = {
+		...(redeemBody as Record<string, unknown>),
+		login_org: { slug: 'acme' },
+	}
+	const backend = tempBackend()
+	await authBootstrap({ code: goodCode, apiUrl, backend, fetchFn: fetch })
+	assert.deepEqual(requests[0]?.body, { code: goodCode })
+	assert.equal(
+		loadCredentials(undefined, backend, undefined, { org: 'acme' })?.org,
+		'acme',
+	)
+})
+
+test('authBootstrap refuses to park an org-less token behind the active org login', async () => {
+	reset()
+	redeemBody = {
+		...(redeemBody as Record<string, unknown>),
+		login_org: { slug: 'acme' },
+	}
+	const backend = tempBackend()
+	await authBootstrap({ code: goodCode, apiUrl, backend, fetchFn: fetch })
+	reset()
+	redeemBody = {
+		...(redeemBody as Record<string, unknown>),
+		token: 'kody_at_test_wider_secret_do_not_print',
+	}
+	await assert.rejects(
+		() => authBootstrap({ code: goodCode, apiUrl, backend, fetchFn: fetch }),
+		(error: Error) =>
+			/named no org/.test(error.message) &&
+			/logout --org acme/.test(error.message) &&
+			!error.message.includes('kody_at_'),
+	)
+	assert.equal(loadCredentials(undefined, backend)?.accessToken, goodToken)
 })
 
 test('runCli auth bootstrap redeems and never prints the kody_at_ token', async () => {
@@ -215,6 +269,14 @@ test('runCli auth bootstrap redeems and never prints the kody_at_ token', async 
 	const previousHome = process.env.HOME
 	process.env.XDG_CONFIG_HOME = home
 	process.env.HOME = home
+	// Windows keeps CLI config under %APPDATA%, and the OS keyring is per user
+	// (not per HOME), so clear any token an earlier test stored for apiUrl.
+	const previousAppData = process.env.APPDATA
+	process.env.APPDATA = home
+	deleteStoredApiToken(apiUrl)
+	const previousMcpUrl = process.env.KODY_MCP_URL
+	process.env.KODY_MCP_URL = unreachableMcpUrl
+	clearSavedCredentials(unreachableMcpUrl)
 	let stdout = ''
 	try {
 		const code = await runCli(
@@ -235,7 +297,7 @@ test('runCli auth bootstrap redeems and never prints the kody_at_ token', async 
 			},
 		)
 		assert.equal(code, 0)
-		assert.match(stdout, /Bootstrap API token stored/)
+		assert.match(stdout, /Saved as the CLI credential/)
 		assert.match(stdout, /tok_bootstrap_1/)
 		assert.match(stdout, /local-execute/)
 		assert.doesNotMatch(stdout, /kody_at_/)
@@ -246,35 +308,23 @@ test('runCli auth bootstrap redeems and never prints the kody_at_ token', async 
 		assert.equal(requests[0]?.authorization, null)
 		assert.deepEqual(requests[0]?.body, { code: goodCode, lifetime: 'short' })
 	} finally {
+		// Clean up while the temp home is still active.
+		deleteStoredApiToken(apiUrl)
+		clearSavedCredentials(unreachableMcpUrl)
 		if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME
 		else process.env.XDG_CONFIG_HOME = previousXdg
 		if (previousHome === undefined) delete process.env.HOME
 		else process.env.HOME = previousHome
+		if (previousAppData === undefined) delete process.env.APPDATA
+		else process.env.APPDATA = previousAppData
+		if (previousMcpUrl === undefined) delete process.env.KODY_MCP_URL
+		else process.env.KODY_MCP_URL = previousMcpUrl
 	}
 })
 
-test('runCli auth bootstrap fails clearly when lifetime is missing', async () => {
-	reset()
-	let stderr = ''
-	const code = await runCli(
-		['auth', 'bootstrap', '--code', goodCode, '--api-url', apiUrl],
-		{
-			stderr: (text) => {
-				stderr += text
-			},
-		},
-	)
-	assert.equal(code, 1)
-	assert.match(stderr, /Token lifetime is required/)
-	assert.match(stderr, /--lifetime short\|long/)
-	assert.match(stderr, /--idle-ttl-seconds/)
-	assert.match(stderr, /--max-lifetime-seconds/)
-	assert.match(stderr, /Single-task agents should use --lifetime short/)
-	assert.equal(requests.length, 0)
-})
-
-test('resolveLocalExecuteBearer prefers stored bootstrap token over login OAuth', async () => {
+test('resolveLocalExecuteBearer adopts an old-slot bootstrap token into the saved credential', async () => {
 	const backend = tempBackend()
+	const loginBackend = tempBackend()
 	saveStoredApiToken(
 		{
 			version: 1,
@@ -291,13 +341,14 @@ test('resolveLocalExecuteBearer prefers stored bootstrap token over login OAuth'
 		env: {},
 		apiUrl: 'https://api.kody.codes',
 		apiTokenBackend: backend,
-		ensureCredentials: async () => {
-			throw new Error(
-				'login should not be consulted when bootstrap token is stored',
-			)
-		},
+		backend: loginBackend,
 	})
 	assert.equal(token, 'kody_at_stored_bootstrap')
+	assert.equal(loadStoredApiToken('https://api.kody.codes', backend), null)
+	assert.equal(
+		loadCredentials(undefined, loginBackend)?.accessToken,
+		'kody_at_stored_bootstrap',
+	)
 })
 
 test('resolveLocalExecuteBearer still prefers --token over stored bootstrap', async () => {
@@ -316,6 +367,7 @@ test('resolveLocalExecuteBearer still prefers --token over stored bootstrap', as
 		env: {},
 		apiUrl: 'https://api.kody.codes',
 		apiTokenBackend: backend,
+		backend: tempBackend(),
 		ensureCredentials: async () => {
 			throw new Error('login should not run')
 		},
@@ -331,8 +383,14 @@ test('whoami uses stored bootstrap token without env, --token, or login', async 
 	const previousMcpUrl = process.env.KODY_MCP_URL
 	process.env.XDG_CONFIG_HOME = home
 	process.env.HOME = home
+	// Windows keeps CLI config under %APPDATA%, and the OS keyring is per user
+	// (not per HOME), so clear any token an earlier test stored for apiUrl.
+	const previousAppData = process.env.APPDATA
+	process.env.APPDATA = home
+	deleteStoredApiToken(apiUrl)
 	delete process.env.KODY_API_TOKEN
-	process.env.KODY_MCP_URL = 'http://127.0.0.1:9/unreachable-mcp'
+	process.env.KODY_MCP_URL = unreachableMcpUrl
+	clearSavedCredentials(unreachableMcpUrl)
 	const storedToken = 'kody_at_whoami_stored'
 	saveStoredApiToken({
 		version: 1,
@@ -341,7 +399,7 @@ test('whoami uses stored bootstrap token without env, --token, or login', async 
 		tokenId: 'tok_whoami_stored',
 		scopes: ['account:read', 'local-execute'],
 		createdVia: 'cli-bootstrap',
-		expiresAt: '2026-10-02T12:00:00.000Z',
+		expiresAt: '2099-10-02T12:00:00.000Z',
 	})
 	const authHeaders: Array<string | null> = []
 	const previousFetch = globalThis.fetch
@@ -358,7 +416,7 @@ test('whoami uses stored bootstrap token without env, --token, or login', async 
 					id: 'tok_whoami_stored',
 					name: 'kody-cli-bootstrap',
 					scopes: ['account:read', 'local-execute'],
-					expires_at: '2026-10-02T12:00:00.000Z',
+					expires_at: '2099-10-02T12:00:00.000Z',
 					max_expires_at: null,
 				}),
 				{ status: 200 },
@@ -390,10 +448,15 @@ test('whoami uses stored bootstrap token without env, --token, or login', async 
 		assert.equal(code, 0, stderr)
 	} finally {
 		globalThis.fetch = previousFetch
+		// Clean up while the temp home is still active.
+		deleteStoredApiToken(apiUrl)
+		clearSavedCredentials(unreachableMcpUrl)
 		if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME
 		else process.env.XDG_CONFIG_HOME = previousXdg
 		if (previousHome === undefined) delete process.env.HOME
 		else process.env.HOME = previousHome
+		if (previousAppData === undefined) delete process.env.APPDATA
+		else process.env.APPDATA = previousAppData
 		if (previousToken === undefined) delete process.env.KODY_API_TOKEN
 		else process.env.KODY_API_TOKEN = previousToken
 		if (previousMcpUrl === undefined) delete process.env.KODY_MCP_URL
@@ -414,8 +477,14 @@ test('search uses stored bootstrap token without env, --token, or login', async 
 	const previousMcpUrl = process.env.KODY_MCP_URL
 	process.env.XDG_CONFIG_HOME = home
 	process.env.HOME = home
+	// Windows keeps CLI config under %APPDATA%, and the OS keyring is per user
+	// (not per HOME), so clear any token an earlier test stored for apiUrl.
+	const previousAppData = process.env.APPDATA
+	process.env.APPDATA = home
+	deleteStoredApiToken(apiUrl)
 	delete process.env.KODY_API_TOKEN
-	process.env.KODY_MCP_URL = 'http://127.0.0.1:9/unreachable-mcp'
+	process.env.KODY_MCP_URL = unreachableMcpUrl
+	clearSavedCredentials(unreachableMcpUrl)
 	const storedToken = 'kody_at_search_stored'
 	saveStoredApiToken({
 		version: 1,
@@ -458,10 +527,15 @@ test('search uses stored bootstrap token without env, --token, or login', async 
 		assert.equal(code, 0, stderr)
 	} finally {
 		globalThis.fetch = previousFetch
+		// Clean up while the temp home is still active.
+		deleteStoredApiToken(apiUrl)
+		clearSavedCredentials(unreachableMcpUrl)
 		if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME
 		else process.env.XDG_CONFIG_HOME = previousXdg
 		if (previousHome === undefined) delete process.env.HOME
 		else process.env.HOME = previousHome
+		if (previousAppData === undefined) delete process.env.APPDATA
+		else process.env.APPDATA = previousAppData
 		if (previousToken === undefined) delete process.env.KODY_API_TOKEN
 		else process.env.KODY_API_TOKEN = previousToken
 		if (previousMcpUrl === undefined) delete process.env.KODY_MCP_URL
@@ -507,15 +581,17 @@ test('redeemBootstrapCode surfaces already-used codes clearly', async () => {
 				apiUrl,
 				fetchFn: fetch,
 			}),
-		/already used|expired|invalid/i,
+		(error: unknown) => {
+			const text = String(error)
+			assert.match(text, /already used/)
+			assert.match(text, /cliCredentialBootstrap/)
+			return true
+		},
 	)
 })
 
-test('redeemBootstrapCode rejects missing lifetime before calling the API', async () => {
+test('redeemBootstrapCode without a lifetime sends only the code', async () => {
 	reset()
-	await assert.rejects(
-		() => redeemBootstrapCode({ code: goodCode, apiUrl, fetchFn: fetch }),
-		/--lifetime short\|long/,
-	)
-	assert.equal(requests.length, 0)
+	await redeemBootstrapCode({ code: goodCode, apiUrl, fetchFn: fetch })
+	assert.deepEqual(requests[0]?.body, { code: goodCode })
 })

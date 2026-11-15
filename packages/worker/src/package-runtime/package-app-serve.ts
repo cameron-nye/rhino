@@ -1,8 +1,8 @@
 import { packageAppVisitorNeedKeyPattern } from '#worker/package-registry/types.ts'
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
-import {
-	type RuntimePackageAppIdentity,
-	type RuntimePackageAppVisitor,
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import type {
+	RuntimePackageAppIdentity,
+	RuntimePackageAppVisitor,
 } from '@kody-internal/shared/runtime-worker.ts'
 import * as Sentry from '@sentry/cloudflare'
 import { waitUntil as scheduleWorkerWaitUntil } from 'cloudflare:workers'
@@ -31,6 +31,9 @@ import {
 	findLivePackageAppOauthGrant,
 	notePackageAppOauthGrantUse,
 } from '#app/package-app-oauth-grants.ts'
+import { buildPackagePublishApprovalUrl } from '#worker/package-registry/package-publish-lock.ts'
+import { resolveCachedArtifactSourceHead } from '#worker/repo/artifact-head-cache.ts'
+import { isPackageSourceNotPublishedError } from '#worker/repo/source-not-published-error.ts'
 import {
 	getAppBaseUrl,
 	getCanonicalAppBaseUrl,
@@ -56,6 +59,9 @@ import {
 	logPackageAppHttpError,
 	packageAppRuntimeRunIdHeader,
 	runtimeRunIdFromError,
+	packageAppRequestIdFromRequest,
+	withForwardedPackageAppRequestId,
+	withPackageAppRequestId,
 } from '#worker/package-runtime/package-app-diagnostics.ts'
 import { isComputeOverageLimitError } from '#worker/entitlements/errors.ts'
 import { beginRunRecord, finishRunRecord } from '#worker/run-records/service.ts'
@@ -65,8 +71,11 @@ import {
 	resolveSavedPackageForPackageAppSlug,
 } from '#worker/package-invocations/module-artifacts.ts'
 import { getPackageNameLeaf } from '#worker/package-registry/package-name.ts'
-import { getPackageAppClientReadableCookieNames } from '#worker/package-registry/manifest.ts'
-import { loadPackageSourceBySourceId } from '#worker/package-registry/source.ts'
+import {
+	getPackageAppAnonymousRealtimeMode,
+	getPackageAppClientReadableCookieNames,
+} from '#worker/package-registry/manifest.ts'
+import { loadServingPackageSourceBySourceId } from '#worker/package-registry/source.ts'
 import { newRunCredentialClientBinding } from '#worker/credentials/credential-client-handle.ts'
 import { loadPublishedCredentialNeeds } from '#worker/credentials/credential-needs-closure.ts'
 import { savedCredentialNeeds } from '#worker/credentials/credential-needs.ts'
@@ -101,7 +110,14 @@ import {
 	endPackageAppVisit,
 	withPackageAppVisitTicket,
 } from '#worker/package-runtime/package-app-visit-ticket.ts'
-import { packageRealtimeSessionRpc } from '#worker/package-runtime/realtime-session.ts'
+import {
+	packageRealtimeSessionRpc,
+	type PackageRealtimeConnectOptions,
+} from '#worker/package-runtime/realtime-session.ts'
+import {
+	decidePublicRealtimeAccess,
+	hashRealtimeClientIp,
+} from '#worker/package-runtime/package-app-public-realtime.ts'
 import { isWebSocketUpgradeRequest } from '#worker/package-runtime/websocket-upgrade.ts'
 import {
 	anonymousRefusalResponse,
@@ -140,6 +156,16 @@ export type PackageAppPath = {
 	openHandoff?: boolean
 }
 
+/**
+ * App path below the package leaf. A trailing slash is part of the URL the
+ * visitor asked for, so it is forwarded as-is: an app that canonicalizes
+ * `/admin` to `/admin/` would otherwise redirect to itself forever.
+ */
+function packageAppRestPath(parts: Array<string>, pathname: string) {
+	if (parts.length === 0) return '/'
+	return `/${parts.join('/')}${pathname.endsWith('/') ? '/' : ''}`
+}
+
 export function parsePackageAppPath(pathname: string): PackageAppPath | null {
 	const parts = pathname.split('/').filter(Boolean)
 	const rawUsername = parts[0]?.startsWith('@') ? parts[0].slice(1) : ''
@@ -161,7 +187,7 @@ export function parsePackageAppPath(pathname: string): PackageAppPath | null {
 	return {
 		username,
 		kodyId,
-		restPath: restParts.length > 0 ? `/${restParts.join('/')}` : '/',
+		restPath: packageAppRestPath(restParts, pathname),
 		mount: 'username-path',
 		...(openHandoff ? { openHandoff: true } : {}),
 	}
@@ -196,10 +222,7 @@ export function parsePackageAppSubdomainPath(input: {
 	return {
 		username: input.username,
 		kodyId,
-		restPath:
-			parts.length > leafIndex + 1
-				? `/${parts.slice(leafIndex + 1).join('/')}`
-				: '/',
+		restPath: packageAppRestPath(parts.slice(leafIndex + 1), input.pathname),
 		mount: 'user-subdomain',
 	}
 }
@@ -219,7 +242,7 @@ export function parsePackageAppCustomHostnamePath(input: {
 	return {
 		username: input.username,
 		kodyId: input.kodyId,
-		restPath: parts.length > 0 ? `/${parts.join('/')}` : '/',
+		restPath: packageAppRestPath(parts, pathname),
 		mount: 'custom-hostname',
 	}
 }
@@ -421,6 +444,16 @@ function resolveExpectedPackageAppHostSetupFailure(input: {
 	packageName: string
 	synthetic?: boolean
 }): Response | null {
+	if (isPackageSourceNotPublishedError(input.error)) {
+		return createPackageAppErrorResponse({
+			request: input.request,
+			kind: 'not-published',
+			kodyId: input.kodyId,
+			packageName: input.packageName,
+			synthetic: input.synthetic,
+			cause: input.error.message,
+		})
+	}
 	if (isComputeOverageLimitError(input.error)) {
 		return createPackageAppErrorResponse({
 			request: input.request,
@@ -451,13 +484,24 @@ type PackageAppFailureKind =
 	| 'realtime-connect'
 	| 'include-used-up'
 	| 'runtime-bundle-pending'
+	| 'not-published'
+	| 'publish-pending'
+
+/** Pushed package repo HEAD that is newer than the commit being served. */
+type UnpublishedChanges = {
+	publishedCommit: string
+	headCommit: string
+	publishUrl: string
+}
 
 function packageAppFailureStatus(kind: PackageAppFailureKind) {
 	switch (kind) {
 		case 'include-used-up':
 			return 429
 		case 'runtime-bundle-pending':
+		case 'not-published':
 			return 503
+		case 'publish-pending':
 		case 'host-setup':
 		case 'package-entrypoint':
 		case 'realtime-connect':
@@ -467,6 +511,52 @@ function packageAppFailureStatus(kind: PackageAppFailureKind) {
 			void exhaustive
 			return 500
 		}
+	}
+}
+
+/**
+ * When the served commit fails a page load, tell someone who can publish that
+ * newer pushed commits are waiting. Only owners and admins loading an HTML page
+ * see it; API callers and other visitors keep the app's own response.
+ */
+async function resolveUnpublishedChanges(input: {
+	env: Env
+	request: Request
+	visitor: RuntimePackageAppVisitor | null
+	synthetic: boolean
+	repoId: string | null
+	publishedCommit: string | null
+	username: string
+	kodyId: string
+}): Promise<UnpublishedChanges | null> {
+	const role = input.visitor?.role
+	if (role !== 'owner' && role !== 'admin') return null
+	if (input.synthetic || !input.repoId || !input.publishedCommit) return null
+	if (input.request.method !== 'GET' && input.request.method !== 'HEAD') {
+		return null
+	}
+	const accept = input.request.headers.get('accept') ?? ''
+	if (!accept.includes('text/html') || wantsJson(input.request)) return null
+	try {
+		const head = await resolveCachedArtifactSourceHead(
+			input.env,
+			input.repoId,
+			{ request: input.request },
+		)
+		if (!head.commit || head.commit === input.publishedCommit) return null
+		return {
+			publishedCommit: input.publishedCommit,
+			headCommit: head.commit,
+			publishUrl: buildPackagePublishApprovalUrl({
+				baseUrl: getCanonicalAppBaseUrl({ env: input.env }),
+				username: input.username,
+				kodyId: input.kodyId,
+				commit: head.commit,
+			}),
+		}
+	} catch (error) {
+		console.warn('Package app unpublished-changes lookup failed:', error)
+		return null
 	}
 }
 
@@ -487,6 +577,9 @@ function createPackageAppErrorResponse(input: {
 	synthetic?: boolean
 	cause?: string
 	runtimeRunId?: string | null
+	/** Overrides the kind's status, e.g. to keep the app's own 5xx. */
+	status?: number
+	unpublishedChanges?: UnpublishedChanges | null
 }) {
 	const messages = {
 		'host-setup': {
@@ -523,12 +616,26 @@ function createPackageAppErrorResponse(input: {
 			nextStep:
 				'Try again shortly. If this keeps happening long after publishing, ask the package owner to republish the package.',
 		},
+		'not-published': {
+			title: 'Package app not published yet',
+			summary:
+				'Code has been pushed to this package, but no version has been published, so there is nothing to serve yet.',
+			nextStep: `If you own this package, publish it with \`kody package publish ${input.packageName}\` or from the package page on Kody, then reload.`,
+		},
+		'publish-pending': {
+			title: 'Package app has unpublished changes',
+			summary:
+				'The published version of this package app failed this request. Newer commits have been pushed but are not published yet, so this is still the older version.',
+			nextStep:
+				'Publish the latest push if it has the fix, then reload. Otherwise check recent runs for this app under Account → Activity.',
+		},
 	} satisfies Record<
 		PackageAppFailureKind,
 		{ title: string; summary: string; nextStep: string }
 	>
 	const message = messages[input.kind]
-	const status = packageAppFailureStatus(input.kind)
+	const status = input.status ?? packageAppFailureStatus(input.kind)
+	const unpublished = input.unpublishedChanges ?? null
 	logPackageAppHttpError({
 		request: input.request,
 		status,
@@ -548,6 +655,15 @@ function createPackageAppErrorResponse(input: {
 		request_path: requestPath,
 		...(input.runtimeRunId ? { run_id: input.runtimeRunId } : {}),
 		...(input.synthetic === true && input.cause ? { cause: input.cause } : {}),
+		...(unpublished
+			? {
+					unpublished_changes: {
+						published_commit: unpublished.publishedCommit,
+						head_commit: unpublished.headCommit,
+						publish_url: unpublished.publishUrl,
+					},
+				}
+			: {}),
 	}
 	if (input.synthetic === true || wantsJson(input.request)) {
 		return Response.json(body, { status })
@@ -621,6 +737,16 @@ function createPackageAppErrorResponse(input: {
 							<h1 id="package-app-error-title">${message.title}</h1>
 							<p>${message.summary}</p>
 							<p>${message.nextStep}</p>
+							${
+								unpublished
+									? html`<p>
+											<a href="${unpublished.publishUrl}"
+												>Review and publish
+												<code>${unpublished.headCommit.slice(0, 7)}</code></a
+											>
+										</p>`
+									: ''
+							}
 							<dl>
 								<dt>Package</dt>
 								<dd>${input.packageName}</dd>
@@ -628,6 +754,20 @@ function createPackageAppErrorResponse(input: {
 								<dd><code>${input.kodyId}</code></dd>
 								<dt>Path</dt>
 								<dd><code>${requestPath}</code></dd>
+								${
+									unpublished
+										? html`<dt>Published commit</dt>
+												<dd>
+													<code
+														>${unpublished.publishedCommit.slice(0, 7)}</code
+													>
+												</dd>
+												<dt>Latest push</dt>
+												<dd>
+													<code>${unpublished.headCommit.slice(0, 7)}</code>
+												</dd>`
+										: ''
+								}
 								${
 									input.runtimeRunId
 										? html`<dt>Run ID</dt>
@@ -766,7 +906,32 @@ export async function recordPackageAppEntrypointFailure(input: {
 	}
 }
 
-export async function servePackageAppRequest(input: {
+type ServePackageAppRequestInput = Parameters<
+	typeof servePackageAppRequestWithId
+>[0]
+
+/**
+ * Every served response carries `x-kody-request-id` (alongside
+ * Server-Timing); a sampled request stores CPU and wall time under the same id.
+ */
+export async function servePackageAppRequest(
+	input: ServePackageAppRequestInput,
+) {
+	// The slim origin forwards to RUNTIME_WORKER, which tags the response itself.
+	if (!hasLocalPackageAppRuntimeBridge()) {
+		return servePackageAppRequestWithId(input)
+	}
+	const tagged = withPackageAppRequestId(input.request)
+	const response = await servePackageAppRequestWithId({
+		...input,
+		request: tagged.request,
+	})
+	return deferPackageAppResponseRewrite(response, {
+		requestId: tagged.requestId,
+	})
+}
+
+async function servePackageAppRequestWithId(input: {
 	request: Request
 	env: Env
 	owner: PackageAppServeOwner
@@ -917,16 +1082,61 @@ export async function servePackageAppRequest(input: {
 			: getAppBaseUrl({ env, requestUrl: request.url })
 	const packageRealtimePath = parsePackageRealtimePath(packageRealtimeRestPath)
 	const cookiePrefix = await packageAppCookiePrefix(savedPackage.id)
-	// Realtime hooks run with the owner's caller context, so an anonymous
-	// visitor never reaches them.
-	if (packageRealtimePath && !visitor) {
-		return attachPackageAppServerTiming(
-			anonymousRefusalResponse('Sign in to use realtime features of this app.'),
-			serverTiming,
-		)
-	}
 	if (packageRealtimePath && isWebSocketUpgradeRequest(request)) {
 		try {
+			// Org members connect as before. Anyone else (anonymous, or signed in
+			// outside the org) needs the app's `kody.app.realtime.anonymous`
+			// opt-in at the commit its owner approved (ADR 0069).
+			let connectOptions: PackageRealtimeConnectOptions
+			if (visitor) {
+				connectOptions = {
+					access: 'member',
+					visitor: {
+						userId: visitor.userId,
+						username: visitor.username,
+						role: visitor.role,
+					},
+				}
+			} else {
+				const packageManifest = savedPackage.isInternetVisible
+					? await pushServerTiming(serverTiming, 'manifest', () =>
+							loadInvokeManifestBySourceId({
+								env,
+								userId: owner.userId,
+								sourceId: savedPackage.sourceId,
+							}),
+						)
+					: null
+				const access = decidePublicRealtimeAccess({
+					isInternetVisible: savedPackage.isInternetVisible,
+					mode: packageManifest
+						? getPackageAppAnonymousRealtimeMode(packageManifest.manifest)
+						: null,
+					approvedPublishedCommit: input.approvedPublishedCommit,
+					publishedCommit: packageManifest?.source.published_commit,
+				})
+				if (!access.ok) {
+					return attachPackageAppServerTiming(
+						anonymousRefusalResponse(access.message),
+						serverTiming,
+					)
+				}
+				connectOptions = {
+					access: access.mode,
+					visitor: identity
+						? {
+								userId: identity.userId,
+								username: identity.username,
+								role: null,
+							}
+						: null,
+					approvedCommit: access.approvedCommit,
+					ipHash: await hashRealtimeClientIp({
+						packageId: savedPackage.id,
+						request,
+					}),
+				}
+			}
 			const connected = await packageRealtimeSessionRpc({
 				env,
 				userId: owner.userId,
@@ -937,6 +1147,7 @@ export async function servePackageAppRequest(input: {
 			}).connect(
 				createPackageCodeRequest(request, request.url, { cookiePrefix }),
 				packageRealtimePath.facet,
+				connectOptions,
 			)
 			const filtered = filterPackageAppSetCookies(connected, cookiePrefix)
 			logPackageAppSetCookieNamesDropped({
@@ -982,12 +1193,19 @@ export async function servePackageAppRequest(input: {
 		}
 	}
 
+	// Anonymous visitors run the commit its owner approved for them (ADR
+	// 0069). It trails the serving commit while a republish that asks for more
+	// awaits approval; members always run the serving commit.
+	const anonymousCommit = visitor
+		? null
+		: (input.approvedPublishedCommit ?? null)
 	const loadSourceFiles = async () => {
-		const packageSource = await loadPackageSourceBySourceId({
+		const packageSource = await loadServingPackageSourceBySourceId({
 			env,
 			baseUrl,
 			userId: owner.userId,
 			sourceId: savedPackage.sourceId,
+			commit: anonymousCommit,
 		})
 		return packageSource.files
 	}
@@ -1009,6 +1227,11 @@ export async function servePackageAppRequest(input: {
 			kodyId: urlSlug,
 		})
 		try {
+			const refusal = refuseUnapprovedAnonymousServe({
+				visitor,
+				approvedPublishedCommit: anonymousCommit,
+			})
+			if (refusal) return attachPackageAppServerTiming(refusal, serverTiming)
 			const packageManifest = await pushServerTiming(
 				serverTiming,
 				'manifest',
@@ -1017,33 +1240,30 @@ export async function servePackageAppRequest(input: {
 						env,
 						userId: owner.userId,
 						sourceId: savedPackage.sourceId,
+						commit: anonymousCommit,
 					}),
 			)
-			const refusal = refuseUnapprovedAnonymousServe({
-				visitor,
-				approvedPublishedCommit: input.approvedPublishedCommit,
-				publishedCommit: packageManifest.source.published_commit,
-			})
-			if (refusal) return attachPackageAppServerTiming(refusal, serverTiming)
 			return attachPackageAppServerTiming(
-				await servePackageAppAssetRequest({
-					request,
-					env,
-					userId: owner.userId,
-					manifest: packageManifest.manifest,
-					savedPackage: {
-						id: savedPackage.id,
-						kodyId: savedPackage.kodyId,
-						sourceId: savedPackage.sourceId,
-						publishedCommit: packageManifest.source.published_commit,
-						manifestPath: packageManifest.source.manifest_path,
-						sourceRoot: packageManifest.source.source_root,
-					},
-					loadSourceFiles,
-					relativePath: assetRelativePath,
-					appBasePath,
-					hostedUrl: `${requestUrl.origin}${appBasePath}`,
-				}),
+				await pushServerTiming(serverTiming, 'assets', () =>
+					servePackageAppAssetRequest({
+						request,
+						env,
+						userId: owner.userId,
+						manifest: packageManifest.manifest,
+						savedPackage: {
+							id: savedPackage.id,
+							kodyId: savedPackage.kodyId,
+							sourceId: savedPackage.sourceId,
+							publishedCommit: packageManifest.source.published_commit,
+							manifestPath: packageManifest.source.manifest_path,
+							sourceRoot: packageManifest.source.source_root,
+						},
+						loadSourceFiles,
+						relativePath: assetRelativePath,
+						appBasePath,
+						hostedUrl: `${requestUrl.origin}${appBasePath}`,
+					}),
+				),
 				serverTiming,
 			)
 		} catch (error) {
@@ -1087,6 +1307,7 @@ export async function servePackageAppRequest(input: {
 	let forwardedRequest: Request
 	let entrypoint: { fetch(request: Request): Promise<Response> }
 	let servedPublishedCommit: string | null = null
+	let servedRepoId: string | null = null
 	let clientReadableCookieNames: ReadonlyArray<string> = []
 	let visitNonce: string | null = null
 	try {
@@ -1104,12 +1325,18 @@ export async function servePackageAppRequest(input: {
 		)
 		// Settled below or abandoned on refusal; never an unhandled rejection.
 		suppliersEnabledPending.catch(() => {})
+		const refusal = refuseUnapprovedAnonymousServe({
+			visitor,
+			approvedPublishedCommit: anonymousCommit,
+		})
+		if (refusal) return attachPackageAppServerTiming(refusal, serverTiming)
 		const [packageManifest, callerContext] = await Promise.all([
 			pushServerTiming(serverTiming, 'manifest', () =>
 				loadInvokeManifestBySourceId({
 					env,
 					userId: owner.userId,
 					sourceId: savedPackage.sourceId,
+					commit: anonymousCommit,
 				}),
 			),
 			pushServerTiming(serverTiming, 'billing', () =>
@@ -1132,12 +1359,6 @@ export async function servePackageAppRequest(input: {
 		clientReadableCookieNames = getPackageAppClientReadableCookieNames(
 			packageManifest.manifest,
 		)
-		const refusal = refuseUnapprovedAnonymousServe({
-			visitor,
-			approvedPublishedCommit: input.approvedPublishedCommit,
-			publishedCommit: packageManifest.source.published_commit,
-		})
-		if (refusal) return attachPackageAppServerTiming(refusal, serverTiming)
 		const suppliersEnabled = await suppliersEnabledPending
 		const visitorNeeds = suppliersEnabled
 			? savedCredentialNeeds(
@@ -1146,6 +1367,8 @@ export async function servePackageAppRequest(input: {
 							env,
 							userId: owner.userId,
 							sourceId: savedPackage.sourceId,
+							// A pinned visitor gets the needs of the commit they run.
+							...(anonymousCommit ? { source: packageManifest.source } : {}),
 							request: callerContext.request,
 						}),
 					),
@@ -1282,6 +1505,7 @@ export async function servePackageAppRequest(input: {
 			return consentRedirect()
 		}
 		servedPublishedCommit = packageManifest.source.published_commit
+		servedRepoId = packageManifest.source.repo_id
 		const appWorker = await buildPackageAppWorker({
 			env,
 			baseUrl,
@@ -1299,6 +1523,7 @@ export async function servePackageAppRequest(input: {
 			source: packageManifest.source,
 			manifest: packageManifest.manifest,
 			loadSourceFiles,
+			pinnedCommit: anonymousCommit,
 			serverTiming,
 			runtime: {
 				callerContext,
@@ -1325,6 +1550,10 @@ export async function servePackageAppRequest(input: {
 				appWorker.visit.ticket,
 			),
 			dispatch,
+		)
+		forwardedRequest = withForwardedPackageAppRequestId(
+			forwardedRequest,
+			packageAppRequestIdFromRequest(request),
 		)
 	} catch (error) {
 		endPackageAppVisit(visitNonce)
@@ -1364,6 +1593,17 @@ export async function servePackageAppRequest(input: {
 		)
 	}
 
+	const findUnpublishedChanges = () =>
+		resolveUnpublishedChanges({
+			env,
+			request,
+			visitor,
+			synthetic: dispatch?.synthetic === true,
+			repoId: servedRepoId,
+			publishedCommit: servedPublishedCommit,
+			username: packagePath.username,
+			kodyId: savedPackage.kodyId,
+		})
 	try {
 		let fetched: Response
 		try {
@@ -1393,13 +1633,15 @@ export async function servePackageAppRequest(input: {
 					method: request.method,
 					error,
 				}))
+			const unpublishedChanges = await findUnpublishedChanges()
 			return attachPackageAppServerTiming(
 				createPackageAppErrorResponse({
 					request,
-					kind: 'package-entrypoint',
+					kind: unpublishedChanges ? 'publish-pending' : 'package-entrypoint',
 					kodyId: savedPackage.kodyId,
 					packageName: savedPackage.name,
 					runtimeRunId,
+					unpublishedChanges,
 				}),
 				serverTiming,
 				visitNonce,
@@ -1413,17 +1655,38 @@ export async function servePackageAppRequest(input: {
 					visitNonce,
 				)
 			}
+			const unpublishedChanges = await findUnpublishedChanges()
 			return attachPackageAppServerTiming(
 				createPackageAppErrorResponse({
 					request,
-					kind: 'package-entrypoint',
+					kind: unpublishedChanges ? 'publish-pending' : 'package-entrypoint',
 					kodyId: savedPackage.kodyId,
 					packageName: savedPackage.name,
 					runtimeRunId: fetched.headers.get(packageAppRuntimeRunIdHeader),
+					unpublishedChanges,
 				}),
 				serverTiming,
 				visitNonce,
 			)
+		}
+		if (fetched.status >= 500) {
+			const unpublishedChanges = await findUnpublishedChanges()
+			if (unpublishedChanges) {
+				await fetched.body?.cancel()
+				return attachPackageAppServerTiming(
+					createPackageAppErrorResponse({
+						request,
+						kind: 'publish-pending',
+						kodyId: savedPackage.kodyId,
+						packageName: savedPackage.name,
+						runtimeRunId: fetched.headers.get(packageAppRuntimeRunIdHeader),
+						status: fetched.status,
+						unpublishedChanges,
+					}),
+					serverTiming,
+					visitNonce,
+				)
+			}
 		}
 		// Leave x-kody-runtime-run-id on the response. The origin forward reads
 		// it for the runtime-worker hop log, then strips it before the browser.

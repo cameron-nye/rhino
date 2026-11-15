@@ -1,8 +1,9 @@
 /** @jsxImportSource @emotion/react */
+import { ModalDialog } from '../components/modal-dialog.tsx'
 import { deletePackage } from '#start/server/package-mutations'
 import { usePackageMutation } from '../package-mutation.ts'
 import { useSubmitterScope } from '../use-submitter-scope.ts'
-import { type CSSObject } from '@emotion/react'
+import type { CSSObject } from '@emotion/react'
 import {
 	useState,
 	useRef,
@@ -21,7 +22,6 @@ import { useShellData } from '../routes/__root.tsx'
 import {
 	colors,
 	radius,
-	shadows,
 	spacing,
 	typography,
 } from '#universal/styles/tokens.ts'
@@ -38,9 +38,7 @@ import {
 	accountFieldNoteCss,
 	accountInputCss,
 } from './account-management-components.tsx'
-import { type AccountPackageDetail } from '#universal/loader-data.ts'
-
-type DeleteStatus = 'idle' | 'deleting'
+import type { AccountPackageDetail } from '#universal/loader-data.ts'
 
 const packageDeleteCopyTooltip = 'Copy'
 const packageDeleteCopyTooltipId = 'package-delete-copy-name-tooltip'
@@ -50,15 +48,28 @@ export function AccountPackageDeleteDialog(props: {
 	packageDetail: AccountPackageDetail
 }) {
 	const [confirmation, setConfirmation] = useState('')
-	const [status, setStatus] = useState<DeleteStatus>('idle')
-	const [error, setError] = useState<string | null>(null)
-	const dialogRef = useRef<HTMLDialogElement>(null)
+	const [open, setOpen] = useState(false)
 	const mutation = usePackageMutation(
 		props.packageDetail.id,
-		deletePackage,
+		async ({
+			data,
+		}: {
+			data: { packageId: string; confirmName: string; isCurrent: () => boolean }
+		}) => {
+			const result = await deletePackage({
+				data: { packageId: data.packageId, confirmName: data.confirmName },
+			})
+			if (result.ok && !result.deleted)
+				throw new Error('Unable to delete this package.')
+			return result
+		},
 		'delete',
 		'deleted',
 	)
+	const error =
+		mutation.isError && mutation.variables?.isCurrent()
+			? mutation.error.message
+			: null
 	const capture = useSubmitterScope()
 	const router = useRouter()
 	const { session } = useShellData()
@@ -88,31 +99,15 @@ export function AccountPackageDeleteDialog(props: {
 	function closeDialog() {
 		if (busyRef.current) return
 		setConfirmation('')
-		setError(null)
-		setStatus('idle')
-		dialogRef.current?.close()
+		mutation.reset()
+		setOpen(false)
 	}
-
-	useEffect(() => {
-		const dialog = dialogRef.current
-		if (!dialog) return
-		const onBackdrop = (event: MouseEvent) => {
-			if (event.target !== dialog || busyRef.current) return
-			setConfirmation('')
-			setError(null)
-			setStatus('idle')
-			dialog.close()
-		}
-		dialog.addEventListener('click', onBackdrop)
-		return () => dialog.removeEventListener('click', onBackdrop)
-	}, [])
 
 	function openDialog() {
 		setConfirmation('')
-		setError(null)
-		setStatus('idle')
+		mutation.reset()
 
-		dialogRef.current?.showModal()
+		setOpen(true)
 	}
 
 	function updateConfirmation(event: ChangeEvent<HTMLInputElement>) {
@@ -125,16 +120,16 @@ export function AccountPackageDeleteDialog(props: {
 		const packageDetail = props.packageDetail
 		if (busyRef.current || confirmation.trim() !== packageDetail.name) return
 		busyRef.current = true
-		setStatus('deleting')
-		setError(null)
+
+		mutation.reset()
 
 		const isCurrent = capture()
 		try {
-			const payload = await mutation.submit({
+			await mutation.submit({
 				packageId: props.packageDetail.id,
 				confirmName: confirmation.trim(),
+				isCurrent,
 			})
-			if (!payload.deleted) throw new Error('Unable to delete this package.')
 			if (!isCurrent()) return
 			busyRef.current = false
 			closeDialog()
@@ -145,21 +140,15 @@ export function AccountPackageDeleteDialog(props: {
 					organizations: session?.organizations ?? [],
 				}),
 			})
-		} catch (caught) {
+		} catch {
 			if (!isCurrent()) return
-			setError(
-				caught instanceof Error
-					? caught.message
-					: 'Unable to delete this package.',
-			)
-			setStatus('idle')
 		} finally {
 			busyRef.current = false
 		}
 	}
 
 	const packageName = props.packageDetail.name
-	const isDeleting = status === 'deleting'
+	const isDeleting = mutation.isPending
 	const canSubmit = confirmation.trim() === packageName && !isDeleting
 	return (
 		<>
@@ -183,122 +172,105 @@ export function AccountPackageDeleteDialog(props: {
 					</button>
 				</div>
 			</div>
-			<dialog
-				aria-labelledby="delete-package-title"
-				data-testid="package-delete-dialog"
-				css={deleteDialogCss}
-				ref={dialogRef}
-				onCancel={(event) => {
-					event.preventDefault()
-					closeDialog()
-				}}
-			>
-				<form
-					method="dialog"
-					css={deleteDialogFormCss}
-					onSubmit={handleDeleteSubmit}
+			{open && (
+				<ModalDialog
+					alert
+					flush
+					label={`Delete ${packageName}`}
+					width={512}
+					testId="package-delete-dialog"
+					onClose={closeDialog}
 				>
-					<h3 id="delete-package-title" css={deleteDialogTitleCss}>
-						Delete {packageName}
-						<button
-							type="button"
-							// Copy feedback belongs to this button.
-							data-testid="package-delete-copy-name"
-							data-copy-prompt=""
-							data-copy-text={packageName}
-							data-copy-tooltip={copyFeedback ?? packageDeleteCopyTooltip}
-							aria-label="Copy package name"
-							aria-describedby={packageDeleteCopyTooltipId}
-							css={packageDeleteCopyButtonCss}
-							onClick={() => void copyName()}
-						>
-							{renderIcon('copy', { size: '0.85em' })}
-							<span
-								id={packageDeleteCopyTooltipId}
-								role="tooltip"
-								aria-hidden="true"
+					<form css={deleteDialogFormCss} onSubmit={handleDeleteSubmit}>
+						<h3 id="delete-package-title" css={deleteDialogTitleCss}>
+							Delete {packageName}
+							<button
+								type="button"
+								// Copy feedback belongs to this button.
+								data-testid="package-delete-copy-name"
+								data-copy-prompt=""
+								data-copy-text={packageName}
+								data-copy-tooltip={copyFeedback ?? packageDeleteCopyTooltip}
+								aria-label="Copy package name"
+								aria-describedby={packageDeleteCopyTooltipId}
+								css={packageDeleteCopyButtonCss}
+								onClick={() => void copyName()}
 							>
-								{copyFeedback ?? packageDeleteCopyTooltip}
+								{renderIcon('copy', { size: '0.85em' })}
+								<span
+									id={packageDeleteCopyTooltipId}
+									role="tooltip"
+									aria-hidden="true"
+								>
+									{copyFeedback ?? packageDeleteCopyTooltip}
+								</span>
+							</button>
+							?
+						</h3>
+						<div
+							css={getAccentCalloutCss({
+								accentColor: colors.error,
+							})}
+						>
+							<p css={{ margin: 0 }}>
+								This cannot be undone. Type <strong>{packageName}</strong> to
+								confirm.
+							</p>
+						</div>
+						<label css={accountFieldCss}>
+							<span css={accountFieldLabelCss}>
+								Type the name of the package
 							</span>
-						</button>
-						?
-					</h3>
-					<div
-						css={getAccentCalloutCss({
-							accentColor: colors.error,
-						})}
-					>
-						<p css={{ margin: 0 }}>
-							This cannot be undone. Type <strong>{packageName}</strong> to
-							confirm.
-						</p>
-					</div>
-					<label css={accountFieldCss}>
-						<span css={accountFieldLabelCss}>Type the name of the package</span>
-						<input
-							type="text"
-							name="confirmation"
-							data-testid="package-delete-confirmation"
-							data-field-ring
-							autoComplete="off"
-							spellCheck={false}
-							required
-							placeholder={packageName}
-							value={confirmation}
-							css={accountInputCss}
-							onChange={updateConfirmation}
-						/>
-					</label>
-					{error ? (
-						<p
-							role="alert"
-							css={{
-								margin: 0,
-								color: colors.error,
-								fontSize: typography.fontSize.sm,
-							}}
-						>
-							{error}
-						</p>
-					) : null}
-					<div css={accountActionsCss}>
-						<button
-							type="button"
-							disabled={isDeleting}
-							css={getGhostButtonCss({ size: 'sm' })}
-							onClick={closeDialog}
-						>
-							Cancel
-						</button>
-						<button
-							type="submit"
-							disabled={!canSubmit}
-							data-testid="package-delete-confirm"
-							css={getDangerPillCss({ size: 'sm' })}
-						>
-							{isDeleting ? 'Deleting…' : 'Delete package'}
-						</button>
-					</div>
-				</form>
-			</dialog>
+							<input
+								type="text"
+								name="confirmation"
+								data-testid="package-delete-confirmation"
+								data-field-ring
+								autoComplete="off"
+								spellCheck={false}
+								required
+								placeholder={packageName}
+								value={confirmation}
+								css={accountInputCss}
+								onChange={updateConfirmation}
+							/>
+						</label>
+						{error ? (
+							<p
+								role="alert"
+								css={{
+									margin: 0,
+									color: colors.error,
+									fontSize: typography.fontSize.sm,
+								}}
+							>
+								{error}
+							</p>
+						) : null}
+						<div css={accountActionsCss}>
+							<button
+								type="button"
+								disabled={isDeleting}
+								css={getGhostButtonCss({ size: 'sm' })}
+								onClick={closeDialog}
+							>
+								Cancel
+							</button>
+							<button
+								type="submit"
+								disabled={!canSubmit}
+								data-testid="package-delete-confirm"
+								css={getDangerPillCss({ size: 'sm' })}
+							>
+								{isDeleting ? 'Deleting…' : 'Delete package'}
+							</button>
+						</div>
+					</form>
+				</ModalDialog>
+			)}
 		</>
 	)
 }
-
-const deleteDialogCss = {
-	width: 'min(32rem, calc(100vw - 2rem))',
-	maxWidth: '32rem',
-	padding: 0,
-	overflow: 'visible',
-	border: `1px solid ${colors.border}`,
-	borderRadius: radius.lg,
-	boxShadow: shadows.md,
-	backgroundColor: colors.surface,
-	color: colors.text,
-	'&::backdrop': {
-		backgroundColor: 'oklch(0 0 0 / 0.45)',
-	},
-} satisfies CSSObject
 
 const deleteDialogFormCss = {
 	display: 'grid',

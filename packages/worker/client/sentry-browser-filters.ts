@@ -9,6 +9,7 @@ import {
 	isBrowserFetchNetworkError,
 	isBrowserFetchNetworkErrorMessage,
 } from '#client/browser-fetch-network-error.ts'
+import { isDeploySkewRecoveryError } from '#client/reload-on-deploy-skew.ts'
 
 type SentryStackFrame = {
 	filename?: string
@@ -1310,6 +1311,88 @@ function isUnknownStartReleaseSentryEvent(
 	)
 }
 
+/**
+ * Corporate secure web gateway block pages (Cisco Umbrella / OpenDNS
+ * "intelligent proxy", Cisco Secure Access). The gateway answers a
+ * `/_serverFn/...` GET with its own HTML 503, and TanStack Start's
+ * `serverFnFetcher` throws `new Error(await response.text())`, so the
+ * error message is the raw proxy page (issue 7830430060, Edge on
+ * `/@user/-/repositories`). The failure is the visitor's network, not Kody.
+ *
+ * Match is intentionally narrow: the message must be an HTML document AND
+ * carry an OpenDNS / Cisco Secure Access marker. Kody's own and
+ * Cloudflare-origin 5xx HTML pages stay visible (possible real outages).
+ */
+const thirdPartyProxyBlockPageMarkers = [
+	'shared.opendns.com/',
+	'/intelligent-proxy/',
+	'This page is served by Cisco Secure Access',
+]
+
+function isThirdPartyProxyBlockPageMessage(message: string) {
+	if (!/<(?:!doctype\s+html|html)[\s>]/i.test(message)) return false
+	return thirdPartyProxyBlockPageMarkers.some((marker) =>
+		message.includes(marker),
+	)
+}
+
+export function isThirdPartyProxyBlockPageError(error: unknown) {
+	if (typeof error === 'string') {
+		return isThirdPartyProxyBlockPageMessage(error)
+	}
+	if (typeof error !== 'object' || error === null) return false
+	if (!('message' in error) || typeof error.message !== 'string') return false
+	return isThirdPartyProxyBlockPageMessage(error.message)
+}
+
+function isThirdPartyProxyBlockPageSentryEvent(
+	event: SentryErrorEventLike,
+	originalException?: unknown,
+) {
+	if (isThirdPartyProxyBlockPageError(originalException)) return true
+	// Every-value gate: an app Error wrapping a proxy-page cause stays visible.
+	const values = event.exception?.values ?? []
+	if (values.length > 0) {
+		return values.every(
+			(value) =>
+				typeof value.value === 'string' &&
+				isThirdPartyProxyBlockPageMessage(value.value),
+		)
+	}
+	return (
+		typeof event.message === 'string' &&
+		isThirdPartyProxyBlockPageMessage(event.message)
+	)
+}
+
+function filterThirdPartyProxyBlockPageSentryEvent<
+	T extends SentryErrorEventLike,
+>(event: T, originalException?: unknown): T | null {
+	if (isThirdPartyProxyBlockPageSentryEvent(event, originalException)) {
+		return null
+	}
+	return event
+}
+
+/**
+ * Expected abort after deploy-skew hard navigation (KODY-DP). The client throws
+ * this only after `location.assign` so stale loader JSON never reaches routes.
+ */
+function filterDeploySkewRecoverySentryEvent<T extends SentryErrorEventLike>(
+	event: T,
+	originalException?: unknown,
+): T | null {
+	if (isDeploySkewRecoveryError(originalException)) return null
+	if (
+		event.exception?.values?.some(
+			(value) => value.type === 'DeploySkewRecovery',
+		)
+	) {
+		return null
+	}
+	return event
+}
+
 function filterUnknownStartReleaseSentryEvent<T extends SentryErrorEventLike>(
 	event: T,
 	originalException?: unknown,
@@ -1833,6 +1916,72 @@ function filterCspUnsafeEvalRefusalSentryEvent<T extends SentryErrorEventLike>(
 }
 
 /**
+ * Page-injected scripts (typically browser extensions) that try to patch
+ * `Symbol.hasInstance` on a built-in whose property is non-configurable.
+ * Signature from production issue 7838313110: Firefox 159 on
+ * https://kody.codes/community, mechanism
+ * `auto.browser.global_handlers.onerror`, and a single frame whose URL is
+ * Firefox's `<anonymous code>` marker for injected scripts (no function
+ * name). First-party bundles report `https://kody.codes/assets/…` URLs, and
+ * Kody source never defines `Symbol.hasInstance`.
+ *
+ * Match is intentionally narrow: TypeError (or missing type) with the
+ * Firefox wording or the Chromium `Cannot redefine property:
+ * Symbol(Symbol.hasInstance)` equivalent on the **same** exception value,
+ * AND every reported frame URL is `<anonymous code>` or anonymous/native.
+ * Keep when any frame is first-party `kody.codes/assets/…`, when frames
+ * are missing or URL-less, or when any sibling exception value does not
+ * fully match.
+ */
+const symbolHasInstanceRedefineMessage =
+	/^(?:TypeError:\s*)?(?:can't redefine non-configurable property Symbol\.hasInstance|Cannot redefine property: Symbol\(Symbol\.hasInstance\))$/
+
+function isSymbolHasInstanceRedefineMessage(message: string) {
+	return symbolHasInstanceRedefineMessage.test(message.trim())
+}
+
+function isInjectedAnonymousCodeStackFrameUrl(url: string) {
+	return (
+		url.trim() === '<anonymous code>' || isAnonymousOrNativeStackFrameUrl(url)
+	)
+}
+
+function isInjectedAnonymousCodeOnlyReportedFrames(
+	frames: Array<SentryStackFrame> | undefined,
+) {
+	if (!frames || frames.length === 0) return false
+	for (const frame of frames) {
+		const urls = stackFrameUrls(frame).filter((url) => url.trim().length > 0)
+		if (urls.length === 0) return false
+		if (urls.some(isFirstPartyKodyAssetStackFrameUrl)) return false
+		if (!urls.every(isInjectedAnonymousCodeStackFrameUrl)) return false
+	}
+	return true
+}
+
+function exceptionValueIsInjectedSymbolHasInstanceRedefine(
+	value: SentryExceptionValue,
+) {
+	if (value.type !== undefined && value.type !== 'TypeError') return false
+	if (typeof value.value !== 'string') return false
+	if (!isSymbolHasInstanceRedefineMessage(value.value)) return false
+	return isInjectedAnonymousCodeOnlyReportedFrames(value.stacktrace?.frames)
+}
+
+function filterInjectedSymbolHasInstanceRedefineSentryEvent<
+	T extends SentryErrorEventLike,
+>(event: T, _originalException?: unknown): T | null {
+	const values = event.exception?.values ?? []
+	if (
+		values.length > 0 &&
+		values.every(exceptionValueIsInjectedSymbolHasInstanceRedefine)
+	) {
+		return null
+	}
+	return event
+}
+
+/**
  * Drop CrabApple's failed hard-spoof of `navigator.userAgent`. An injected
  * script labeled CrabApple redefines that property; modern Safari throws
  * `TypeError: Cannot redefine property: userAgent`, and the script wraps it
@@ -2025,9 +2174,17 @@ export function filterBrowserSentryEvent<T extends SentryErrorEventLike>(
 	if (filterUnknownStartReleaseSentryEvent(event, originalException) === null) {
 		return null
 	}
+	if (filterDeploySkewRecoverySentryEvent(event, originalException) === null) {
+		return null
+	}
 	if (
 		filterTanStackServerFnFetchNetworkSentryEvent(event, originalException) ===
 		null
+	) {
+		return null
+	}
+	if (
+		filterThirdPartyProxyBlockPageSentryEvent(event, originalException) === null
 	) {
 		return null
 	}
@@ -2062,6 +2219,14 @@ export function filterBrowserSentryEvent<T extends SentryErrorEventLike>(
 	}
 	if (
 		filterCspUnsafeEvalRefusalSentryEvent(event, originalException) === null
+	) {
+		return null
+	}
+	if (
+		filterInjectedSymbolHasInstanceRedefineSentryEvent(
+			event,
+			originalException,
+		) === null
 	) {
 		return null
 	}

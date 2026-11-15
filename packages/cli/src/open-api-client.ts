@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import {
 	currentStoredTokenLifetimeAlias,
 	insufficientScopeMessage,
+	profileDenialMessage,
 	readInsufficientScopeDetails,
 	rejectedApiTokenMessage,
 } from './api-token.js'
@@ -18,7 +19,7 @@ import {
 	type RequestSentStatus,
 } from './network-error.js'
 import { bakedOpenApiRoutes } from './generated/openapi-routes.js'
-import { type ToolCallResult } from './tool-result.js'
+import type { ToolCallResult } from './tool-result.js'
 import { readPackageVersion } from './package-info.js'
 import { userCacheDir } from './workerd-binary.js'
 
@@ -85,6 +86,12 @@ export class OpenApiError extends Error {
 	/** `error.details.reason` from the failed response, when there was one. */
 	readonly reason: string | null
 	/**
+	 * `error.details.run_id` / `idempotency_key`: an execute whose answer
+	 * failed after it started this run, so callers can follow it.
+	 */
+	readonly runId: string | null
+	readonly idempotencyKey: string | null
+	/**
 	 * Set when `fetch` rejected before an HTTP response. `false` = connect
 	 * phase (nothing sent); `"unknown"` = body may have reached the server.
 	 */
@@ -97,6 +104,8 @@ export class OpenApiError extends Error {
 			code?: string | null
 			requestId?: string | null
 			reason?: string | null
+			runId?: string | null
+			idempotencyKey?: string | null
 			sent?: RequestSentStatus
 		} = {},
 	) {
@@ -106,12 +115,14 @@ export class OpenApiError extends Error {
 		this.code = options.code ?? null
 		this.requestId = options.requestId ?? null
 		this.reason = options.reason ?? null
+		this.runId = options.runId ?? null
+		this.idempotencyKey = options.idempotencyKey ?? null
 		if (options.sent !== undefined) this.sent = options.sent
 	}
 }
 
 /** Path to the live OpenAPI document on the Kody API origin. */
-export const openApiDocumentPath = 'openapi.json'
+const openApiDocumentPath = 'openapi.json'
 
 /**
  * Bootstrap redeem returns a `kody_at_…` once. Agents must use
@@ -316,7 +327,7 @@ export async function openApiRequest(
 }
 
 /** Response header naming one API request (set by the `api.kody.codes` edge). */
-export const apiRequestIdHeader = 'x-kody-request-id'
+const apiRequestIdHeader = 'x-kody-request-id'
 
 /**
  * Call one Open API operation by `operationId` + flat `params`, matching the
@@ -366,6 +377,12 @@ export async function callOpenApiOperation(
 }
 
 export function assertApiOperationAllowed(operationId: string): void {
+	if (operationId === 'secretLocalRead') {
+		throw new OpenApiError(
+			'Refusing to call secretLocalRead: it returns secret values. Use `kody secret get` or `kody run` instead.',
+			{ status: null, code: 'refused' },
+		)
+	}
 	if (operationId === cliCredentialBootstrapRedeemOperationId) {
 		throw new OpenApiError(
 			`Refusing to call ${cliCredentialBootstrapRedeemOperationId}: redeem returns a kody_at_… token that must not print to stdout. Use \`kody auth bootstrap --code <kody_bc_…>\` instead (stores the token; never prints it).`,
@@ -418,7 +435,7 @@ export function buildOpenApiHttpRequest(input: {
 	}
 }
 
-export function apiOperationUsesQueryInputs(method: string): boolean {
+function apiOperationUsesQueryInputs(method: string): boolean {
 	const upper = method.toUpperCase()
 	return upper === 'GET' || upper === 'DELETE'
 }
@@ -589,7 +606,7 @@ export async function searchWithApiToken(
 	return toolResultFromHttpBody(body)
 }
 
-export function toolResultFromHttpBody(payload: unknown): ToolCallResult {
+function toolResultFromHttpBody(payload: unknown): ToolCallResult {
 	if (isRecord(payload) && Array.isArray(payload.content)) {
 		return {
 			content: payload.content as ToolCallResult['content'],
@@ -617,6 +634,12 @@ export async function whoamiWithApiToken(input: OpenApiClientInput): Promise<{
 		maxExpiresAt: string | null
 	}
 	user: { userId: string; email: string; displayName: string } | null
+	/** Workspace this token acts in, from `GET /v1/me` when available. */
+	org: {
+		slug: string
+		personal?: boolean
+		kind?: 'personal' | 'team'
+	} | null
 }> {
 	const apiUrl = input.apiUrl || defaultApiUrl
 	const current = (await openApiGet({
@@ -626,6 +649,11 @@ export async function whoamiWithApiToken(input: OpenApiClientInput): Promise<{
 	})) as Record<string, unknown>
 
 	let user: { userId: string; email: string; displayName: string } | null = null
+	let org: {
+		slug: string
+		personal?: boolean
+		kind?: 'personal' | 'team'
+	} | null = null
 	try {
 		const me = (await openApiGet({
 			...input,
@@ -636,6 +664,30 @@ export async function whoamiWithApiToken(input: OpenApiClientInput): Promise<{
 			userId: String(me.user_id ?? ''),
 			email: String(me.email ?? ''),
 			displayName: String(me.display_name ?? ''),
+		}
+		const meOrg = isRecord(me.org) ? me.org : null
+		const slug = typeof meOrg?.slug === 'string' ? meOrg.slug.trim() : ''
+		if (slug) {
+			const kindFromServer =
+				meOrg?.kind === 'team' || meOrg?.kind === 'personal' ? meOrg.kind : null
+			const personalFromServer =
+				typeof meOrg?.personal === 'boolean' ? meOrg.personal : null
+			const kind =
+				kindFromServer ??
+				(personalFromServer === true
+					? 'personal'
+					: personalFromServer === false
+						? 'team'
+						: null)
+			org = {
+				slug,
+				...(kind
+					? {
+							kind,
+							personal: kind === 'personal',
+						}
+					: {}),
+			}
 		}
 	} catch (error) {
 		// account:read is optional; tokens/current needs no scope.
@@ -660,6 +712,7 @@ export async function whoamiWithApiToken(input: OpenApiClientInput): Promise<{
 					: null,
 		},
 		user,
+		org,
 	}
 }
 
@@ -673,13 +726,20 @@ async function readJson(response: Response): Promise<unknown> {
 	}
 }
 
-function readErrorBody(
-	body: unknown,
-): { code: string | null; message: string; reason: string | null } | null {
+type ErrorBody = {
+	code: string | null
+	message: string
+	reason: string | null
+	runId: string | null
+	idempotencyKey: string | null
+}
+
+function readErrorBody(body: unknown): ErrorBody | null {
 	if (!isRecord(body) || body.error == null) return null
 	const { error } = body
+	const none = { reason: null, runId: null, idempotencyKey: null }
 	if (typeof error === 'string') {
-		return { code: null, message: error, reason: null }
+		return { code: null, message: error, ...none }
 	}
 	if (isRecord(error)) {
 		const code = typeof error.code === 'string' ? error.code : null
@@ -687,13 +747,18 @@ function readErrorBody(
 			typeof error.message === 'string'
 				? error.message
 				: (code ?? JSON.stringify(error))
-		const reason =
-			isRecord(error.details) && typeof error.details.reason === 'string'
-				? error.details.reason
-				: null
-		return { code, message, reason }
+		const details = isRecord(error.details) ? error.details : {}
+		const text = (value: unknown) =>
+			typeof value === 'string' && value ? value : null
+		return {
+			code,
+			message,
+			reason: text(details.reason),
+			runId: text(details.run_id),
+			idempotencyKey: text(details.idempotency_key),
+		}
 	}
-	return { code: null, message: String(error), reason: null }
+	return { code: null, message: String(error), ...none }
 }
 
 function describeOpenApiFailure(
@@ -704,11 +769,23 @@ function describeOpenApiFailure(
 ): OpenApiError {
 	const failure = readErrorBody(body)
 	const code = failure?.code ?? null
-	const meta = { status, code, requestId, reason: failure?.reason ?? null }
+	const meta = {
+		status,
+		code,
+		requestId,
+		reason: failure?.reason ?? null,
+		runId: failure?.runId ?? null,
+		idempotencyKey: failure?.idempotencyKey ?? null,
+	}
 	const detail = failure?.message ? ` Server said: ${failure.message}` : ''
 	if (status === 401) {
 		return new OpenApiError(rejectedApiTokenMessage(detail), meta)
 	}
+	const profileDenial =
+		status === 403
+			? profileDenialMessage({ code, body, serverMessage: failure?.message })
+			: null
+	if (profileDenial) return new OpenApiError(profileDenial, meta)
 	if (status === 403 && code === 'insufficient_scope') {
 		return new OpenApiError(
 			`${insufficientScopeMessage({

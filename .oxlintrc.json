@@ -7,6 +7,18 @@
 	"plugins": ["import", "jsx-a11y", "react", "typescript", "vitest"],
 	"overrides": [
 		{
+			"files": ["**/*.ts", "**/*.tsx"],
+			"rules": {
+				"import/consistent-type-specifier-style": "off"
+			}
+		},
+		{
+			"files": ["packages/dev-runtime/test/**"],
+			"rules": {
+				"vitest/no-import-node-test": "off"
+			}
+		},
+		{
 			"files": ["packages/cli/**"],
 			"rules": {
 				"vitest/no-import-node-test": "off",

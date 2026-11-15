@@ -1,4 +1,5 @@
 /** @jsxImportSource @emotion/react */
+import { LoadingIndicator } from '../components/loading-indicator.tsx'
 import { surfaceCardCss } from '#universal/styles/surface.ts'
 import { formatTimestamp } from '../components/local-timestamp.tsx'
 import { useInfiniteQuery, hashKey } from '@tanstack/react-query'
@@ -8,6 +9,7 @@ import { CopyTextButton } from '../components/copy-text-button.tsx'
 import { RunHistoryAccessNotice } from '../components/run-history-access-notice.tsx'
 import { renderActivityRunDetail } from './account-activity-detail.tsx'
 import { AccountActivityToggleChanges } from './account-activity-toggle-changes.tsx'
+import { AccountActivityAppPerformance } from './account-activity-app-performance.tsx'
 import {
 	activityEmptyLabel,
 	activityErrorReviewPrompt,
@@ -91,7 +93,13 @@ export function AccountActivityPage({
 			</AccountManagementShell>
 		)
 	}
-	const { selectedRun, summary, retentionDays, toggleChanges } = first
+	const {
+		selectedRun,
+		summary,
+		retentionDays,
+		toggleChanges,
+		packageAppPerformance,
+	} = first
 	const seen = new Set<string>()
 	const runs = query.data.pages
 		.flatMap((page) => page.payload?.runs ?? [])
@@ -451,12 +459,21 @@ export function AccountActivityPage({
 									onClick={() => void loadMoreRuns()}
 									css={{ ...secondaryButtonCss, width: '100%' }}
 								>
-									{loadingMore ? 'Loading more…' : 'Load more'}
+									{loadingMore ? (
+										<LoadingIndicator inline label="Loading more…" />
+									) : (
+										'Load more'
+									)}
 								</button>
 							) : null
 						}
 						record={detail ? renderActivityRunDetail(detail) : null}
 					/>
+					{packageAppPerformance ? (
+						<AccountActivityAppPerformance
+							performance={packageAppPerformance}
+						/>
+					) : null}
 					{toggleChanges ? (
 						<AccountActivityToggleChanges changes={toggleChanges} />
 					) : null}

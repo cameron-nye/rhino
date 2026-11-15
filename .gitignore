@@ -51,3 +51,5 @@ artifacts/
 # Local Rhino ECP private material (never commit)
 **/rhino-ecp-private.json
 
+# Local files spike provider credentials
+/tools/files-spike/.dev.vars*

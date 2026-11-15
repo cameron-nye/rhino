@@ -180,6 +180,7 @@ primitives:
       - docs/contributing/decisions/0055-cli-mcp-oauth-local-execute-http.md
       - docs/contributing/decisions/0062-one-access-check.md
       - docs/contributing/decisions/0076-cli-login-device-token.md
+      - docs/contributing/decisions/0097-local-secret-reads.md
 
   - id: scheduled-cron
     group: surfaces
@@ -220,13 +221,13 @@ primitives:
       - packages/worker/src/discord/guild-membership.ts
       - packages/worker/src/app/oauth-
       - packages/worker/src/app/handlers/verify
-      - packages/worker/src/app/handlers/pending-verification.ts
+      - packages/worker/start/server/pending-verification.ts
       - packages/worker/src/identity/webauthn-operations.ts
       - packages/worker/src/app/handlers/account-two-factor.ts
       - packages/worker/src/app/handlers/account-passkeys.ts
       - packages/worker/src/app/email-verification.ts
       - packages/worker/src/app/onboarding-data.ts
-      - packages/worker/src/app/two-factor.ts
+      - packages/worker/src/identity/two-factor.ts
       - packages/worker/src/app/verify-session.ts
       - packages/worker/src/app/passkeys.ts
       - packages/worker/src/app/webauthn.ts
@@ -236,6 +237,7 @@ primitives:
       - docs/contributing/social-login.md
     adrs:
       - docs/contributing/decisions/0030-discord-guilds-join-on-social-login.md
+      - docs/contributing/decisions/0102-whats-new-email.md
 
   - id: mcp-oauth
     group: auth
@@ -276,6 +278,7 @@ primitives:
       - docs/contributing/decisions/0070-user-owned-api-tokens-and-git-credentials.md
       - docs/contributing/decisions/0076-cli-login-device-token.md
       - docs/contributing/decisions/0091-auth-md-service-auth-registration.md
+      - docs/contributing/decisions/0097-local-secret-reads.md
 
   - id: rbac
     group: auth
@@ -311,6 +314,7 @@ primitives:
       - docs/contributing/decisions/0063-teams-expand-orgs.md
       - docs/contributing/decisions/0067-cross-org-grants-replace-shares-and-platform-accounts.md
       - docs/contributing/decisions/0088-public-team-org-pages.md
+      - docs/contributing/decisions/0097-local-secret-reads.md
 
   - id: entitlements
     group: auth
@@ -461,6 +465,7 @@ primitives:
       - docs/contributing/decisions/0069-internet-visible-capability-pinning.md
       - docs/contributing/decisions/0071-package-app-custom-domains.md
       - docs/contributing/decisions/0089-packages-declare-capabilities.md
+      - docs/contributing/decisions/0098-kody-hosted-build-boxes.md
 
   - id: jobs
     group: assistant
@@ -518,6 +523,7 @@ primitives:
       - docs/contributing/decisions/0080-one-resource-lock-capability.md
       - docs/contributing/decisions/0083-context-runs-never-see-credential-values.md
       - docs/contributing/decisions/0090-login-credentials-are-kody-managed-oauth-refresh.md
+      - docs/contributing/decisions/0097-local-secret-reads.md
 
   - id: integrations
     group: assistant
@@ -586,6 +592,7 @@ primitives:
       - docs/use/email-primitives.md
     adrs:
       - docs/contributing/decisions/0041-no-hardcoded-operator-correspondence.md
+      - docs/contributing/decisions/0102-whats-new-email.md
       - docs/contributing/decisions/0074-org-email-address-and-per-sender-enablement.md
 
   - id: webhooks
@@ -624,6 +631,39 @@ primitives:
       - docs/contributing/architecture/mcp-client-servers.md
     adrs:
       - docs/contributing/decisions/0024-packages-outrank-synthesized-providers.md
+
+  - id: org-file-store
+    group: assistant
+    name: Org files
+    summary:
+      Per-org FileStore catalog and quota coordinator with immutable revisions
+      in FILE_BLOBS, stable file identities, existing resource grants, and
+      account export and deletion coverage. Hosted writes require an explicit
+      included-byte allowance. The signed-in Files page and discoverable agent
+      capabilities share authorization, profile intersection, and write leases.
+    code:
+      - packages/worker/src/files/
+      - packages/worker/universal/files.ts
+      - packages/worker/src/mcp/capabilities/files/
+      - packages/worker/start/pages/files.tsx
+      - packages/worker/start/server/files.ts
+    docs:
+      - docs/contributing/architecture/file-collaboration-spike.md
+    adrs:
+      - docs/contributing/decisions/0060-owner-and-person-ids.md
+      - docs/contributing/decisions/0092-profiles-are-scoped-agent-identities.md
+
+  - id: files-collaboration-spike
+    group: assistant
+    name: Local files collaboration spike
+    summary:
+      Local-only Markdown collaboration and storage migration proof, isolated
+      from production identities, grants, billing, and Worker deployments.
+    code:
+      - tools/files-spike/
+    docs:
+      - docs/contributing/architecture/file-collaboration-spike.md
+    adrs: []
 
   - id: realtime-sessions
     group: assistant
@@ -809,6 +849,7 @@ primitives:
       - docs/contributing/decisions/0083-context-runs-never-see-credential-values.md
       - docs/contributing/decisions/0086-automation-execution-contexts.md
       - docs/contributing/decisions/0093-execution-context-host-commands.md
+      - docs/contributing/decisions/0098-kody-hosted-build-boxes.md
 
   - id: run-records
     group: storage

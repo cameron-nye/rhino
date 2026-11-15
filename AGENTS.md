@@ -1,17 +1,18 @@
 # rhino agent index
 
 Rhino ([fork rules](./docs/contributing/rhino.md)) is Your agents' cloud for
-individuals and teams (orgs, teams, grants): each account holds isolated
-packages, jobs, credentials, memories, remote connectors, email, and storage.
+individuals and teams: each account holds isolated packages, jobs, credentials,
+memories, remote connectors, email, and storage.
 
-`npm run validate` is the single authoritative local gate. UI/API: verify
-locally with [control-kody](./docs/contributing/control-kody.md) first (preview
-when [local cannot](./docs/contributing/cloud-agents.md#local-limitations)).
+Reuse existing UI components and styles. Extend shared controls for shared
+behavior. Never add unstyled native selects. `npm run validate` is the local
+gate; verify UI/API with [control-kody](./docs/contributing/control-kody.md).
 
 Open the page that owns the task:
 
 - Docs map: [contributing](./docs/contributing/index.md) ·
-  [principles](./docs/principles/index.md) · [skills](./.agents/skills/)
+  [principles](./docs/principles/index.md) · [skills](./.agents/skills/) ·
+  [blog](./docs/contributing/blog.md)
 - Invite a whole team: [organizations](./docs/guides/organizations.md)
   (`guide:organizations`, `inviteLinkCreate`)
 - Cloud Agent VM gotchas (Node, Playwright, dev server, seeding, limits):

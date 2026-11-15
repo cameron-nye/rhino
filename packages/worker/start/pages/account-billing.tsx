@@ -1,4 +1,5 @@
 /** @jsxImportSource @emotion/react */
+import { createUiFeedback, type UiFeedback } from '#client/ui-feedback.ts'
 import { sendCancellationFeedback } from '#start/server/billing-mutations'
 import { ErrorAgentPromptButton } from '../components/error-agent-prompt-button.tsx'
 import { buildBillingFailureAgentPrompt } from '#universal/error-agent-prompt-presets.ts'
@@ -6,13 +7,17 @@ import { useSubmitterScope } from '../use-submitter-scope.ts'
 import { formatTimestampDate as formatCancelDate } from '../components/local-timestamp.tsx'
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { orgIdentity, orgOverviewPath } from '#universal/org-pages.ts'
+import {
+	orgBillingPath,
+	orgIdentity,
+	orgOverviewPath,
+} from '#universal/org-pages.ts'
 import { SiteLink } from '../components/site-link.tsx'
 import { adminGrantDiffersFromSubscription } from '#universal/account-plan-display.ts'
 import { CopyTextButton } from '../components/copy-text-button.tsx'
-import {
-	type AccountBillingLoaderData,
-	type AdminPlanName,
+import type {
+	AccountBillingLoaderData,
+	AdminPlanName,
 } from '#universal/loader-data.ts'
 import {
 	accountFieldCss,
@@ -36,6 +41,7 @@ import {
 	billingCheckoutMutationOptions,
 	billingPortalMutationOptions,
 } from '../billing-checkout.ts'
+import { ReferredByPanel } from './account-billing-referred-by.tsx'
 
 import {
 	colors,
@@ -169,12 +175,15 @@ export function AccountBillingPage({
 }) {
 	const capture = useSubmitterScope()
 	const [promoCode, setPromoCode] = useState('')
-	const [message, setMessage] = useState<string | null>(
-		payload.error ?? payload.notice ?? null,
+	const [feedback, setFeedback] = useState<UiFeedback | null>(() =>
+		createUiFeedback(
+			payload.error ?? payload.notice ?? null,
+			payload.error ? 'error' : 'info',
+		),
 	)
-	const [messageTone, setMessageTone] = useState<'error' | 'info'>(
-		payload.error ? 'error' : 'info',
-	)
+	const message = feedback?.message ?? null
+	const messageTone = feedback?.tone ?? 'info'
+
 	const [planCheckoutError, setPlanCheckoutError] = useState<string | null>(
 		null,
 	)
@@ -208,8 +217,12 @@ export function AccountBillingPage({
 		Record<PaidTier, BillingInterval>
 	>({ pro: 'month' })
 	function applyPayload(payload: AccountBillingLoaderData) {
-		setMessage(payload.error ?? payload.notice ?? null)
-		setMessageTone(payload.error ? 'error' : 'info')
+		setFeedback(
+			createUiFeedback(
+				payload.error ?? payload.notice ?? null,
+				payload.error ? 'error' : 'info',
+			),
+		)
 	}
 
 	async function startCheckout(
@@ -218,7 +231,7 @@ export function AccountBillingPage({
 		errorPlacement: 'page' | 'plan-card' = 'plan-card',
 	) {
 		if (checkoutPending) return
-		setMessage(null)
+		setFeedback(createUiFeedback(null))
 		setPlanCheckoutError(null)
 		const isCurrent = capture()
 		const result = await checkoutMutation.mutateAsync({
@@ -232,8 +245,7 @@ export function AccountBillingPage({
 			if (result.mode === 'portal') {
 				// More than one active subscription: the portal update flow
 				// cannot pick one, so the customer manages them in Stripe.
-				setMessage(multipleSubscriptionsMessage)
-				setMessageTone('info')
+				setFeedback(createUiFeedback(multipleSubscriptionsMessage, 'info'))
 			}
 			window.location.assign(result.url)
 			return
@@ -241,8 +253,7 @@ export function AccountBillingPage({
 		if (errorPlacement === 'plan-card') {
 			setPlanCheckoutError(result.error)
 		} else {
-			setMessage(result.error)
-			setMessageTone('error')
+			setFeedback(createUiFeedback(result.error, 'error'))
 		}
 	}
 
@@ -454,7 +465,7 @@ export function AccountBillingPage({
 					{billing.referralProgram ? (
 						<AccountManagementPanel
 							title="Refer a friend"
-							description="Share your link. When someone new creates an account, verifies their email, and pays their first invoice, you both get one month of Pro. There is no cap."
+							description="Share your link. When someone signs up with it, or an existing Free user adds you under Referred by within 72 hours of signing up and before their first payment, you both get one month of Pro once they verify their email and pay their first invoice. There is no cap."
 						>
 							<div
 								css={{
@@ -545,7 +556,7 @@ export function AccountBillingPage({
 														'earned you a month'
 													)
 												) : (
-													'signed up and has not paid yet'
+													'is referred and has not paid yet'
 												)}
 											</li>
 										))}
@@ -555,6 +566,13 @@ export function AccountBillingPage({
 								)}
 							</div>
 						</AccountManagementPanel>
+					) : null}
+
+					{billing.referralProgram ? (
+						<ReferredByPanel
+							orgSlug={payload.org.slug}
+							referredBy={billing.referralProgram.referredBy}
+						/>
 					) : null}
 
 					{billing.cancelAt ? (
@@ -640,12 +658,14 @@ export function AccountBillingPage({
 											if (isCurrent()) window.location.assign(result.url)
 										} catch (error) {
 											if (!isCurrent()) return
-											setMessage(
-												error instanceof Error
-													? error.message
-													: 'Unable to open billing portal.',
+											setFeedback(
+												createUiFeedback(
+													error instanceof Error
+														? error.message
+														: 'Unable to open billing portal.',
+													'error',
+												),
 											)
-											setMessageTone('error')
 										}
 									}}
 									css={{
@@ -659,6 +679,17 @@ export function AccountBillingPage({
 								>
 									Manage subscription
 								</button>
+								{billing.creditsEligible &&
+								billing.manualPlan === 'free' &&
+								billing.stripePlan === 'pro' &&
+								!billing.cancelAt ? (
+									<SiteLink
+										href={`${orgBillingPath(payload.org.slug)}/move-plan`}
+										css={mutedLinkCss}
+									>
+										Move this plan to another organization
+									</SiteLink>
+								) : null}
 							</div>
 						</AccountManagementPanel>
 					) : null}

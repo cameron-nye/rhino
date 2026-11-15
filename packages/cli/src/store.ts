@@ -7,8 +7,10 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
-import { Entry } from '@napi-rs/keyring'
-import { defaultMcpUrl, keyringService } from './defaults.js'
+import { defaultMcpUrl } from './defaults.js'
+import { KeychainTimeoutError, createKeyringEntry } from './keyring-entry.js'
+
+export { secretServiceKeyringOptions } from './keyring-entry.js'
 
 /**
  * Per-org OAuth credentials used by login / MCP / local-execute Bearer.
@@ -29,6 +31,8 @@ export type StoredCredentials = {
 	tokenType: string
 	expiresAt?: number
 	scope?: string
+	/** API origin a saved `kody_at_…` was minted for (`auth bootstrap --api-url`). */
+	apiUrl?: string
 }
 
 /** On-disk / keychain envelope for one or more org logins (same MCP origin). */
@@ -46,7 +50,7 @@ export type MultiOrgCredentialStore = {
 	pending?: OrgCredentialRecord
 }
 
-export type OrgCredentialRecord = {
+type OrgCredentialRecord = {
 	org?: string
 	resource: string
 	authorizationServerUrl: string
@@ -66,11 +70,6 @@ export type SecretBackend = {
 	set(value: string): void
 	delete(): boolean
 }
-
-/** Linux-only: require Secret Service. Ignored on macOS and Windows. */
-export const secretServiceKeyringOptions = {
-	linux: { store: 'secret-service' },
-} as const
 
 export type StoreResolution = {
 	createKeyring?: (mcpUrl: string) => SecretBackend
@@ -130,17 +129,14 @@ export function createFileBackend(path: string): SecretBackend {
 }
 
 export function createKeyringBackend(mcpUrl: string): SecretBackend {
-	const entry = new Entry(
-		keyringService,
-		accountForMcpUrl(mcpUrl),
-		secretServiceKeyringOptions,
-	)
+	const entry = createKeyringEntry(accountForMcpUrl(mcpUrl))
 	return {
 		kind: 'keyring',
 		get() {
 			try {
 				return entry.getPassword()
-			} catch {
+			} catch (error) {
+				if (error instanceof KeychainTimeoutError) throw error
 				return null
 			}
 		},
@@ -165,12 +161,26 @@ function fileBackendFor(
 	return createFileBackend(path)
 }
 
+/**
+ * `KODY_CLI_CREDENTIAL_STORE=file` skips the OS keyring. The keyring is per
+ * OS user, not per HOME/APPDATA, so CLI tests set this to keep saved
+ * credentials inside their temp config dir.
+ */
+export function fileCredentialStoreForced(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return env.KODY_CLI_CREDENTIAL_STORE?.trim().toLowerCase() === 'file'
+}
+
 export function resolveBackend(
 	mcpUrl: string,
 	preferred?: SecretBackend,
 	resolution?: StoreResolution,
 ): SecretBackend {
 	if (preferred) return preferred
+	if (!resolution?.createKeyring && fileCredentialStoreForced()) {
+		return fileBackendFor(mcpUrl, resolution)
+	}
 	try {
 		return (resolution?.createKeyring ?? createKeyringBackend)(mcpUrl)
 	} catch {
@@ -423,7 +433,7 @@ export function loadCredentialStore(
 	return null
 }
 
-export function saveCredentialStore(
+function saveCredentialStore(
 	snapshot: MultiOrgCredentialStore,
 	backend?: SecretBackend,
 	resolution?: StoreResolution,
@@ -468,7 +478,7 @@ export function loadPendingCredentials(
 	return recordToCredentials(snapshot.mcpUrl, snapshot.pending)
 }
 
-export function pickCredentialsFromStore(
+function pickCredentialsFromStore(
 	snapshot: MultiOrgCredentialStore,
 	org?: string,
 ): StoredCredentials | null {
@@ -633,7 +643,7 @@ export function setActiveOrg(
 	return next
 }
 
-export function listOrgSlugs(snapshot: MultiOrgCredentialStore): Array<string> {
+function listOrgSlugs(snapshot: MultiOrgCredentialStore): Array<string> {
 	return Object.keys(snapshot.orgs).sort((a, b) => a.localeCompare(b))
 }
 

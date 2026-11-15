@@ -1,4 +1,4 @@
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
 import { getAppBaseUrl } from '#worker/app-base-url.ts'
 import { listSecrets } from '#mcp/secrets/service.ts'
 import {
@@ -13,12 +13,13 @@ import {
 	ownCredentialNeeds,
 	type CredentialNeed,
 } from '#worker/credentials/credential-needs.ts'
+import { getPackageAppAnonymousRealtimeMode } from '#worker/package-registry/manifest.ts'
 import { loadPackageManifestBySourceId } from '#worker/package-registry/source.ts'
 import { listKodyPackageDependencyNames } from '#worker/package-registry/types.ts'
 import { resolveSavedPackageImport } from '#worker/package-runtime/package-import-resolution.ts'
 import { getEntitySourceById } from '#worker/repo/entity-sources.ts'
 import { listPublishedBundleArtifactsBySourceId } from '#worker/repo/published-bundle-artifacts-repo.ts'
-import { type BundleArtifactDependency } from '#worker/package-runtime/published-runtime-artifacts.ts'
+import type { BundleArtifactDependency } from '#worker/package-runtime/published-runtime-artifacts.ts'
 import {
 	buildCapabilitySet,
 	type CapabilitySet,
@@ -30,6 +31,11 @@ import {
 	type PackageDependencySnapshot,
 } from './dependency-snapshot.ts'
 import { publishedPackageUsesStorage } from './package-storage-use.ts'
+import {
+	declaresAny,
+	selfPublishCapabilityManifestFields,
+	type SelfPublishCapabilityManifestField,
+} from './self-publish-blocker-detail.ts'
 
 /**
  * Closure needs win for keys they already list, except `ownerCredentialForVisitors`:
@@ -62,9 +68,39 @@ export function mergeOwnNeedsOntoClosure(input: {
 	return [...byKey.values()]
 }
 
+/** A declared `kody.credentials` need no reachable credential fills yet. */
+export type UnboundCredentialNeed = {
+	needKey: string
+	description: string
+	provider?: string
+	/** Kind `secret-provider` only: the provider package name. */
+	secretProviderPackage?: string
+	/** The dependency that declared an inherited need. */
+	from?: string
+	/** Why the published slot is invalid, when it failed today's schema. */
+	invalid?: string
+	via: Array<string>
+}
+
+export type DeclaredManifestField = {
+	field: SelfPublishCapabilityManifestField
+	via: Array<string>
+}
+
+/**
+ * What the published tree declares beyond its reachable entries. Display only:
+ * never part of the fingerprint, so approvals stay stable, but the approval
+ * page lists them because declaring them still needs the owner's approval.
+ */
+export type PackageCapabilityDeclarations = {
+	unboundNeeds: Array<UnboundCredentialNeed>
+	manifestFields: Array<DeclaredManifestField>
+}
+
 export type PackageCapabilityComputeResult = {
 	capabilitySet: CapabilitySet
 	dependencySnapshot: PackageDependencySnapshot
+	declarations: PackageCapabilityDeclarations
 }
 
 /**
@@ -100,6 +136,10 @@ export async function computePackageCapabilitySet(input: {
 		requestUrl: input.requestUrl,
 	})
 	const entries: Array<CapabilitySetEntry> = []
+	const declarations: PackageCapabilityDeclarations = {
+		unboundNeeds: [],
+		manifestFields: [],
+	}
 	const viaRoot = [input.packageKodyId]
 	const reachableByPackage = new Map<string, Promise<Array<UsableCredential>>>()
 	const loadReachableCredentials = (packageId: string) => {
@@ -123,6 +163,7 @@ export async function computePackageCapabilitySet(input: {
 		baseUrl,
 		via: viaRoot,
 		entries,
+		declarations,
 		loadReachableCredentials,
 		// The root runs its whole published closure, inherited needs included,
 		// and its mappings are stored against those keys on the root package.
@@ -131,6 +172,15 @@ export async function computePackageCapabilitySet(input: {
 			userId: input.ownerUserId,
 			sourceId: input.sourceId,
 		}),
+	})
+
+	await appendAnonymousRealtimeEntry({
+		env: input.env,
+		ownerUserId: input.ownerUserId,
+		sourceId: input.sourceId,
+		baseUrl,
+		via: viaRoot,
+		entries,
 	})
 
 	const dependencySnapshot = await resolveDependencySnapshot({
@@ -163,13 +213,29 @@ export async function computePackageCapabilitySet(input: {
 			baseUrl,
 			via,
 			entries,
+			declarations,
 			loadReachableCredentials,
 		})
 	}
 
+	const boundNeedKeys = new Set(
+		entries.flatMap((entry) => (entry.needKey ? [entry.needKey] : [])),
+	)
+	const seenNeedKeys = new Set<string>()
 	return {
 		capabilitySet: await buildCapabilitySet(entries),
 		dependencySnapshot,
+		declarations: {
+			// The root closure lists inherited needs first, so its row (with
+			// `from`) wins over the dependency's own row for the same key.
+			unboundNeeds: declarations.unboundNeeds.filter((need) => {
+				if (boundNeedKeys.has(need.needKey)) return false
+				if (seenNeedKeys.has(need.needKey)) return false
+				seenNeedKeys.add(need.needKey)
+				return true
+			}),
+			manifestFields: declarations.manifestFields,
+		},
 	}
 }
 
@@ -345,6 +411,36 @@ async function walkDeclaredKodyDependencies(input: {
 	return [...dependencies.values()]
 }
 
+/**
+ * The root app's `kody.app.realtime.anonymous` opt-in. Only the root serves
+ * sockets, so dependencies never add one. Apps without the opt-in add no
+ * entry, so their fingerprints stay what they were.
+ */
+async function appendAnonymousRealtimeEntry(input: {
+	env: Env
+	ownerUserId: OwnerId
+	sourceId: string
+	baseUrl: string
+	via: Array<string>
+	entries: Array<CapabilitySetEntry>
+}) {
+	const loaded = await loadPackageManifestBySourceId({
+		env: input.env,
+		baseUrl: input.baseUrl,
+		userId: input.ownerUserId,
+		sourceId: input.sourceId,
+	})
+	if (!loaded.manifest.kody.app?.entry?.trim()) return
+	const mode = getPackageAppAnonymousRealtimeMode(loaded.manifest)
+	if (!mode) return
+	input.entries.push({
+		kind: 'realtime',
+		anonymousRealtime: mode,
+		hosts: [],
+		via: input.via,
+	})
+}
+
 async function appendPackageCapabilityEntries(input: {
 	env: Env
 	ownerUserId: OwnerId
@@ -354,6 +450,7 @@ async function appendPackageCapabilityEntries(input: {
 	baseUrl: string
 	via: Array<string>
 	entries: Array<CapabilitySetEntry>
+	declarations: PackageCapabilityDeclarations
 	loadReachableCredentials: (
 		packageId: string,
 	) => Promise<Array<UsableCredential>>
@@ -373,6 +470,21 @@ async function appendPackageCapabilityEntries(input: {
 			publishedCommit: input.publishedCommit,
 		}),
 	])
+	for (const field of selfPublishCapabilityManifestFields) {
+		if (declaresAny(loaded.manifest.kody[field])) {
+			input.declarations.manifestFields.push({ field, via: input.via })
+		}
+	}
+	for (const [needKey, invalid] of Object.entries(
+		loaded.manifest.kody.invalidCredentialSlots ?? {},
+	)) {
+		input.declarations.unboundNeeds.push({
+			needKey,
+			description: '',
+			invalid,
+			via: input.via,
+		})
+	}
 	if (usesStorage) {
 		input.entries.push({
 			kind: 'storage',
@@ -478,6 +590,17 @@ async function appendPackageCapabilityEntries(input: {
 		const fromResolution = resolution.autoPick
 			? [resolution.autoPick]
 			: resolution.candidates
+		if (mapped.length === 0 && fromResolution.length === 0) {
+			input.declarations.unboundNeeds.push({
+				needKey: need.key,
+				description: need.description,
+				provider: need.provider,
+				...(need.package ? { secretProviderPackage: need.package } : {}),
+				...(need.from ? { from: need.from } : {}),
+				via: input.via,
+			})
+			continue
+		}
 		for (const candidate of [...mapped, ...fromResolution]) {
 			if (forVisitors) {
 				const visitorKey = `${need.key}\0${candidate.id}`

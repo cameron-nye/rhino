@@ -1,4 +1,6 @@
 /** @jsxImportSource @emotion/react */
+import { LoadingIndicator } from '../components/loading-indicator.tsx'
+import { createUiFeedback, type UiFeedback } from '#client/ui-feedback.ts'
 import { useState, type FormEvent } from 'react'
 import { useInviteHandoff } from '../use-invite-handoff.ts'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -9,6 +11,7 @@ import {
 } from '#start/server/invite-links'
 import { useSubmitterScope } from '../use-submitter-scope.ts'
 
+import { DetailParts } from '../components/detail-parts.tsx'
 import { formatTimestampDate } from '../components/local-timestamp.tsx'
 import {
 	AccountManagementPanel,
@@ -19,7 +22,7 @@ import {
 	accountInputCss,
 } from './account-management-components.tsx'
 import { renderIcon } from '../components/icon.tsx'
-import { type ScopedInviteLinkView } from '#universal/loader-data.ts'
+import type { ScopedInviteLinkView } from '#universal/loader-data.ts'
 import {
 	type PackageCollaboratorPreset,
 	packageCollaboratorPresetDescription,
@@ -120,8 +123,12 @@ function PackageInviteLinksContent({
 	const [maxUses, setMaxUses] = useState('1')
 	const [expiresInDays, setExpiresInDays] = useState('7')
 	const [created, setCreated] = useInviteHandoff<CreatedLink>(query.data)
-	const [message, setMessage] = useState<string | null>(null)
-	const [messageTone, setMessageTone] = useState<'info' | 'error'>('info')
+	const [feedback, setFeedback] = useState<UiFeedback | null>(() =>
+		createUiFeedback(null, 'info'),
+	)
+	const message = feedback?.message ?? null
+	const messageTone = feedback?.tone ?? 'info'
+
 	const [warnings, setWarnings] = useState<Array<string>>([])
 	const createdUrl = created?.url
 	const lifecycle = {
@@ -171,7 +178,7 @@ function PackageInviteLinksContent({
 		event.preventDefault()
 		if (busy) return
 		const active = capture()
-		setMessage(null)
+		setFeedback(createUiFeedback(null))
 		setWarnings([])
 		try {
 			const result = await createMutation.mutateAsync({
@@ -186,41 +193,46 @@ function PackageInviteLinksContent({
 			setWarnings((result as { warnings?: Array<string> }).warnings ?? [])
 			const copied = await copyText(link.url)
 			if (!active()) return
-			setMessage(
-				copied
-					? 'Invite link copied to clipboard.'
-					: 'Invite link created. Copy it below; it is shown only once.',
+			setFeedback(
+				createUiFeedback(
+					copied
+						? 'Invite link copied to clipboard.'
+						: 'Invite link created. Copy it below; it is shown only once.',
+					'info',
+				),
 			)
-			setMessageTone('info')
 		} catch (error) {
 			if (active()) {
-				setMessage(
-					error instanceof Error
-						? error.message
-						: 'Unable to create invite link.',
+				setFeedback(
+					createUiFeedback(
+						error instanceof Error
+							? error.message
+							: 'Unable to create invite link.',
+						'error',
+					),
 				)
-				setMessageTone('error')
 			}
 		}
 	}
 	async function revoke(linkId: string) {
 		if (busy) return
 		const active = capture()
-		setMessage(null)
+		setFeedback(createUiFeedback(null))
 		try {
 			await revokeMutation.mutateAsync(linkId)
 			if (!active()) return
 			if (created?.id === linkId) setCreated(null)
-			setMessage('Invite link revoked.')
-			setMessageTone('info')
+			setFeedback(createUiFeedback('Invite link revoked.', 'info'))
 		} catch (error) {
 			if (active()) {
-				setMessage(
-					error instanceof Error
-						? error.message
-						: 'Unable to revoke invite link.',
+				setFeedback(
+					createUiFeedback(
+						error instanceof Error
+							? error.message
+							: 'Unable to revoke invite link.',
+						'error',
+					),
 				)
-				setMessageTone('error')
 			}
 		}
 	}
@@ -229,12 +241,14 @@ function PackageInviteLinksContent({
 		const active = capture()
 		const copied = await copyText(createdUrl)
 		if (active()) {
-			setMessage(
-				copied
-					? 'Invite link copied to clipboard.'
-					: 'Could not copy the link. Select it manually.',
+			setFeedback(
+				createUiFeedback(
+					copied
+						? 'Invite link copied to clipboard.'
+						: 'Could not copy the link. Select it manually.',
+					copied ? 'info' : 'error',
+				),
 			)
-			setMessageTone(copied ? 'info' : 'error')
 		}
 	}
 
@@ -247,11 +261,13 @@ function PackageInviteLinksContent({
 				<span css={rowTextCss}>
 					<span css={rowNameCss}>{link.label} link</span>
 					<span css={rowDetailCss}>
-						{[
-							`${link.useCount}${link.maxUses != null ? ` / ${link.maxUses}` : ''} uses`,
-							`Expires ${formatTimestampDate(link.expiresAt)}`,
-							`Created by ${creatorLabel(link)}`,
-						].join(' · ')}
+						<DetailParts
+							parts={[
+								`${link.useCount}${link.maxUses != null ? ` / ${link.maxUses}` : ''} uses`,
+								<>Expires {formatTimestampDate(link.expiresAt)}</>,
+								`Created by ${creatorLabel(link)}`,
+							]}
+						/>
 					</span>
 				</span>
 				<span css={rowActionsCss}>
@@ -375,9 +391,7 @@ function PackageInviteLinksContent({
 					{loadError}
 				</p>
 			) : query.isPending ? (
-				<p role="status" css={linksEmptyCss}>
-					Loading invite links…
-				</p>
+				<LoadingIndicator label="Loading invite links…" />
 			) : links.length > 0 ? (
 				<ul css={linksListCss} data-testid="package-invite-links">
 					{links.map(renderLink)}

@@ -50,7 +50,8 @@ Agent notes — for AI agents explaining or recreating this loop:
   not write memory unless the person asks.
 - Agents call the owned export from `execute` with a static
   `kody:@scope/package/export` import. Use `import(specifier)` when the
-  target name is data (caller-owned or forked modules).
+  target name is data (caller-owned or forked modules); saved package server
+  code cannot use it.
 -->
 
 Kody turns a question you would ask again into code you own. The agent you
@@ -64,7 +65,7 @@ This page is the playbook. The same story is an interactive transcript at
 > Your Agents a Shared Home
 
 Also watch:
-[Build once. Every agent can use it.](https://www.youtube.com/watch?v=QLpTHlQ15Zs).
+[Build once. Every agent can use it.](https://www.youtube.com/watch?v=V4XfDVWq0ws).
 
 ## The loop
 

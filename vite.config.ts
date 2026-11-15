@@ -1,3 +1,4 @@
+import { officeViewers } from './tools/vite-office-viewers.ts'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cloudflare } from '@cloudflare/vite-plugin'
@@ -18,14 +19,8 @@ import { ensureWorkerBundlerModules } from './tools/build-worker-bundler-modules
 import { inlineCssText } from './tools/vite-inline-css-text.ts'
 import { markdownAsText } from './tools/vite-markdown-as-text.ts'
 import { harfbuzzWorker } from './tools/vite-harfbuzz-worker.ts'
+import { flattenClientPreloads } from './tools/vite-flatten-client-preloads.ts'
 import { workerWholeGraphReload } from './tools/vite-worker-whole-graph-reload.ts'
-
-import {
-	startReleaseAssets,
-	startReleaseBase,
-} from './tools/vite-start-release.ts'
-
-const releaseBase = startReleaseBase(process.env.KODY_START_RELEASE)
 
 const root = path.dirname(fileURLToPath(import.meta.url))
 // `@cloudflare/vite-plugin` reads `CLOUDFLARE_ENV` itself (not this
@@ -163,9 +158,25 @@ export default defineConfig(async ({ command }) => {
 		}
 	}
 
+	// Full commit SHA baked into the client for deploy-skew recovery (KODY-DP).
+	// Validate each candidate so an invalid override cannot blank a valid
+	// fallback. Require a full 40-char object id so it matches X-Kody-Build.
+	const bakedAppCommitSha =
+		[
+			process.env.KODY_APP_COMMIT_SHA,
+			process.env.APP_COMMIT_SHA,
+			process.env.DEPLOY_COMMIT_SHA,
+			process.env.GITHUB_SHA,
+		]
+			.map((value) => value?.trim().toLowerCase() ?? '')
+			.find((value) => /^[a-f0-9]{40}$/.test(value)) ?? ''
+
 	return {
-		base: releaseBase,
+		base: '/',
 		publicDir: 'packages/worker/public',
+		define: {
+			__KODY_APP_COMMIT_SHA__: JSON.stringify(bakedAppCommitSha),
+		},
 		environments: {
 			client: {
 				// The late-injected Buffer polyfill is missed by the initial dependency scan.
@@ -173,6 +184,10 @@ export default defineConfig(async ({ command }) => {
 				optimizeDeps: { include: ['buffer'] },
 			},
 			ssr: {
+				// Keep server mappings under Cloudflare's aggregate upload limit.
+				build: {
+					rolldownOptions: { output: { sourcemapExcludeSources: true } },
+				},
 				optimizeDeps: { noDiscovery: true, include: [] },
 				resolve: { noExternal: ['@tanstack/redact'] },
 			},
@@ -183,6 +198,7 @@ export default defineConfig(async ({ command }) => {
 			outDir: process.env.KODY_VITE_OUTDIR ?? 'dist',
 		},
 		plugins: [
+			officeViewers(),
 			harfbuzzWorker(),
 			markdownAsText(),
 			inlineCssText(),
@@ -208,30 +224,31 @@ export default defineConfig(async ({ command }) => {
 			}),
 			workerWholeGraphReload(),
 			redact(),
-			tanstackStart({
-				srcDirectory: 'packages/worker/start',
-				serverFns: {
-					base: releaseBase === '/' ? '/_serverFn' : `${releaseBase}_serverFn/`,
-				},
-				router: {
-					basepath: '/',
-					codeSplittingOptions: {
-						defaultBehavior: [
-							['loader'],
-							['component'],
-							['pendingComponent'],
-							['errorComponent'],
-							['notFoundComponent'],
-						],
+			...flattenClientPreloads(
+				tanstackStart({
+					srcDirectory: 'packages/worker/start',
+					serverFns: {
+						base: '/_serverFn',
 					},
-				},
-				server: { entry: 'server.ts' },
-			}),
+					router: {
+						basepath: '/',
+						codeSplittingOptions: {
+							defaultBehavior: [
+								['loader'],
+								['component'],
+								['pendingComponent'],
+								['errorComponent'],
+								['notFoundComponent'],
+							],
+						},
+					},
+					server: { entry: 'server.ts' },
+				}),
+			),
 			react({
 				include: /\/start\/.*\.[jt]sx?$/,
 				jsxImportSource: '@emotion/react',
 			}),
-			startReleaseAssets(releaseBase),
 		],
 		resolve: {
 			alias: [

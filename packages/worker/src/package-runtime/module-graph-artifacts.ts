@@ -2,7 +2,7 @@ import {
 	normalizePackageExportKey,
 	normalizePackageWorkspacePath,
 } from '#worker/package-registry/manifest.ts'
-import { type WorkerLoaderModules } from '#worker/worker-loader-types.ts'
+import type { WorkerLoaderModules } from '#worker/worker-loader-types.ts'
 import { packageBindingRewriteVersion } from './pre-binding-artifact-repair.ts'
 import {
 	type BundleArtifactDependency,
@@ -33,6 +33,7 @@ import {
 	dynamicPackageImportSpecifierExportName,
 	encodePathKeyAsPath,
 	joinPath,
+	linkedPackageImportPrefix,
 } from './module-graph-paths.ts'
 import {
 	createDynamicPackageImportProxySource,
@@ -134,6 +135,12 @@ function materializeArtifactModuleSource(input: {
 export function materializePublishedArtifactModules(input: {
 	artifactPrefix: string
 	modules: WorkerLoaderModules
+	/**
+	 * Skip writing the Kody runtime modules the artifact imports. Finding them
+	 * parses every module, which is wasted when the caller strips runtime
+	 * modules again before storing the result.
+	 */
+	omitRuntimeModules?: boolean
 }) {
 	const materializedModules: Record<string, string> = {}
 	for (const [modulePath, module] of Object.entries(input.modules)) {
@@ -143,9 +150,80 @@ export function materializePublishedArtifactModules(input: {
 				module,
 			})
 	}
+	if (input.omitRuntimeModules) return materializedModules
 	return refreshKodyRuntimeModules(materializedModules, {
 		includeDefaultRuntimePath: false,
 	}) as Record<string, string>
+}
+
+const linkedArtifactsRoot = joinPath(linkedPackageImportPrefix, 'artifacts')
+
+/**
+ * Linked artifact path for one dependency export at one commit. Linking
+ * writes every artifact here at the bundle root, so a package several
+ * dependencies import is stored once.
+ */
+export function linkedArtifactPrefix(input: {
+	specifier: string
+	sourceId: string
+	publishedCommit: string
+}) {
+	return joinPath(
+		linkedArtifactsRoot,
+		encodePathKeyAsPath(
+			`${input.specifier}#${input.sourceId}#${input.publishedCommit}`,
+		),
+	)
+}
+
+/**
+ * {@link materializePublishedArtifactModules} for a dependency artifact
+ * composed into another bundle: the linked artifacts it carries move up to
+ * `linkedRoot`'s `.__kody_linked__/artifacts/` instead of nesting (a hub
+ * artifact otherwise holds one copy of a shared package per dependency that
+ * imports it), and the placeholder proxies that import `./artifacts/…` point
+ * at the hoisted copies. `linkedRoot` must contain `artifactPrefix`: the root
+ * of the artifact being written when linking (`''`), or the composed
+ * artifact's own prefix when composing a load graph, so every module stays
+ * under its package's prefix.
+ */
+export function materializeDependencyArtifactModules(input: {
+	artifactPrefix: string
+	modules: WorkerLoaderModules
+	linkedRoot: string
+	omitRuntimeModules?: boolean
+}) {
+	const rootPrefix = input.linkedRoot === '' ? '' : `${input.linkedRoot}/`
+	if (!`${input.artifactPrefix}/`.startsWith(rootPrefix)) {
+		throw new Error(
+			`Linked artifact root "${input.linkedRoot}" does not contain "${input.artifactPrefix}".`,
+		)
+	}
+	const marker = `/${linkedArtifactsRoot}/`
+	const materialized: Record<string, string> = {}
+	for (const [modulePath, source] of Object.entries(
+		materializePublishedArtifactModules(input),
+	)) {
+		const relative = modulePath.slice(rootPrefix.length)
+		const nested = `/${relative}`.lastIndexOf(marker)
+		materialized[
+			nested === -1 ? modulePath : `${rootPrefix}${relative.slice(nested)}`
+		] = source
+	}
+	for (const [modulePath, source] of Object.entries(materialized)) {
+		if (!dirname(modulePath).endsWith(`/${linkedPackageImportPrefix}`)) {
+			continue
+		}
+		materialized[modulePath] = source.replace(
+			/(["'])\.\/artifacts\/([^"']+)\1/g,
+			(_match, quote: string, artifactPath: string) =>
+				`${quote}${createRelativeImportSpecifier(
+					modulePath,
+					`${rootPrefix}${joinPath(linkedArtifactsRoot, artifactPath)}`,
+				)}${quote}`,
+		)
+	}
+	return materialized
 }
 
 function isStandaloneDynamicPackageImportPlaceholder(source: string) {

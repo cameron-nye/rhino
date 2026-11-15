@@ -159,7 +159,12 @@ test('account export includes submitted feedback but excludes reviewer-only rela
 			updated_at: '2026-07-05',
 		}),
 	])
-	const reviewerColumns = ['admin_note', 'reviewed_at', 'reviewed_by_user_id']
+	const reviewerColumns = [
+		'admin_note',
+		'reopen_history',
+		'reviewed_at',
+		'reviewed_by_user_id',
+	]
 	for (const column of reviewerColumns) {
 		expect(feedbackRows[0]).not.toHaveProperty(column)
 	}
@@ -169,6 +174,25 @@ test('account export includes submitted feedback but excludes reviewer-only rela
 	expect(
 		accountExport.manifest.sections['d1.platform_feedback']?.redactedColumns,
 	).toEqual(reviewerColumns)
+})
+
+test('account export includes newsletter consent and never-chosen defaults', async () => {
+	const { sqlite, db } = createMigratedDbWithUser()
+	const initial = await exportFor({ APP_DB: db } as Env)
+	expect(d1Table(initial, 'users').rows[0]).toMatchObject({
+		whats_new_email_opt_in: 0,
+		whats_new_email_opt_in_updated_at: null,
+		whats_new_email_opt_in_source: null,
+	})
+	sqlite.exec(
+		`UPDATE users SET whats_new_email_opt_in = 1, whats_new_email_opt_in_updated_at = '2026-11-14T00:00:00.000Z', whats_new_email_opt_in_source = 'email_link'`,
+	)
+	const updated = await exportFor({ APP_DB: db } as Env)
+	expect(d1Table(updated, 'users').rows[0]).toMatchObject({
+		whats_new_email_opt_in: 1,
+		whats_new_email_opt_in_updated_at: '2026-11-14T00:00:00.000Z',
+		whats_new_email_opt_in_source: 'email_link',
+	})
 })
 
 test('account export includes profile fields and social graph edges for either side', async () => {

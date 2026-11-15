@@ -38,6 +38,14 @@ To serve an app on a domain you own (for example `apps.example.com`), see
 [Custom domains](./package-app-custom-domains.md)
 (`guide:package_app_custom_domains`).
 
+## Browse apps in the workspace
+
+Open **Apps** in the workspace sidebar (`/@<slug>/-/apps`) to browse hosted apps
+in that org. Search, visibility, and sort apply to packages you can read; icon,
+card, and list views keep their URL. Packages without `kody.app.entry` appear
+only on **Repositories**. Opening an app uses the same
+[session handoff](#session-handoff) as **Open app**.
+
 > [!WATCH] https://www.youtube.com/watch?v=WjogtbCssZc Watch: Build a Software
 > Pipeline: Help your agent help you
 
@@ -97,22 +105,25 @@ A one-file fetch handler is a complete app (see
 ## Session handoff
 
 Production-hosted apps live at `https://{username}.kody.run/<package-name>/…`
-(and on verified custom domains). That URL is the app.
-`/packages/<package-name>/…` on the same host resolves to the same app.
-`https://kody.codes/@{username}/packages/…` is not the hosted origin: visitors
-who may run the app hand off to it; everyone else stays on the package page (or
-a same-origin landing).
+(`username` is the org handle: personal username or team slug) and on verified
+custom domains. That URL is the app. `/packages/<package-name>/…` on the same
+host resolves to the same app. `https://kody.codes/@{username}/packages/…` is
+not the hosted origin: visitors who may run the app hand off to it; everyone
+else stays on the package page (or a same-origin landing).
 
 **Open app** is one control. For someone who may run the app it goes to
 `/@{username}/packages/<name>/open` on kody.codes, which mints a short-lived
 handoff token and redirects to the hosted origin (`*.kody.run` or a verified
-custom domain). Bare `/@{username}/packages/<name>` still hands off for old
-links when the visitor may run the app. Approved internet-visible apps can also
-be opened at the hosted origin without a session. Prefer the OAuth helper below
-for in-app Sign in / Sign out. A direct visit to `*.kody.run` or a custom domain
-does not see the kody.codes session cookie.
+custom domain). Bare `/@{username}/packages/<name>` also hands off when the
+visitor may run the app. Approved internet-visible apps can also be opened at
+the hosted origin without a session. Prefer the OAuth helper below for in-app
+Sign in / Sign out. A direct visit to `*.kody.run` or a custom domain does not
+see the kody.codes session cookie.
 
 ### Auth with Kody (OAuth)
+
+Watch:
+[Kody package access: from just you to the whole internet](https://www.youtube.com/watch?v=1P5AcX_BJSw).
 
 Hosted packages need no client registration: the package identity (`owner/leaf`)
 is the client. Consent and sign-in stay on kody.codes; authorization codes +
@@ -163,7 +174,8 @@ package-app host directly see a session-required page that links back to Kody,
 where they can sign in and open the app. This handoff avoids redirect loops
 because the app's host-only session cookie is not shared with Kody. Signed-in
 visitors without access see the no-access page. The same gate applies to app
-pages, `/_assets`, and realtime.
+pages, `/_assets`, and realtime (internet-visible apps can open realtime to
+everyone; see [Anonymous realtime](#anonymous-realtime)).
 
 Platform routes on every package-app host (host root, not under `/{leaf}`):
 
@@ -304,10 +316,25 @@ anyone.
 From app server code, `kody.appPublisherGet({})` returns that person:
 `{ user_id, username, email, display_name, org: { slug }, source }`, where
 `source` is `"explicit"` (an Owner chose them), `"publisher"`, or
-`"personal-org"`. It needs no `kody.app.capabilities` entry, and it throws the
-same runs-as error as other calls when the app has no one to run as. Use it when
-the app wants the publisher (for example a "contact the owner" link); use
-`kody.metaGetCurrentUser({})` for the visitor.
+`"personal-org"`. Fields are snake_case, like `metaGetCurrentUser`. It needs no
+`kody.app.capabilities` entry, and it throws the same runs-as error as other
+calls when the app has no one to run as. Use it when the app wants the publisher
+(for example a "contact the owner" link); use `kody.metaGetCurrentUser({})` for
+the visitor.
+
+To check whether the visitor is the person the app runs as, compare user ids:
+
+```ts
+const me = await kody.metaGetCurrentUser({})
+const publisher = await kody.appPublisherGet({})
+const isPublisher = me.user_id === publisher.user_id
+```
+
+The `X-Kody-Visitor` header's `userId` and the OAuth helper's user id are the
+same value as `me.user_id`. Don't use `role === 'owner'` as the owner check: it
+means an Owner of the owning org, which is the publisher only in a personal org.
+`packageAppRunsAsGet` (an MCP capability, not an app function) returns only
+`runs_as: { username, source }`, with no user id.
 
 - The person is checked live on every call. Someone who left the org, or whose
   account is suspended or deleted, stops the app from acting as them, with an
@@ -507,24 +534,178 @@ npx @kodycodes/cli@latest dev fetch /health    # agent-friendly probe
 npx @kodycodes/cli@latest dev --target prod    # local app, real Kody
 ```
 
-`--target` chooses mock vs prod CapabilityProxy hops. It does **not** mean
-“offline,” and `--target prod` does **not** give the working-tree package hosted
-`packageStorage` / `packageSecrets` (those need a published package id). For
-`execute`, `--target mock` also forces the local workerd path (same as
-`--local`); you do not need both flags. `kody dev` and `execute --local` share
-the same local runtime bridge for these cells.
+`--target mock` (the default) runs a real Kody on your machine. On the first
+`kody dev`, the CLI installs `@kodycodes/dev-runtime` (the same version as the
+CLI) into the Kody cache. It holds the hosted origin, platform, runtime, jobs
+and highlight workers, and `kody dev` starts them under local wrangler with
+local D1, Durable Objects, KV, R2, queues, workflows and worker loaders. Each
+rebuild saves the working tree into that local Kody through the real
+`packageSave` route, and every request runs through the hosted package app
+runtime. Nothing is proxied to hosted Kody, and nothing you do locally touches
+your hosted account.
 
-| Command + target           | `packageStorage`                                                   | `packageSecrets`                             | Credentials                                                                                             | Imported published deps                                                                                                                            | Network                                                                                                                                                                       |
-| -------------------------- | ------------------------------------------------------------------ | -------------------------------------------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kody dev` **mock**        | Working-tree: scratch SQLite on the CLI mock                       | Working-tree: throws on the local CLI bridge | Fake / local mock via opaque credential clients on the CLI bridge; secret material stays out of workerd | Local `.kody/deps.json` / `kody.localDeps` when mapped; else package-graph when logged in. Published modules keep their own hosted storage/secrets | With `.kody/mocks.ts`: MSW fail-closed (+ `--passthrough`). Without the file: public hosts can reach the real network (private needs `--allow-private-network`) — not offline |
-| `kody dev` **prod**        | Working-tree: throws (`local:<kody.id>` even if already published) | Working-tree: throws on the local CLI bridge | Real credentials via CapabilityProxy (server-side only)                                                 | Local `.kody/deps.json` / `kody.localDeps` when mapped; else package-graph from prod. Published modules use their own hosted storage/secrets       | Real network (no MSW file)                                                                                                                                                    |
-| `execute --local` **mock** | Same as `kody dev` mock (working-tree scratch)                     | Same as `kody dev` mock (throws)             | Same as `kody dev` mock                                                                                 | Same as `kody dev` mock                                                                                                                            | Same as `kody dev` mock                                                                                                                                                       |
-| `execute --local` **prod** | Same as `kody dev` prod (working-tree throws)                      | Same as `kody dev` prod (throws)             | Same as `kody dev` prod                                                                                 | Package-graph from prod (no working-tree localDeps mapping)                                                                                        | Same as `kody dev` prod                                                                                                                                                       |
+So under `kody dev` the hosted code runs for:
 
-Share previews for unpublished apps are out of scope — publish to share.
+- `kody:runtime` and every package app bridge method: `packageStorage` (the real
+  StorageRunner SQLite Durable Object, so `list({ prefix })`, `clear()`, `sql`
+  and the row counts behave as hosted), `events`, `email`, `workflows`,
+  `packages`, the `realtime` extra, `kody.appRateLimit`, `kody.appSpendGet` and
+  `kody.appPublisherGet`.
+- The capability registry. `kody.*` calls run the real handlers against local
+  data, so plan limits, validation and manifest checks match hosted.
+- Jobs, webhooks and subscriptions (see
+  [Jobs, webhooks and events](#jobs-webhooks-and-events-under-kody-dev)).
 
-Optional outbound HTTP mocking: add `.kody/mocks.ts` (MSW `handlers`) so the CLI
-Node gateway answers package `fetch` calls under mock. Unmatched requests return
+Only the edges of the system are mocked, as listed in
+[Boundary mocks in `kody dev`](#boundary-mocks-in-kody-dev). Local state (D1,
+Durable Objects, the local account and its API token) lives under
+`<kody cache>/dev-state/<hash of the package root>`, outside the package, and
+survives restarts. Delete that directory to start over.
+
+`--target prod` and `execute --local` use a lighter working-tree bridge instead.
+It runs the bundle in a local workerd and sends `kody.*` calls to Kody (mock or
+prod) through the CapabilityProxy. `--target prod` does **not** give the working
+tree hosted `packageStorage` or `packageSecrets`, by design; see
+[Won't do](#wont-do-storage-secrets-email-events-and-packages-on---target-prod).
+
+| Command + target           | `packageStorage`                                                                         | `packageSecrets`                                                                         | Outbound network                                  |
+| -------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `kody dev` **mock**        | Real StorageRunner Durable Object, local state                                           | Placeholders only, never a real secret                                                   | `.kody/mocks.ts` (fail closed), else public hosts |
+| `kody dev` **prod**        | Throws ([won't do](#wont-do-storage-secrets-email-events-and-packages-on---target-prod)) | Throws ([won't do](#wont-do-storage-secrets-email-events-and-packages-on---target-prod)) | Real network                                      |
+| `execute --local` **mock** | Scratch SQLite on the CLI mock                                                           | Throws (light bridge)                                                                    | `.kody/mocks.ts` (fail closed), else public hosts |
+| `execute --local` **prod** | Throws ([won't do](#wont-do-storage-secrets-email-events-and-packages-on---target-prod)) | Throws ([won't do](#wont-do-storage-secrets-email-events-and-packages-on---target-prod)) | Real network                                      |
+
+### Boundary mocks in `kody dev`
+
+These are the only places `kody dev` swaps real code for a mock. CI fails if a
+hosted binding is dropped from the local stack without an entry here.
+
+- **Outbound fetch.** Package `fetch`, `createAuthenticatedFetch` and bound
+  fetches go through the hosted fetch gateway, which hands the request to the
+  CLI's `.kody/mocks.ts` gateway instead of the internet. With a mocks file,
+  unmatched requests fail closed with `unmocked_request` and a paste-ready stub,
+  and `--passthrough <host,...>` opts hosts into the real network. Without a
+  mocks file, public hosts reach the real network (private hosts need
+  `--allow-private-network`), so `kody dev` is not offline.
+- **Third-party services that need a secret.** Mock them in `.kody/mocks.ts`.
+  Your code still sends `{{secret:...}}` placeholders, and the mock sees the
+  placeholder value from [Mock package secrets](#mock-package-secrets), never a
+  real credential.
+- **Email delivery.** See [Email outbox](#email-outbox).
+- **Artifacts.** The local mock Cloudflare worker and a local git server hold
+  package sources.
+- **AI, Vectorize and Images.** Cloudflare only offers these remotely, so they
+  are dropped from the local stack. Search uses the offline ranker that local
+  Kody development uses.
+- **Analytics, billing and error reporting.** Production-only vars (Stripe,
+  Sentry, Fathom, backups) are never set locally.
+
+### Mock package secrets
+
+Under `kody dev`, `packageSecrets.get(alias)` returns a placeholder string that
+names the alias, and `packageSecrets.has(alias)` returns `true`. The local
+runtime never reads the secret store on this path, so it cannot return a real
+secret, not even one with the local-read toggle on. When your code needs a
+third-party response, mock that service in `.kody/mocks.ts` and assert on the
+placeholder there. The trust rule for real secrets is unchanged for hosted runs.
+
+### Email outbox
+
+`kody.emailSend` and the `email` runtime export run the hosted email code,
+including destination checks and limits, but delivery lands in a local outbox
+instead of a mail provider. Read it at `GET /__kody/dev/outbox` on the
+`kody dev` server. Messages to the local account's address
+(`<username>@kody.localhost`) are verified by default.
+
+### Jobs, webhooks and events under `kody dev`
+
+`kody dev job <name>`, `kody dev webhook <name> --body file.json` and
+`kody dev emit <topic> --body file.json` call the real local capabilities
+(`jobRunNow`, `webhookSyntheticDispatch` and `packageSubscriptionDispatch`).
+They attach to a running `kody dev` for the package, and start a one-shot local
+Kody otherwise. Subscriptions are enabled locally on every save, and `emit`
+validates the topic against the package manifest the same way hosted does.
+
+Jobs do not run on their schedule by default, so a save never sets off a burst
+of work. Pass `kody dev --run-jobs` to leave them on their real schedule in the
+local jobs worker. `workflows.create` runs on the local workflows binding with
+the hosted plan and concurrency limits.
+
+### Realtime under `kody dev`
+
+`/ws` and `/ws/{facet}` connect to the real realtime Durable Object, so the
+`realtime` extra (`broadcast`, `emit`, `listSessions` and `disconnect`) behaves
+as hosted. The local proxy signs requests in as the local account, which is a
+member of the owning org. Send a request with `x-kody-dev-visitor: anonymous` to
+make it as a visitor with no session instead; a private app answers it the way
+hosted does. The [anonymous modes](#anonymous-realtime) need an internet-visible
+app, and local Kody runs the same `packageUpdate`, security audit and owner
+approval steps as hosted, against your local account.
+
+### Simulations
+
+Some hosted behavior depends on Cloudflare scheduling, so `kody dev` can only
+approximate it. These are simulations, not exact timing.
+
+- **Clock.** Hosted runs only advance `Date.now()` and `performance.now()`
+  across I/O, so a CPU-only span reads 0 ms there; `kody dev` uses a real clock
+  (see [Server-Timing phases](../use/execute.md#server-timing-phases)).
+  `--clock <iso|ms>` shifts `Date` inside the app isolate to a moment or by an
+  offset, for code that depends on the date.
+- **Storage latency.** Locally, each `packageStorage()` call is a Durable Object
+  call on your machine. `--simulate-latency` adds 25 ms to each call, and
+  `--latency-ms <n>` sets the delay. Hosted, from an execution context each call
+  is also a network round trip to Kody cloud (see
+  [Storage on a machine](./execution-contexts.md#storage-on-a-machine)).
+- **Cold isolates.** By default the local runtime reuses warm app isolates.
+  `--cold` loads the package into a fresh isolate for every request. Cloudflare
+  decides when to evict an isolate, so hosted cold starts are rarer and less
+  predictable.
+- **CPU limit.** On by default: a request whose wall time passes 30 seconds logs
+  a warning that Cloudflare may stop it. `--cpu-limit-ms <n>` changes the limit
+  and `0` turns it off. Wall time includes I/O, so the warning is a conservative
+  stand-in for CPU time.
+- **Memory.** Not enforced. Workerd cannot meter a single app isolate, so a
+  package that goes over the 128 MB isolate limit only fails hosted.
+
+### Won't do: storage, secrets, email, events and packages on `--target prod`
+
+`kody dev --target prod` and `execute --local --target prod` run the working
+tree against real Kody, but they do not give it hosted `packageStorage`,
+`packageSecrets`, `email`, `events` or `packages`. `packageStorage()` and
+`packageSecrets` throw an error that says so, and `email`, `events` and
+`packages` are `null` on the light bridge. Nothing is skipped silently or
+answered with an empty result.
+
+This is intentional, not a gap. The working tree is unpublished local code with
+no published package id, so hosted storage and secrets cannot trust it. Publish
+is the trust boundary: letting unpublished code reach a published package's real
+storage or secrets would let anyone with a working tree read or write production
+data without publishing.
+
+Do this instead:
+
+- Use `--target mock`. `kody dev` runs the hosted storage, email, events and
+  packages code against local state, with
+  [mock package secrets](#mock-package-secrets).
+- Publish, then call the published app with `packageAppFetch`.
+
+There are no open gaps left on the `kody dev` allowlist. CI still fails when a
+working-tree export is nulled or refused without being listed as an open gap or
+a won't-do.
+
+### Capabilities outside the guarded surface
+
+The CI guard covers `kody:runtime` exports and package app bridge methods. The
+light bridge's mock server (`execute --local --target mock`) still answers only
+the `kody.*` calls in `mock-supported.ts`, and every other capability returns
+`not_implemented_in_mock` there. Those are not mocked and not on the allowlist.
+Use `kody dev`, which runs the whole registry locally.
+
+Share previews for unpublished apps are out of scope; publish to share.
+
+Outbound HTTP mocking: add `.kody/mocks.ts` (MSW `handlers`) so the CLI gateway
+answers package `fetch` calls under mock. Unmatched requests return
 `unmocked_request` with a paste-ready stub; `--passthrough <host,…>` opts hosts
 into real network without real credentials. The file is a local-dev hook (not a
 publish entrypoint) and is ignored on `--target prod`; git-tracked files under
@@ -553,6 +734,12 @@ While it runs, `kody dev`:
   the local client bundle.
 - uses a stable port per package and moves to the next free port when that one
   is taken. `--port <n>` is used exactly.
+- listens on `127.0.0.1` only. Pass `--host 0.0.0.0` (or `::`, or one LAN IP) to
+  open the app from a phone or e-reader on the same network; it prints the
+  `network:` URLs to open and a stderr warning that anyone on the network can
+  use the app. Unknown `Host` headers are still rejected. Use it with the
+  default `--target mock`; `--target prod` also needs `--expose-prod`. See
+  [Testing from other devices](../../packages/cli/README.md#testing-from-other-devices---host).
 
 Local-only settings live in `package.json#kody.dev`. Publish ignores them.
 `prebuild` is a shell command run from the package root before every `kody dev`
@@ -1006,6 +1193,78 @@ void app.ready().then(() => {
 
 Save with `packageSave`, open the hosted URL, add a note, and confirm the
 counter increments after hydration (`<html data-hydrated="true">`).
+
+### Anonymous realtime
+
+By default only members of the owning org get a realtime socket (`/ws` and
+`/ws/{facet}`). Everyone else, anonymous or signed in from outside the org, gets
+`403` with "Realtime features of this app are only available to members of the
+organization that owns it." An internet-visible app can open its sockets to
+those visitors with one manifest field:
+
+```json
+{
+	"kody": {
+		"app": {
+			"entry": "src/app.ts",
+			"realtime": { "anonymous": "receive" }
+		}
+	}
+}
+```
+
+- `"receive"`: the visitor's socket gets broadcasts and `emit`s, and nothing
+  else. App code never runs for it: no `connect`, `message`, or `disconnect`
+  hook. The facet comes from the URL. Any inbound data frame closes the socket
+  with `1008`, except the text frame `kody:ping`, which the platform answers
+  with `kody:pong` without waking the app. Use it for live tallies, scoreboards,
+  and presence that the app pushes from its HTTP handlers (for example a vote
+  POST that then calls `realtime.broadcast`).
+- `"two-way"`: the visitor's messages also reach `handleRealtimeEvent` /
+  `onRealtimeEvent`, like a member's.
+
+Rules:
+
+- Off by default. The field does nothing unless the app is internet-visible.
+- It is part of the approved capability set, so turning it on, switching modes,
+  or turning it off changes the fingerprint and needs the owner's approval
+  before it serves.
+- Like anonymous HTTP, sockets run only the commit the owner approved for public
+  visitors (ADR 0069). Until a new version is approved the upgrade gets `403`.
+  An open public socket is closed with `1012` once the app no longer serves its
+  approved commit (republished, no longer internet-visible), so the client
+  reconnects to the current version.
+- Hooks get `visitor`: `{ userId, username, role }` for a signed-in visitor
+  (`role` is `null` outside the org) or `null` for an anonymous one, the same
+  identity `X-Kody-Visitor` carries on HTTP. `session.anonymous` and
+  `listSessions()` entries carry `anonymous` and `visitor` too, so presence
+  counts can tell visitors apart.
+- Public sockets run with the same publisher authority as an anonymous HTTP
+  request and bill the owning org (ADR 0095). Each closed socket records one
+  `realtime_session` usage event; there is no extra credit charge.
+
+Platform caps on public sockets (members are not capped):
+
+| Cap                                                | Limit                         |
+| -------------------------------------------------- | ----------------------------- |
+| Open public sockets per app                        | 2,000 (`429`)                 |
+| Open sockets per client IP per app                 | 20 (`429`)                    |
+| Connects per client IP per app                     | 30 a minute (`429`)           |
+| Session length                                     | 24 hours (closed with `1001`) |
+| Inbound frame (two-way)                            | 64 KiB (closed with `1009`)   |
+| Inbound messages per socket (two-way)              | 10/s, bursts of 20 (`1008`)   |
+| `emit` / broadcast payload to a public socket      | 64 KiB (skipped)              |
+| Broadcasts reaching public sockets (soft, per app) | about 20/s (skipped)          |
+
+A skipped `emit` returns `{ delivered: false, reason: 'payload_too_large' }`; a
+broadcast reports skipped public sockets in `limitedCount` and still reaches
+members. Client IPs are hashed with the package id before they are kept in a
+socket tag.
+
+For example, `@kentcdodds/podium` would add
+`"realtime": { "anonymous": "receive" }` under `kody.app`, republish, and
+approve the new capability set; its audience page could then swap polling for a
+socket.
 
 ### Kody in the request context
 
@@ -1533,6 +1792,12 @@ Billing follows who is visiting
   use `kody.appRateLimit` below for that.
 
 ### App-owned limits and spend
+
+`kody.appRateLimit`, `kody.appSpendGet`, and `kody.appPublisherGet` are host
+functions of `kody:runtime`, not Kody capabilities. They need no
+`kody.app.capabilities` entry (listing them is harmless), they are scoped to the
+app's own package even when a package the app imports calls them, and they do
+not show up in `search` capability results.
 
 `kody.appRateLimit({ key, limit, windowSeconds })` is an atomic fixed-window
 limit scoped to this saved package. Bounds are 1–1,000,000 requests, 1–86,400

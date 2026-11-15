@@ -14,7 +14,7 @@ A pull request needs a signed Contributor License Agreement when any commit on
 it is authored by someone other than Kent C. Dodds or an allowlisted bot.
 
 The contributor keeps copyright. The CLA is an inbound license so the repository
-can stay a single-licensor Fair Source tree under [FSL-1.1-ALv2](../../LICENSE).
+can stay a single-licensor tree under the [Kody License](../../LICENSE).
 
 Sign the [Individual CLA](../legal/individual-cla.md) unless an employer owns
 the work. If an organization owns the work, an authorized representative
@@ -93,6 +93,29 @@ pull requests and can be started manually with `workflow_dispatch`. After an
 accepted Entity CLA, add each authorized username to `cla-signers.json` on the
 `cla-signatures` branch with `signedAt` as an ISO date (`YYYY-MM-DD`) and `cla`
 of `entity`. Allowlist edits go in the same file.
+
+When a successor pull request carries a contributor's commits from a closed or
+superseded one, the `CLA` check reads comments on the successor only. Link the
+original signing comment on the successor, then record that signer. The recorder
+lives on `main` and the signer file lives on `cla-signatures`, so from a `main`
+checkout whose `origin` is `kody-hq/kody`:
+
+```sh
+git fetch origin cla-signatures:refs/remotes/origin/cla-signatures
+git worktree add --detach ../cla-signatures origin/cla-signatures
+node tools/ci/check-cla.ts --signers ../cla-signatures/cla-signers.json --record-signer <login> --signed-at <YYYY-MM-DD> --comment-file <file>
+git -C ../cla-signatures commit -am "cla: record <login> from #<original PR>"
+git -C ../cla-signatures push origin HEAD:cla-signatures
+git worktree remove ../cla-signatures
+```
+
+The comment file holds the original signing comment body. Read the recorder
+output before committing: `added=true` means commit and push; `skipped=false`
+with `added=false` means the signer is already recorded, so skip the commit and
+push; `skipped=true` means the comment file is not the exact signing text, so
+fix the file and run the recorder again. If the push is rejected because the
+branch moved, remove the worktree and start again. Then re-run the check. Do not
+ask the contributor to sign a second time.
 
 Make the `CLA` check required for `main` in GitHub branch protection so a green
 review cannot skip it.

@@ -213,7 +213,7 @@ test('a just-removed owner loses the org binding on the very next request with t
 
 test('global role changes invalidate the cached roles immediately', async () => {
 	const { env, owner } = await setup()
-	const grantProps = { userId: owner.stableUserId }
+	const grantProps = { userId: owner.stableUserId, orgId: owner.stableUserId }
 	const token = 'token-roles'
 
 	const before = await buildMcpAuthContextCached(env, {
@@ -427,6 +427,7 @@ test('org soft-delete unbinds on the next request and restore does not revive th
 		env: { APP_DB: rawDb, AUDIT_DB: createAuditTestDb() } as Env,
 		orgId: ownerIdFromStored(String(org.id)),
 		actorUserId: founder.stableUserId,
+		now: new Date('2026-10-12T00:00:00.000Z'),
 	})
 	const epochAfter = await db
 		.prepare(`SELECT access_epoch FROM orgs WHERE id = ?`)

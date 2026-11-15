@@ -221,3 +221,48 @@ test('Execution contexts sits right after Jobs in Build, marked as an experiment
 		'execution-contexts',
 	)
 })
+
+test('Files appears in the workspace rail only when enabled', () => {
+	expect(items(rails.team).find((item) => item.id === 'files')).toBeUndefined()
+	const enabled = workspaceRailGroups({
+		orgSlug: 'acme',
+		personal: false,
+		role: 'member',
+		files: true,
+	})
+	expect(items(enabled).find((item) => item.id === 'files')).toMatchObject({
+		href: '/@acme/-/files',
+	})
+})
+
+test('Apps is available in personal and team workspace navigation', () => {
+	for (const [groups, slug] of [
+		[rails.personal, 'jane'],
+		[rails.team, 'acme'],
+	] as const) {
+		expect(items(groups).find((item) => item.id === 'apps')).toMatchObject({
+			label: 'Apps',
+			icon: 'apps',
+			href: `/@${slug}/-/apps`,
+		})
+	}
+})
+
+test('Integrations sits right below Credentials in personal and team workspaces', () => {
+	for (const [groups, slug] of [
+		[rails.personal, 'jane'],
+		[rails.team, 'acme'],
+	] as const) {
+		const credentials = groups.find((group) => group.label === 'Credentials')
+		const ids = credentials?.items.map((item) => item.id) ?? []
+		expect(ids.slice(0, 2)).toEqual(['credentials', 'integrations'])
+		expect(
+			credentials?.items.find((item) => item.id === 'integrations'),
+		).toMatchObject({
+			href: `/@${slug}/-/integrations`,
+			label: 'Integrations',
+		})
+		expect(selected(groups, 'integrations')).toEqual(['integrations'])
+		expect(selected(groups, 'credentials')).toEqual(['credentials'])
+	}
+})

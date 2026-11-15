@@ -3,16 +3,19 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { insufficientScopeMessage } from '../src/api-token.js'
+import {
+	insufficientScopeMessage,
+	rejectedApiTokenMessage,
+} from '../src/api-token.js'
 import {
 	deleteStoredApiToken,
 	saveStoredApiToken,
 	type StoredApiToken,
 } from '../src/api-token-store.js'
-import { runCli, storedApiTokenAfterLoginNotice } from '../src/cli.js'
+import { runCli, supersedeStoredApiTokenAfterLogin } from '../src/cli.js'
 import {
+	credentialRejectedNote,
 	resolveCliCredential,
-	type CliCredentialSource,
 } from '../src/cli-credential.js'
 import { clearOpenApiRouteCache } from '../src/open-api-client.js'
 import {
@@ -70,7 +73,7 @@ function pick(input: {
 	}
 }
 
-test('resolveCliCredential call precedence: flag, env, stored token, login', () => {
+test('resolveCliCredential precedence: flag, env, then the saved credential', () => {
 	const all = {
 		flag: 'kody_at_flag',
 		env: 'kody_at_env',
@@ -79,26 +82,73 @@ test('resolveCliCredential call precedence: flag, env, stored token, login', () 
 	}
 	assert.deepEqual(pick(all), {
 		source: 'token-flag',
-		shadowed: ['env', 'stored-api-token', 'login'],
+		shadowed: ['env', 'login'],
 	})
 	assert.deepEqual(pick({ ...all, flag: undefined }).source, 'env')
+	// The saved credential wins; a leftover old-slot token is never a fallback.
 	assert.deepEqual(pick({ stored: true, login: true }), {
-		source: 'stored-api-token',
-		shadowed: ['login'],
+		source: 'login',
+		shadowed: [],
 	})
 	assert.deepEqual(pick({ login: true }), { source: 'login', shadowed: [] })
 	assert.deepEqual(pick({}), { source: null, shadowed: [] })
 })
 
-test('resolveCliCredential session precedence keeps login ahead of env and stored tokens', () => {
-	const expect = (
-		input: Parameters<typeof pick>[0],
-		source: CliCredentialSource | null,
-	) => assert.equal(pick({ ...input, purpose: 'session' }).source, source)
-	expect({ flag: 'kody_at_flag', login: true }, 'token-flag')
-	expect({ env: 'kody_at_env', stored: true, login: true }, 'login')
-	expect({ env: 'kody_at_env', stored: true }, 'env')
-	expect({ stored: true }, 'stored-api-token')
+test('resolveCliCredential uses the same order for every purpose', () => {
+	for (const purpose of ['call', 'session', 'mint'] as const) {
+		assert.equal(
+			pick({ flag: 'kody_at_flag', env: 'kody_at_env', login: true, purpose })
+				.source,
+			'token-flag',
+		)
+		assert.equal(
+			pick({ env: 'kody_at_env', login: true, purpose }).source,
+			'env',
+		)
+		assert.equal(pick({ login: true, purpose }).source, 'login')
+	}
+})
+
+test('resolveCliCredential adopts an old-slot token only when nothing is saved', () => {
+	const saved: Array<StoredCredentials> = []
+	const deleted: Array<string> = []
+	const credential = resolveCliCredential({
+		env: {},
+		apiUrl,
+		mcpUrl,
+		loadApiToken: () => stored,
+		loadLogin: () => null,
+		saveLogin: (credentials) => {
+			saved.push(credentials)
+			return { backend: createFileBackend('/dev/null') }
+		},
+		deleteApiToken: (url) => {
+			deleted.push(url ?? '')
+			return { deleted: true, backend: createFileBackend('/dev/null') }
+		},
+	})
+	assert.equal(credential?.source, 'login')
+	assert.equal(credential?.login?.accessToken, stored.token)
+	assert.equal(saved[0]?.accessToken, stored.token)
+	assert.deepEqual(deleted, [apiUrl])
+})
+
+test('resolveCliCredential never adopts an old-slot token for --org', () => {
+	const saved: Array<StoredCredentials> = []
+	const credential = resolveCliCredential({
+		env: {},
+		apiUrl,
+		mcpUrl,
+		org: 'acme',
+		loadApiToken: () => stored,
+		loadLogin: () => null,
+		saveLogin: (credentials) => {
+			saved.push(credentials)
+			return { backend: createFileBackend('/dev/null') }
+		},
+	})
+	assert.equal(credential, null)
+	assert.equal(saved.length, 0)
 })
 
 test('resolveCliCredential ignores an unreadable store that would not be used', () => {
@@ -113,6 +163,18 @@ test('resolveCliCredential ignores an unreadable store that would not be used', 
 		loadLogin: () => login,
 	})
 	assert.equal(credential?.source, 'token-flag')
+	assert.equal(
+		resolveCliCredential({
+			env: {},
+			apiUrl,
+			mcpUrl,
+			loadApiToken: () => {
+				throw new Error('keyring locked')
+			},
+			loadLogin: () => login,
+		})?.source,
+		'login',
+	)
 	assert.throws(
 		() =>
 			resolveCliCredential({
@@ -122,13 +184,13 @@ test('resolveCliCredential ignores an unreadable store that would not be used', 
 				loadApiToken: () => {
 					throw new Error('keyring locked')
 				},
-				loadLogin: () => login,
+				loadLogin: () => null,
 			}),
 		/keyring locked/,
 	)
 })
 
-test('insufficientScopeMessage names a stored token and says login does not replace it', () => {
+test('insufficientScopeMessage names the saved credential and how to widen it', () => {
 	const credential = resolveCliCredential({
 		env: {},
 		apiUrl,
@@ -141,37 +203,52 @@ test('insufficientScopeMessage names a stored token and says login does not repl
 		currentScopes: stored.scopes,
 		credential,
 	})
-	assert.match(message, /Credential used: stored API token tok_stored_old/)
-	assert.match(message, /`kody login` does not replace a stored API token/)
-	assert.ok(
-		message.includes(
-			'npx @kodycodes/cli auth bootstrap --lifetime short --scopes account:read,org:execute,secret:create',
-		),
-		message,
-	)
+	assert.match(message, /Credential used: saved CLI credential/)
+	assert.match(message, /Run `kody login`/)
+	assert.match(message, /cliCredentialBootstrap with no scopes/)
+	assert.doesNotMatch(message, /stored API token/)
 	assert.doesNotMatch(message, /kody_at_/)
 	assert.doesNotMatch(message, /\u2014/)
 })
 
-test('insufficientScopeMessage for search with only a stored token suggests kody login', () => {
-	const message = insufficientScopeMessage({
-		requiredScope: 'search:read',
-		currentScopes: stored.scopes,
-		credential: resolveCliCredential({
-			env: {},
-			apiUrl,
-			mcpUrl,
-			purpose: 'session',
-			loadApiToken: () => stored,
-			loadLogin: () => null,
-		}),
+test('rejectedApiTokenMessage names the saved credential and the reauth path', () => {
+	const credential = resolveCliCredential({
+		env: {},
+		apiUrl,
+		mcpUrl,
+		loadApiToken: () => stored,
+		loadLogin: () => login,
 	})
-	assert.match(message, /Credential used: stored API token tok_stored_old/)
-	assert.match(message, /Run `kody login` \(search and cloud execute/)
-	assert.doesNotMatch(message, /does not replace/)
+	const message = rejectedApiTokenMessage(
+		' Server said: API token expired. Agents on MCP: call cliCredentialBootstrap…',
+		credential,
+	)
+	assert.match(message, /Credential used: saved CLI credential/)
+	assert.match(message, /Run `kody login`/)
+	assert.match(message, /Server said: API token expired/)
+	assert.doesNotMatch(message, /stored API token/)
+	assert.doesNotMatch(message, /kody_at_/)
 })
 
-test('insufficientScopeMessage names KODY_API_TOKEN and the login session', () => {
+test('rejectedApiTokenMessage names KODY_API_TOKEN over the saved credential', () => {
+	const env = rejectedApiTokenMessage(
+		'',
+		resolveCliCredential({
+			env: { KODY_API_TOKEN: 'kody_at_env' },
+			apiUrl,
+			mcpUrl,
+			loadApiToken: () => stored,
+			loadLogin: () => login,
+		}),
+	)
+	assert.match(env, /Credential used: KODY_API_TOKEN/)
+	assert.match(env, /unset or replace KODY_API_TOKEN/)
+	assert.match(env, /cli_command/)
+	assert.equal(credentialRejectedNote({ credential: null }), null)
+	assert.match(rejectedApiTokenMessage('', null), /cliCredentialBootstrap/)
+})
+
+test('insufficientScopeMessage names KODY_API_TOKEN over the saved credential', () => {
 	const env = insufficientScopeMessage({
 		requiredScope: 'secret:create',
 		credential: resolveCliCredential({
@@ -183,38 +260,68 @@ test('insufficientScopeMessage names KODY_API_TOKEN and the login session', () =
 		}),
 	})
 	assert.match(env, /Credential used: KODY_API_TOKEN/)
-	const viaLogin = insufficientScopeMessage({
-		requiredScope: 'secret:create',
-		credential: resolveCliCredential({
-			env: {},
-			apiUrl,
-			mcpUrl,
-			loadApiToken: () => null,
-			loadLogin: () => login,
-		}),
-	})
-	assert.match(viaLogin, /Credential used: kody login session/)
-	assert.equal(
-		insufficientScopeMessage({
-			denial: 'missing_permission',
-			credential: null,
-		}),
-		insufficientScopeMessage({ denial: 'missing_permission' }),
-	)
+	assert.match(env, /wins over the saved CLI credential/)
 })
 
-test('storedApiTokenAfterLoginNotice warns that login does not replace a stored token', () => {
+test('kody login removes a leftover old-slot token and says so', () => {
+	const deleted: Array<string> = []
+	const deleteApiToken = (url?: string) => {
+		deleted.push(url ?? '')
+		return { deleted: true, backend: null as never }
+	}
 	assert.equal(
-		storedApiTokenAfterLoginNotice(apiUrl, () => null),
+		supersedeStoredApiTokenAfterLogin(apiUrl, {
+			env: {},
+			loadApiToken: () => null,
+			deleteApiToken,
+		}),
 		'',
 	)
-	const notice = storedApiTokenAfterLoginNotice(apiUrl, () => stored)
-	assert.match(notice, /does not replace it/)
-	assert.match(
-		notice,
-		/auth bootstrap --lifetime short --scopes account:read,org:execute/,
-	)
+	assert.deepEqual(deleted, [])
+
+	const notice = supersedeStoredApiTokenAfterLogin(apiUrl, {
+		env: {},
+		loadApiToken: () => stored,
+		deleteApiToken,
+	})
+	assert.deepEqual(deleted, [apiUrl])
+	assert.match(notice, /Removed the old stored API token tok_stored_old/)
+	assert.match(notice, /every command, including git, uses this login/)
 	assert.doesNotMatch(notice, /kody_at_/)
+})
+
+test('kody login keeps env precedence and desktop-only logins leave the old slot', () => {
+	const deleted: Array<string> = []
+	const deleteApiToken = (url?: string) => {
+		deleted.push(url ?? '')
+		return { deleted: true, backend: null as never }
+	}
+	const withEnv = supersedeStoredApiTokenAfterLogin(apiUrl, {
+		env: { KODY_API_TOKEN: 'kody_at_env' },
+		loadApiToken: () => stored,
+		deleteApiToken,
+	})
+	assert.match(withEnv, /KODY_API_TOKEN is set .* still takes precedence/)
+	assert.match(withEnv, /Removed the old stored/)
+	assert.doesNotMatch(withEnv, /kody_at_env/)
+
+	deleted.length = 0
+	assert.equal(
+		supersedeStoredApiTokenAfterLogin(apiUrl, {
+			env: { KODY_CREDENTIAL_SOURCE: 'login' },
+			loadApiToken: () => stored,
+			deleteApiToken,
+		}),
+		'',
+	)
+	assert.deepEqual(deleted, [])
+
+	const failed = supersedeStoredApiTokenAfterLogin(apiUrl, {
+		env: {},
+		loadApiToken: () => stored,
+		deleteApiToken: () => ({ deleted: false, backend: null as never }),
+	})
+	assert.match(failed, /could not remove the old stored .*It is ignored/)
 })
 
 async function withStoredTokenAndLogin(
@@ -239,7 +346,10 @@ async function withStoredTokenAndLogin(
 	delete process.env.KODY_ORG
 	process.env.KODY_MCP_URL = mcpUrl
 	saveStoredApiToken(stored)
-	saveCredentials(login, createFileBackend(fileStorePath(mcpUrl)))
+	saveCredentials(
+		{ ...login, accessToken: 'kody_at_login' },
+		createFileBackend(fileStorePath(mcpUrl)),
+	)
 	const authHeaders: Array<string> = []
 	const previousFetch = globalThis.fetch
 	clearOpenApiRouteCache()
@@ -313,23 +423,19 @@ async function withStoredTokenAndLogin(
 	}
 }
 
-test('with a stored token and a login, whoami reports the credential api sends', async () => {
+test('with an old-slot token and a login, every command sends the login', async () => {
 	await withStoredTokenAndLogin(async ({ authHeaders, capture }) => {
 		const whoami = await capture(['whoami', '--api-url', apiUrl])
 		assert.equal(whoami.code, 0, whoami.stderr)
-		assert.match(
-			whoami.stdout,
-			/credential: stored API token tok_stored_old \(from kody auth bootstrap\)/,
-		)
-		assert.match(whoami.stdout, /scopes: account:read, org:execute/)
-		assert.match(whoami.stdout, /also stored: kody login session/)
-		assert.match(
-			whoami.stdout,
-			/`kody login` does not replace a stored API token/,
-		)
+		assert.match(whoami.stdout, /credential: saved CLI credential/)
+		assert.doesNotMatch(whoami.stdout, /stored API token/)
 		assert.doesNotMatch(whoami.stdout, /kody_at_/)
-		const whoamiBearers = new Set(authHeaders.splice(0))
-		assert.deepEqual([...whoamiBearers], ['Bearer kody_at_stored_old'])
+		assert.ok(authHeaders.includes('Bearer kody_at_login'))
+		assert.ok(
+			authHeaders.every(
+				(header) => header === '' || header === 'Bearer kody_at_login',
+			),
+		)
 
 		const api = await capture([
 			'api',
@@ -339,35 +445,26 @@ test('with a stored token and a login, whoami reports the credential api sends',
 			'--api-url',
 			apiUrl,
 		])
-		assert.equal(api.code, 1)
-		assert.ok(authHeaders.includes('Bearer kody_at_stored_old'))
-		assert.match(api.stderr, /insufficient_scope/)
-		assert.match(api.stderr, /Credential used: stored API token tok_stored_old/)
-		assert.match(api.stderr, /`kody login` does not replace a stored API token/)
-		assert.match(
-			api.stderr,
-			/npx @kodycodes\/cli auth bootstrap --lifetime short --scopes/,
+		assert.ok(authHeaders.includes('Bearer kody_at_login'))
+		assert.ok(
+			authHeaders.every(
+				(header) => header === '' || header === 'Bearer kody_at_login',
+			),
 		)
 		assert.doesNotMatch(api.stderr, /kody_at_/)
 	})
 })
 
-test('whoami --json reports credential provenance and the other stored credential', async () => {
+test('whoami --json reports the saved credential as the only source', async () => {
 	await withStoredTokenAndLogin(async ({ capture }) => {
 		const result = await capture(['whoami', '--api-url', apiUrl, '--json'])
 		assert.equal(result.code, 0, result.stderr)
 		const body = JSON.parse(result.stdout) as {
-			credential: { source: string; tokenId?: string }
+			credential: { source: string }
 			otherCredentials: Array<{ source: string }>
-			searchAndCloudExecuteCredential?: { source: string }
 		}
-		assert.equal(body.credential.source, 'stored-api-token')
-		assert.equal(body.credential.tokenId, 'tok_stored_old')
-		assert.deepEqual(
-			body.otherCredentials.map((other) => other.source),
-			['login'],
-		)
-		assert.equal(body.searchAndCloudExecuteCredential?.source, 'login')
+		assert.equal(body.credential.source, 'login')
+		assert.deepEqual(body.otherCredentials, [])
 		assert.doesNotMatch(result.stdout, /kody_at_/)
 	})
 })
@@ -396,4 +493,187 @@ test('desktop login selection never reads or replaces stored API tokens and neve
 		() => resolveCliCredential({ env: { KODY_CREDENTIAL_SOURCE: 'typo' } }),
 		/must be login/,
 	)
+})
+
+const deadLogin: StoredCredentials = {
+	...login,
+	org: 'acme',
+	accessToken: 'kody_at_login_dead',
+	expiresAt: Date.now() - 3_600_000,
+}
+const liveStored: StoredApiToken = {
+	...stored,
+	token: 'kody_at_stored_live',
+	expiresAt: new Date(Date.now() + 14 * 86_400_000).toISOString(),
+}
+
+test('KODY_API_TOKEN wins over an expired login and an old-slot token', () => {
+	for (const purpose of ['call', 'session', 'mint'] as const) {
+		const credential = resolveCliCredential({
+			env: { KODY_API_TOKEN: 'kody_at_env' },
+			apiUrl,
+			mcpUrl,
+			purpose,
+			loadApiToken: () => liveStored,
+			loadLogin: () => deadLogin,
+		})
+		assert.equal(credential?.source, 'env')
+		assert.equal(credential?.token, 'kody_at_env')
+	}
+})
+
+async function withDeadLogin(
+	options: { stored: boolean; env?: string },
+	run: (input: {
+		authHeaders: Array<string>
+		capture: (
+			args: Array<string>,
+		) => Promise<{ code: number; stdout: string; stderr: string }>
+	}) => Promise<void>,
+) {
+	const home = mkdtempSync(join(tmpdir(), 'kody-cli-dead-login-'))
+	const saved = {
+		XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+		HOME: process.env.HOME,
+		KODY_API_TOKEN: process.env.KODY_API_TOKEN,
+		KODY_API_URL: process.env.KODY_API_URL,
+		KODY_MCP_URL: process.env.KODY_MCP_URL,
+		KODY_ORG: process.env.KODY_ORG,
+	}
+	process.env.XDG_CONFIG_HOME = home
+	process.env.HOME = home
+	if (options.env) process.env.KODY_API_TOKEN = options.env
+	else delete process.env.KODY_API_TOKEN
+	delete process.env.KODY_ORG
+	process.env.KODY_MCP_URL = mcpUrl
+	process.env.KODY_API_URL = apiUrl
+	if (options.stored) saveStoredApiToken(liveStored)
+	saveCredentials(deadLogin, createFileBackend(fileStorePath(mcpUrl)))
+	const authHeaders: Array<string> = []
+	const previousFetch = globalThis.fetch
+	clearOpenApiRouteCache()
+	globalThis.fetch = (async (
+		input: Parameters<typeof fetch>[0],
+		init?: RequestInit,
+	) => {
+		const url = new URL(String(input))
+		const auth = new Headers(init?.headers).get('authorization') ?? ''
+		authHeaders.push(auth)
+		const json = (body: unknown, status = 200) =>
+			new Response(JSON.stringify(body), {
+				status,
+				headers: { 'content-type': 'application/json' },
+			})
+		if (auth === 'Bearer kody_at_login_dead') {
+			return json({ error: { code: 'unauthorized', message: 'expired' } }, 401)
+		}
+		if (url.pathname === '/v1/tokens/current') {
+			return json({
+				id: 'tok_stored_old',
+				name: 'kody-cli-bootstrap',
+				scopes: stored.scopes,
+				expires_at: liveStored.expiresAt,
+			})
+		}
+		if (url.pathname === '/v1/me') {
+			return json({ user_id: 'user_1', email: 'a@example.com' })
+		}
+		if (url.pathname === '/v1/execute') {
+			return json({ content: [{ type: 'text', text: 'ran' }], isError: false })
+		}
+		return new Response('not found', { status: 404 })
+	}) as typeof fetch
+	try {
+		await run({
+			authHeaders,
+			capture: async (args) => {
+				let stdout = ''
+				let stderr = ''
+				const code = await runCli(args, {
+					stdout: (text) => (stdout += text),
+					stderr: (text) => (stderr += text),
+				})
+				return { code, stdout, stderr }
+			},
+		})
+	} finally {
+		globalThis.fetch = previousFetch
+		clearOpenApiRouteCache()
+		deleteStoredApiToken(apiUrl)
+		deleteCredentials(mcpUrl, undefined, undefined, { org: 'acme' })
+		deleteCredentials(mcpUrl)
+		for (const [key, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[key]
+			else process.env[key] = value
+		}
+	}
+}
+
+test('with an expired login and a live old-slot token, status and execute name the same expired credential', async () => {
+	await withDeadLogin({ stored: true }, async ({ authHeaders, capture }) => {
+		const status = await capture(['status'])
+		assert.equal(status.code, 0, status.stderr)
+		assert.match(
+			status.stdout,
+			/access token expires: \S+ \(expired; no refresh token, run `kody login` if `kody whoami` fails\)/,
+		)
+		assert.match(
+			status.stdout,
+			/credential in use \(every command\): saved CLI credential \(org acme\)/,
+		)
+
+		const execute = await capture([
+			'execute',
+			'--code',
+			'export default () => 1',
+		])
+		assert.equal(execute.code, 1)
+		assert.match(
+			execute.stderr,
+			/The saved CLI credential \(org acme\) expired at \S+ and has no refresh token\. Run `kody login`/,
+		)
+		assert.doesNotMatch(execute.stderr, /Stored API token/)
+		assert.ok(!authHeaders.includes('Bearer kody_at_stored_live'))
+	})
+})
+
+test('KODY_API_TOKEN wins for execute over an expired login', async () => {
+	await withDeadLogin(
+		{ stored: false, env: 'kody_at_env' },
+		async ({ authHeaders, capture }) => {
+			const execute = await capture([
+				'execute',
+				'--code',
+				'export default () => 1',
+			])
+			assert.equal(execute.code, 0, execute.stderr)
+			assert.deepEqual(authHeaders, ['Bearer kody_at_env'])
+		},
+	)
+})
+
+test('an expired login with nothing else names the saved credential, never a stored API token', async () => {
+	await withDeadLogin({ stored: false }, async ({ capture }) => {
+		const status = await capture(['status'])
+		assert.match(
+			status.stdout,
+			/access token expires: \S+ \(expired; no refresh token, run `kody login` if `kody whoami` fails\)/,
+		)
+		assert.match(
+			status.stdout,
+			/credential in use \(every command\): saved CLI credential \(org acme\)/,
+		)
+
+		const execute = await capture([
+			'execute',
+			'--code',
+			'export default () => 1',
+		])
+		assert.equal(execute.code, 1)
+		assert.match(
+			execute.stderr,
+			/The saved CLI credential \(org acme\) expired at \S+ and has no refresh token\. Run `kody login`/,
+		)
+		assert.doesNotMatch(execute.stderr, /Stored API token/)
+	})
 })

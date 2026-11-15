@@ -5,10 +5,16 @@
  * authenticated the request and may narrow it. `authorize` reads only this
  * shape. See docs/contributing/architecture/authorization.md.
  */
-import { type OrgPermission } from './org-permissions.ts'
-import { type OwnerId, type PersonId } from './owner-person-ids.ts'
+import type { OrgPermission } from './org-permissions.ts'
+import type { OwnerId, PersonId } from './owner-person-ids.ts'
 
-export type OrgRole = 'owner' | 'member' | 'billing'
+/**
+ * Membership role in the request's org. Owner holds every org permission.
+ * Admin is Owner authority without `org:delete` and without changing,
+ * removing, or promoting Owners. Member and Billing hold their presets plus
+ * grants. `null` membership is Automation or an outside collaborator.
+ */
+export type OrgRole = 'owner' | 'admin' | 'member' | 'billing'
 
 export type RequestOrg = {
 	id: OwnerId
@@ -37,6 +43,7 @@ export type RequestCredentialKind =
 	| 'api-token'
 	| 'cli'
 	| 'package-app'
+	| 'file-storage'
 	| 'inbound-email'
 	| 'webhook'
 	| 'schedule'

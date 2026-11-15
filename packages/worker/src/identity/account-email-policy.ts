@@ -1,7 +1,8 @@
 /**
  * Shared rules for an address that will be stored as an account email.
- * Syntax, common typos, and disposable domains are synchronous. Mail-domain
- * DNS runs from `mail-domain-acceptance.ts` via `assessAccountEmail`.
+ * Syntax and common typos are synchronous. The disposable list loads from an
+ * additional module on first use, and mail-domain DNS runs from
+ * `mail-domain-acceptance.ts` via `assessAccountEmail`.
  */
 
 import { loadDisposableEmailDomains } from '#worker/disposable-email-domains-load.ts'
@@ -9,18 +10,6 @@ import {
 	lookupMailDomainAcceptance,
 	type MailDomainLookup,
 } from './mail-domain-acceptance.ts'
-
-let disposableEmailDomains: Set<string> | null = null
-let disposableEmailDomainsLoad: Promise<Set<string>> | null = null
-
-async function ensureDisposableEmailDomains() {
-	if (disposableEmailDomains) return disposableEmailDomains
-	disposableEmailDomainsLoad ??= loadDisposableEmailDomains().then(
-		(list) => new Set(list),
-	)
-	disposableEmailDomains = await disposableEmailDomainsLoad
-	return disposableEmailDomains
-}
 
 /**
  * Never block these even if a refreshed disposable list contains them.
@@ -149,11 +138,11 @@ function isAcceptedEmailTld(tld: string) {
 }
 
 export async function isDisposableEmailDomain(domain: string) {
-	const disposableDomains = await ensureDisposableEmailDomains()
+	const disposableEmailDomains = await loadDisposableEmailDomains()
 	let current = domain.trim().toLowerCase().replace(/\.$/u, '')
 	while (current.includes('.')) {
 		if (protectedEmailDomains.has(current)) return false
-		if (disposableDomains.has(current)) return true
+		if (disposableEmailDomains.has(current)) return true
 		const dot = current.indexOf('.')
 		current = current.slice(dot + 1)
 	}

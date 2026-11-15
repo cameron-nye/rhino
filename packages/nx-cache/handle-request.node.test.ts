@@ -2,7 +2,7 @@ import { expect, test } from 'vitest'
 
 import { handleNxCacheRequest, parseCacheHash } from './handle-request.ts'
 import { createMemoryCacheStore } from './memory-store.ts'
-import { type NxCacheEnv } from './nx-cache-types.ts'
+import type { NxCacheEnv } from './nx-cache-types.ts'
 
 const ACCESS_TOKEN = 'test-nx-cache-token'
 const READ_TOKEN = 'test-nx-cache-read-token'
@@ -62,6 +62,7 @@ test('health is public; cache routes require a configured bearer token', async (
 	expect(parseCacheHash(CACHE_PATH)).toBe(HASH)
 	expect(parseCacheHash('/v1/cache/../secrets')).toBeNull()
 	expect(parseCacheHash('/v1/cache/not-hex')).toBeNull()
+	expect(parseCacheHash('/v1/cache/199855930269886')).toBe('199855930269886')
 
 	const health = await handle(cacheRequest('GET', '/health', { token: null }))
 	expect(health.status).toBe(200)

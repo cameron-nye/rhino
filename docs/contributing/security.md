@@ -312,7 +312,9 @@ name per package leaf; hash is `sha256(leaf)[0:12]`); plain HTTP local dev uses
 origins. The `__Host-` prefix requires `Secure`, `Path=/`, and no `Domain`
 attribute, so browsers reject any variant with a `Domain` — this blocks
 cross-subdomain cookie tossing even before the package-app domain is on the
-Public Suffix List. Serving additionally requires the resolved session account's
+Public Suffix List. `readPackageAppSession` only reads the names for the
+request's scheme, so on HTTPS an unprefixed name tossed from a sibling subdomain
+is ignored. Serving additionally requires the resolved session account's
 username, the subdomain label, and the path's owner username to all match
 (`servePackageAppRequest` in
 `packages/worker/src/package-runtime/package-app-serve.ts`), so a handoff minted
@@ -379,7 +381,39 @@ to the app. If the app handler throws on `OPTIONS`, the platform answers `204`
 instead of the package-entrypoint crash page. Same-site credentialed GETs remain
 possible until the PSL entry lands; package apps must not mutate on GET, which
 HTTP already demands. Cross-origin `POST`, `PUT`, `PATCH`, and `DELETE` stay
-`403`.
+`403`. A WebSocket upgrade is a `GET`, but CORS does not cover WebSockets, so a
+cross-origin page would get a full read/write realtime socket: upgrades get the
+same `Origin` check and a cross-origin upgrade is `403` too.
+
+**Public realtime (`kody.app.realtime.anonymous`).** A realtime upgrade from
+anyone outside the owning org (anonymous or a signed-in outsider) is `403`
+unless the app is internet-visible, its approved manifest opts in, and the
+published commit is the one the owner approved (ADR 0069). The opt-in is part of
+the capability fingerprint, so a publish that turns it on or changes the mode
+waits for owner approval. It is the same bar as an anonymous HTTP `POST`: app
+code runs with publisher authority and bills the owning org (ADR 0095). The
+`PackageRealtimeSession` Durable Object
+(`packages/worker/src/package-runtime/realtime-session.ts`) enforces the rest:
+
+- **Receive-only** sockets never run app hooks. Inbound frames close with `1008`
+  and `kody:ping` is answered by `setWebSocketAutoResponse`, so a stranger
+  cannot run owner code, and keepalive pings never wake the Durable Object.
+- **Pin:** hooks for a public socket build only from its approved commit (a
+  mismatch closes it with `1012`), and an alarm rechecks the approved commit
+  every 5 minutes so republishing or turning off internet visibility drops open
+  public sockets.
+- **Visitor context:** hooks get `visitor` (`null` when anonymous) and sessions
+  carry `anonymous`, so app code cannot mistake a stranger for a member.
+- **Caps** (public sockets only, `anonymousRealtimeLimits`): 2,000 per app, 20
+  per client IP, 30 connects a minute per IP, 24 hours per session, 64 KiB per
+  inbound frame and per outbound payload, a soft 20 broadcasts a second per app,
+  and 10 inbound messages a second (burst 20) per two-way socket. Client IPs are
+  kept only as a package-salted SHA-256 prefix in a socket tag. Per-socket state
+  is stored under its own key, so a busy socket does not rewrite every session's
+  state.
+
+Team-org realtime (team-scoped sockets) is still not supported
+([#5067](https://github.com/kody-hq/kody/issues/5067)).
 
 - **No redirect cycle:** the app origin only ever redirects _to_ a package-app
   subdomain, the apex only redirects to a subdomain or the app origin, and a
@@ -398,7 +432,8 @@ no package-app origin resolves. That path is still credential-stripped, but it
 is same-origin, so **do not treat a non-production inline run as representative
 of the production isolation boundary**. To exercise the two-origin flow locally,
 set `PACKAGE_APP_BASE_URL=http://packages.localhost:<port>` in
-`packages/worker/.env`.
+`packages/worker/.env`; `npm run dev` forwards it to the runtime Worker, which
+owns package-app host routing (`tools/local-sibling-dev-config.ts`).
 
 The cross-site handoff (how the owner is recognized on the package-app subdomain
 without giving package code a first-party session) is documented in
@@ -615,9 +650,11 @@ guarded by a bearer secret comparison.
   for platform OAuth client secrets), so a ciphertext copied into another user's
   row fails to decrypt. Integration-owned OAuth tokens and user-lane client
   secrets live only as ciphertext on `user_integrations` / `user_oauth_apps`;
-  they are not stored in `secret_entries`. Row swaps already require write
-  access to the database, so AAD binding is defense-in-depth, not a standing
-  hole.
+  they are not stored in `secret_entries`. Guest claim codes use the same seal
+  (purpose `guest-claim-code`, context `guest:<personId>:claim-code`);
+  `guest_accounts.claim_code` stores only the SHA-256 lookup hash. Row swaps
+  already require write access to the database, so AAD binding is
+  defense-in-depth, not a standing hole.
 - `SECRET_STORE_KEY` is escrowed for disaster recovery as a passphrase-sealed
   blob in the DR backup bucket (solo operator; see
   [Disaster recovery](./disaster-recovery.md) and
@@ -669,19 +706,25 @@ quarantined user mail dispatches `email.message.quarantined` instead.
 `emailReply` refuses a quarantined inbound message (`quarantined_inbound_reply`)
 before any send or daily send quota is used, so a reply cannot backscatter to a
 spoofed sender. Release it with `emailMessageClassify` (classification
-`accepted`) or Not spam on `/@<slug>/-/email`, then reply. Quarantined operator
-system-inbox mail is stored but suppresses `email.system-message.received`.
-Before user-inbox dispatch, `classifyInboundEmailSender` decides the sender. A
-verified, authenticated account email of a current org member is `member` (only
-packages they hold `package:execute` on are considered). Any other From that
-authenticates by DMARC pass or aligned SPF is `inbox-owner`. Packages run only
-when a per-sender enablement matches; the run acts as that enablement's enabler,
-with credentials checked and audited under them. DKIM-only, a missing
-Authentication-Results header, failed auth, a missing From, or a spoofed member
-address runs nothing and logs `inbound-email-sender-unverified`. Successful
-reserved-sender sends fan `email.system-message.sent` (admin-only) with the sent
-correspondence. Reclassification never retroactively fires subscription events.
-Users manage rules via `email_sender_rule_*` (200-rule cap), reclassify via
+`accepted`) or Not spam on `/@<slug>/-/email`, then reply. Reply-all
+(`reply_all: true`) takes recipients only from the stored message, never Bcc,
+and only on a thread where an authenticated message from one of the owner's
+verified destinations had the inbox in To or Cc; otherwise it refuses with
+`reply_all_not_allowed`, so a stranger cannot Cc a Kody address to make it mail
+third parties. It is capped per thread (`replyAllThreadSendLimit` in
+`email/reply-all.ts`). Quarantined operator system-inbox mail is stored but
+suppresses `email.system-message.received`. Before user-inbox dispatch,
+`classifyInboundEmailSender` decides the sender. A verified, authenticated
+account email of a current org member is `member` (only packages they hold
+`package:execute` on are considered). Any other From that authenticates by DMARC
+pass or aligned SPF is `inbox-owner`. Packages run only when a per-sender
+enablement matches; the run acts as that enablement's enabler, with credentials
+checked and audited under them. DKIM-only, a missing Authentication-Results
+header, failed auth, a missing From, or a spoofed member address runs nothing
+and logs `inbound-email-sender-unverified`. Successful reserved-sender sends fan
+`email.system-message.sent` (admin-only) with the sent correspondence.
+Reclassification never retroactively fires subscription events. Users manage
+rules via `email_sender_rule_*` (200-rule cap), reclassify via
 `emailMessageClassify` or `/@<slug>/-/email`, and delete stored messages via
 `emailMessageDelete` or the delete action on `/@<slug>/-/email`; operators use
 `admin_system_email_sender_rule_*` for system inboxes. Upstream, Cloudflare
@@ -758,7 +801,11 @@ change to these decisions here so future agents do not relitigate them.
   stays the OAuth provider TTLs. A signed-in password change re-issues the
   current browser cookie so that tab stays signed in; every other session still
   dies. Reclaiming an unverified account on a provider-verified social match
-  uses the same `password_changed_at` lockout.
+  uses the same `password_changed_at` lockout. Every password change also
+  deletes the user's `pending_email_changes`. Code that acts on the cookie's
+  identity (OAuth authorize, provider linking, email-change re-mint, social
+  start) reads it through `readLiveAuthSession`, never the signature-only
+  `readParsedAuthSession`, so a rejected cookie counts as signed out.
 - **OAuth authorize client reset is grant-scoped.** A signed-in user can reset a
   mismatched DCR client for **their** grants only. `deleteClient` runs only when
   `user_mcp_oauth_clients` shows they own that registration. Shared host clients
@@ -815,8 +862,11 @@ change to these decisions here so future agents do not relitigate them.
   (`enabler_scopes_json`, `enabler_profile_id`), and scheduled, webhook,
   inbound-email, and subscription runs derive their request with them
   (`automation()` in `request-context.ts`). A package app visit ticket carries
-  the visitor credential's scopes and profile the same way. Enablements turned
-  on before this was recorded store none and do not narrow.
+  the visitor credential's scopes and profile the same way. Each snapshot is
+  stored independently. Only enablements that store neither
+  `enabler_scopes_json` nor `enabler_profile_id` leave scoped automation runs
+  unnarrowed. An enablement with scopes and no profile still narrows its run to
+  those scopes.
 - **Site-admin tools run from automation only for a site admin, and are
   audited.** Background package runs resolve the owner's roles with a short
   cache (`packages/worker/src/identity/background-mcp-user.ts`), so a triggered

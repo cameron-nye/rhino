@@ -1,15 +1,44 @@
 /**
- * Scratch storage for `--target mock`, keyed by the active content-addressed
- * session directory under the user cache. Reset with `--reset-storage`.
+ * Scratch storage for `--target mock`, keyed by the mock session id
+ * (`KODY_MOCK_SESSION_ID`, or `default`) under the user cache
+ * (`mock-sessions/<id>/`). Reset with `--reset-storage`.
  */
 
 import { mkdirSync } from 'node:fs'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import {
+	mkdir,
+	open,
+	readFile,
+	rename,
+	rm,
+	stat,
+	writeFile,
+} from 'node:fs/promises'
 import { join } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
+import { setTimeout as sleep } from 'node:timers/promises'
+import {
+	DatabaseSync,
+	type SQLInputValue,
+	type StatementSync,
+} from 'node:sqlite'
+import {
+	collectStorageSqlCursor,
+	settleStorageSqlRead,
+	type StorageSqlReadCursor,
+	type StorageSqlReadResult,
+	type StorageSqlReadValue,
+} from '@kody-internal/shared/storage-sql-read-policy.ts'
+import {
+	isStorageSqlReturningMutation,
+	isStorageSqlWrite,
+	maskSqlLiteralsAndComments,
+	maxStorageSqlQueryRows,
+	normalizeSqlParams,
+} from '@kody-internal/shared/storage-sql-statement.ts'
 import { userCacheDir } from '../workerd-binary.js'
 
-export type MockStorageBucket = {
+type MockStorageBucket = {
 	/** Arbitrary JSON-serializable rows keyed by string id. */
 	rows: Record<string, unknown>
 }
@@ -46,7 +75,7 @@ export type MockSessionState = {
 
 const mockStateFile = 'state.json'
 
-export function mockSessionRoot(
+function mockSessionRoot(
 	sessionId: string,
 	env: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -71,15 +100,8 @@ export async function loadMockSession(input: {
 		await rm(root, { recursive: true, force: true })
 	}
 	await mkdir(root, { recursive: true })
-	const path = join(root, mockStateFile)
-	try {
-		const raw = JSON.parse(await readFile(path, 'utf8')) as MockSessionState
-		if (raw?.version === 1 && raw.sessionId === sessionId) {
-			return normalizeMockSessionCredentials(raw)
-		}
-	} catch {
-		// miss → create
-	}
+	const existing = await readMockStateFile(join(root, mockStateFile), sessionId)
+	if (existing) return existing
 	const now = new Date().toISOString()
 	const fresh: MockSessionState = {
 		version: 1,
@@ -123,17 +145,136 @@ export async function loadMockSession(input: {
 	return fresh
 }
 
-export async function persistMockSession(
+async function persistMockSession(
 	state: MockSessionState,
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
 	state.updatedAt = new Date().toISOString()
 	const root = mockSessionRoot(state.sessionId, env)
 	await mkdir(root, { recursive: true })
-	await writeFile(
-		join(root, mockStateFile),
-		`${JSON.stringify(state, null, 2)}\n`,
+	const path = join(root, mockStateFile)
+	// Write then rename so a reader in another process never sees half a file.
+	const temp = `${path}.${process.pid}.${randomUUID()}.tmp`
+	await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`)
+	await rename(temp, path)
+}
+
+/**
+ * The mock store file is the source of truth, not any one process's memory:
+ * `kody dev`, `kody execute --target mock`, one-shot `kody dev job|webhook|emit`,
+ * and hand edits all share it. Refuses (never overwrites) a file it cannot read.
+ */
+export class MockStoreFileError extends Error {
+	constructor(message: string) {
+		super(message)
+		this.name = 'MockStoreFileError'
+	}
+}
+
+async function readMockStateFile(
+	path: string,
+	sessionId: string,
+): Promise<MockSessionState | null> {
+	for (let attempt = 0; ; attempt++) {
+		let text: string
+		try {
+			text = await readFile(path, 'utf8')
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+			throw error
+		}
+		let raw: MockSessionState
+		try {
+			raw = JSON.parse(text) as MockSessionState
+		} catch (error) {
+			// An editor saving in place can leave a half-written file for a moment.
+			if (attempt === 0) {
+				await sleep(50)
+				continue
+			}
+			throw new MockStoreFileError(
+				`The mock store ${path} is not valid JSON (${(error as Error).message}), so Kody will not read or overwrite it. Fix the JSON, or delete the file (or pass --reset-storage) to start with empty mock storage.`,
+			)
+		}
+		if (raw?.version !== 1 || raw.sessionId !== sessionId) {
+			throw new MockStoreFileError(
+				`The mock store ${path} is not a version 1 store for mock session "${sessionId}", so Kody will not read or overwrite it. Restore its "version": 1 and "sessionId": "${sessionId}", or delete the file (or pass --reset-storage) to start with empty mock storage.`,
+			)
+		}
+		return normalizeMockSessionCredentials(raw)
+	}
+}
+
+const mockStoreLockWaitMs = 5_000
+const mockStoreStaleLockMs = 10_000
+
+async function withMockStoreLock<T>(
+	path: string,
+	fn: () => Promise<T>,
+): Promise<T> {
+	const lockPath = `${path}.lock`
+	const deadline = Date.now() + mockStoreLockWaitMs
+	for (;;) {
+		try {
+			await (await open(lockPath, 'wx')).close()
+			break
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+			const heldMs = await stat(lockPath).then(
+				(info) => Date.now() - info.mtimeMs,
+				() => 0,
+			)
+			// A process that died mid-write leaves its lock behind.
+			if (heldMs > mockStoreStaleLockMs) {
+				await rm(lockPath, { force: true })
+				continue
+			}
+			if (Date.now() > deadline) {
+				throw new MockStoreFileError(
+					`Another kody process has held the mock store lock ${lockPath} for over ${mockStoreLockWaitMs / 1000}s. If no other kody command is running, delete that file and retry.`,
+				)
+			}
+			await sleep(10)
+		}
+	}
+	try {
+		return await fn()
+	} finally {
+		await rm(lockPath, { force: true })
+	}
+}
+
+/** The current mock store, read fresh so writes from other processes show. */
+export async function readMockSession(input: {
+	sessionId: string
+	env?: NodeJS.ProcessEnv
+}): Promise<MockSessionState> {
+	const env = input.env ?? process.env
+	const path = join(mockSessionRoot(input.sessionId, env), mockStateFile)
+	return (
+		(await readMockStateFile(path, input.sessionId)) ??
+		(await loadMockSession({ sessionId: input.sessionId, env }))
 	)
+}
+
+/**
+ * Apply one change to the latest store on disk under a cross-process lock,
+ * so concurrent writers each keep their keys (last write wins per key).
+ */
+export async function mutateMockSession<T>(
+	input: { sessionId: string; env?: NodeJS.ProcessEnv },
+	change: (state: MockSessionState) => T,
+): Promise<T> {
+	const env = input.env ?? process.env
+	const root = mockSessionRoot(input.sessionId, env)
+	await mkdir(root, { recursive: true })
+	const path = join(root, mockStateFile)
+	return await withMockStoreLock(path, async () => {
+		const state = await readMockSession({ sessionId: input.sessionId, env })
+		const result = change(state)
+		await persistMockSession(state, env)
+		return result
+	})
 }
 
 /** Backfill hosts/scope on older mock session files so credential() stays iterable. */
@@ -243,26 +384,13 @@ export function closePackageSqlDbsForSession(sessionId: string): void {
 }
 
 /**
- * True when the prepared statement yields result columns (SELECT / WITH /
- * PRAGMA / EXPLAIN, or DML with RETURNING). Prefer `StatementSync.columns()`
- * (Node ≥22.16) over verb-prefix matching so `INSERT … RETURNING` is not
- * treated as a silent mutation. A `returning` regex would also match string
- * literals — columns() does not.
- */
-export function statementYieldsRows(stmt: {
-	columns?: () => Array<unknown>
-}): boolean | null {
-	if (typeof stmt.columns !== 'function') return null
-	return stmt.columns().length > 0
-}
-
-/**
- * Run SQL against the package's scratch SQLite file.
- * Returns `{ rows }` so callers that accept either an array or `{ rows }` work
- * (same shape dropbox-delete-me / data-table expect from hosted packageStorage).
- * Mutations without result columns also return `changes` (node:sqlite `run`).
- * Hosted `packageStorage().sql` returns RETURNING rows the same way via the
- * Durable Object SQL cursor (see storage-runner `sqlQuery`).
+ * Run SQL against the package's scratch SQLite file and return the hosted
+ * `packageStorage().sql` result. Shaping, the row cap, `truncated`, and the
+ * rows-read warning come from the same helpers StorageRunner uses, so only
+ * the cursor counters differ (see {@link mockSqlCursor}).
+ *
+ * Like `ctx.storage.sql.exec`, several `;`-separated statements run in order,
+ * only the last may take bindings, and the result describes the last one.
  */
 export function packageStorageSql(
 	state: MockSessionState,
@@ -270,68 +398,233 @@ export function packageStorageSql(
 	query: string,
 	bindings: Array<unknown> = [],
 	env: NodeJS.ProcessEnv = process.env,
-): { rows: Array<Record<string, unknown>>; changes?: number } {
+): StorageSqlReadResult {
 	const db = openPackageSqlDb(state, packageId, env)
-	const stmt = db.prepare(query)
-	const params: Array<null | number | bigint | string | Uint8Array> =
-		bindings.map((value) => {
-			if (value === null) return null
-			if (
-				typeof value === 'string' ||
-				typeof value === 'number' ||
-				typeof value === 'bigint'
-			) {
-				return value
+	const params: Array<SQLInputValue> = normalizeSqlParams(bindings)
+	if (params.length > mockSqlMaxBoundParameters) {
+		// Hosted Durable Object SQLite rejects these; fail locally the same way.
+		throw new Error(
+			`too many SQL variables: packageStorage().sql allows at most ${mockSqlMaxBoundParameters} bound parameters per statement (got ${params.length}). Split the batch.`,
+		)
+	}
+	let remaining = query
+	for (;;) {
+		const stmt = prepareMockSqlStatement(db, remaining)
+		const tail = remaining.slice(stmt.sourceSQL.length)
+		const slots = sqlParameterSlots(stmt.sourceSQL)
+		if (tail.trim()) {
+			if (slots.length > 0) {
+				throw new Error(
+					'When executing multiple SQL statements in a single call, only the last statement can have parameters.',
+				)
 			}
-			if (typeof value === 'boolean') return value ? 1 : 0
-			if (value instanceof Uint8Array) return value
-			return String(value)
-		})
-	const yields = statementYieldsRows(stmt)
-	if (yields === true) {
-		return { rows: plainSqlRows(stmt.all(...params)) }
-	}
-	if (yields === false) {
-		const info = stmt.run(...params) as { changes?: number }
-		return {
-			rows: [],
-			changes: typeof info.changes === 'number' ? info.changes : 0,
+			drainMockSqlStatement(stmt)
+			remaining = tail
+			continue
 		}
-	}
-	// Node < 22.16: columns() missing. Prefer all() so RETURNING still works.
-	// all() already ran the statement — do not call run() afterward.
-	const rows = plainSqlRows(stmt.all(...params))
-	if (rows.length > 0) return { rows }
-	const trimmed = query.trimStart().toLowerCase()
-	const isReadLike =
-		trimmed.startsWith('select') ||
-		trimmed.startsWith('with') ||
-		trimmed.startsWith('pragma') ||
-		trimmed.startsWith('explain')
-	if (isReadLike) return { rows }
-	// Empty DML+RETURNING must match hosted `{ rows: [] }` (no `changes`).
-	// Strip string/blob literals first so a body value of "returning id" does
-	// not fake a RETURNING clause.
-	if (sqlHasReturningClause(query)) return { rows }
-	const changesRow = db.prepare('select changes() as c').get() as
-		| { c?: number }
-		| undefined
-	return {
-		rows: [],
-		changes: typeof changesRow?.c === 'number' ? changesRow.c : 0,
+		if (slots.length !== params.length) {
+			throw new Error('Wrong number of parameter bindings for SQL query.')
+		}
+		const settled = settleStorageSqlRead(
+			collectStorageSqlCursor(
+				mockSqlCursor(db, stmt, bindMockSqlParams(slots, params)),
+				{
+					drainOverflow: isStorageSqlReturningMutation(stmt.sourceSQL),
+					writeFinished: isStorageSqlWrite(stmt.sourceSQL),
+					maxRows: maxStorageSqlQueryRows,
+				},
+			),
+		)
+		if (settled.outcome === 'error') throw settled.error
+		return settled.result
 	}
 }
 
-/** True when SQL has a RETURNING keyword outside string/blob literals. */
-export function sqlHasReturningClause(query: string): boolean {
-	const withoutLiterals = query.replace(
-		/'(?:[^']|'')*'|"(?:[^"]|"")*"|X'[0-9A-Fa-f]*'/g,
-		"''",
-	)
-	return /\breturning\b/i.test(withoutLiterals)
+/** Hosted package storage SQL's per-statement bound-parameter cap. */
+const mockSqlMaxBoundParameters = 100
+
+function prepareMockSqlStatement(db: DatabaseSync, sql: string) {
+	try {
+		return db.prepare(sql)
+	} catch (error) {
+		// Match the workerd message for empty SQL or a trailing comment.
+		if (
+			error instanceof Error &&
+			error.message.includes('contains no statements')
+		) {
+			throw new Error('SQL code did not contain a statement.')
+		}
+		throw error
+	}
+}
+
+function drainMockSqlStatement(stmt: StatementSync) {
+	for (const _row of runMockSqlStatement(stmt, [])) {
+		// Earlier statements run for their side effects only.
+	}
+}
+
+type SqlParameterSlot = { index: number; name: string | null }
+
+/**
+ * Parameter slots SQLite assigns to one statement (`?`, `?NNN`, `:name`,
+ * `@name`, `$name`), in index order. node:sqlite does not expose
+ * `sqlite3_bind_parameter_count`, and it silently binds NULL for missing
+ * positional values where workerd throws, so the mock counts them itself.
+ */
+export function sqlParameterSlots(sql: string): Array<SqlParameterSlot> {
+	const masked = maskSqlLiteralsAndComments(sql)
+	const slots = new Map<number, SqlParameterSlot>()
+	const named = new Map<string, number>()
+	let maxIndex = 0
+	const pattern = /\?(\d*)|[:@$]([A-Za-z_][A-Za-z0-9_]*)/g
+	for (const match of masked.matchAll(pattern)) {
+		const [, numbered, name] = match
+		if (name !== undefined) {
+			if (named.has(name)) continue
+			maxIndex += 1
+			named.set(name, maxIndex)
+			slots.set(maxIndex, { index: maxIndex, name })
+			continue
+		}
+		const index = numbered ? Number(numbered) : maxIndex + 1
+		maxIndex = Math.max(maxIndex, index)
+		if (!slots.has(index)) slots.set(index, { index, name: null })
+	}
+	return Array.from({ length: maxIndex }, (_, offset) => {
+		const index = offset + 1
+		return slots.get(index) ?? { index, name: null }
+	})
+}
+
+type MockSqlArgs = [
+	named: Record<string, SQLInputValue> | undefined,
+	positional: Array<SQLInputValue>,
+]
+
+/**
+ * Hosted binds params by position even for named parameters. node:sqlite
+ * binds names from an object, so map each named slot to its positional value.
+ */
+function bindMockSqlParams(
+	slots: Array<SqlParameterSlot>,
+	params: Array<SQLInputValue>,
+): MockSqlArgs {
+	if (!slots.some((slot) => slot.name !== null)) return [undefined, params]
+	const named: Record<string, SQLInputValue> = {}
+	const positional: Array<SQLInputValue> = []
+	for (const slot of slots) {
+		const value = params[slot.index - 1] ?? null
+		if (slot.name === null) positional.push(value)
+		else named[slot.name] = value
+	}
+	return [named, positional]
+}
+
+/**
+ * Adapt a node:sqlite statement to the cursor shape `collectStorageSqlCursor`
+ * reads from a Durable Object `SqlStorageCursor`.
+ *
+ * Cloudflare's `rowsRead` / `rowsWritten` come from its own SQLite
+ * instrumentation, which node:sqlite cannot read, so the mock estimates them:
+ * - `rowsWritten` is `total_changes()` for the statement: rows inserted,
+ *   updated, or deleted. Hosted also counts index entries and schema rows, so
+ *   DDL reports 0 here and indexed tables report fewer writes.
+ * - `rowsRead` is the larger of the rows returned and the rows stepped by
+ *   full-table scans. Hosted also counts index probes, aggregate scans, and
+ *   schema reads, but not rows a table-free SELECT or PRAGMA returns, so the
+ *   mock usually reads low for tables and high for those. The
+ *   1,000,000-row warning and the 1,000,000,000-row ceiling use this estimate.
+ */
+function mockSqlCursor(
+	db: DatabaseSync,
+	stmt: StatementSync,
+	[named, positional]: MockSqlArgs,
+): StorageSqlReadCursor {
+	const changesBefore = totalSqlChanges(db)
+	const args = named ? [named, ...positional] : positional
+	const rows = runMockSqlStatement(stmt, args)
+	let firstRow: Record<string, StorageSqlReadValue> | null = null
+	let rowsReturned = 0
+	let rowsWritten: number | null = null
+	return {
+		get columnNames() {
+			return sqlColumnNames(stmt, firstRow)
+		},
+		get rowsRead() {
+			return Math.max(rowsReturned, fullScanRows(stmt))
+		},
+		get rowsWritten() {
+			return rowsWritten ?? totalSqlChanges(db) - changesBefore
+		},
+		*[Symbol.iterator]() {
+			try {
+				for (const raw of rows) {
+					const row = plainSqlRow(raw)
+					firstRow ??= row
+					rowsReturned += 1
+					yield row
+				}
+			} finally {
+				rowsWritten = totalSqlChanges(db) - changesBefore
+			}
+		},
+	}
+}
+
+type MockSqlStatementApi = {
+	iterate?: (...args: Array<unknown>) => Iterable<unknown>
+	all: (...args: Array<unknown>) => Array<unknown>
+	columns?: () => Array<{ name: string }>
+	stat?: (counter: string) => number | bigint
+}
+
+/** `iterate()` is Node 22.13+; older Node 22 materializes with `all()`. */
+function runMockSqlStatement(
+	stmt: StatementSync,
+	args: Array<unknown>,
+): Iterable<unknown> {
+	const api = stmt as unknown as MockSqlStatementApi
+	return typeof api.iterate === 'function'
+		? api.iterate.apply(stmt, args)
+		: api.all.apply(stmt, args)
+}
+
+/** `columns()` is Node 22.16+; before that only a returned row names them. */
+function sqlColumnNames(
+	stmt: StatementSync,
+	firstRow: Record<string, StorageSqlReadValue> | null,
+): Array<string> {
+	const api = stmt as unknown as MockSqlStatementApi
+	if (typeof api.columns === 'function') {
+		return api.columns.call(stmt).map((column) => column.name)
+	}
+	return firstRow ? Object.keys(firstRow) : []
+}
+
+function totalSqlChanges(db: DatabaseSync): number {
+	const row = db.prepare('select total_changes() as c').get() as
+		| { c?: number | bigint }
+		| undefined
+	return Number(row?.c ?? 0)
+}
+
+/**
+ * SQLite counts full-scan `Next` steps, one fewer than the rows visited.
+ * `stat()` is missing on older Node, which leaves only returned rows.
+ */
+function fullScanRows(stmt: StatementSync): number {
+	const api = stmt as unknown as MockSqlStatementApi
+	if (typeof api.stat !== 'function') return 0
+	const steps = Number(api.stat.call(stmt, 'fullscanStep'))
+	return steps > 0 ? steps + 1 : 0
 }
 
 /** node:sqlite returns null-prototype row objects; plain clones JSON-cleanly. */
-function plainSqlRows(rows: Array<unknown>): Array<Record<string, unknown>> {
-	return rows.map((row) => ({ ...(row as Record<string, unknown>) }))
+function plainSqlRow(row: unknown): Record<string, StorageSqlReadValue> {
+	const out: Record<string, StorageSqlReadValue> = {}
+	for (const [key, value] of Object.entries(row as Record<string, unknown>)) {
+		out[key] = value as StorageSqlReadValue
+	}
+	return out
 }

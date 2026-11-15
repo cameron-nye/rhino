@@ -11,7 +11,8 @@ Kody has two permission systems, and neither implies the other:
 
 Being a site admin grants no org permission. Holding every org permission (an
 org Owner) grants nothing site-wide. Say **site admin** for the second system,
-never "operator" or a bare "admin".
+never "operator". The org membership role **Admin** is unrelated: it is Owner
+authority without `org:delete` and without changing Owners.
 
 ## Org access
 
@@ -39,22 +40,23 @@ synchronous, for callers that already hold the compiled permissions.
 2. **Org binding.** The resource must belong to `request.org.id` (`wrong_org`).
 3. **Effective permissions.** `computeEffectivePermissions` compiles
    memberships, team memberships, and grants (`access-compile.ts`): Owner holds
-   every permission; Member and Billing hold their org-level basics plus any
-   direct, team, or everyone-in-org grants (`subject_type = 'org'`, whose
-   `subject_id` must equal the grant's `org_id`, a CHECK since migration 0201;
-   it matches any live `org_memberships` row at compile time, so joins and
-   leaves need no grant rows, only the existing epoch bumps); outside
-   collaborators hold `search:read` plus grants (and `org:execute` when they
-   hold `package:execute` somewhere, the ad-hoc rule). Compiled results are
-   stored in `access_cache` and keyed by `orgs.access_epoch`. A grant with
-   `expires_at` (migration 0212; NULL never expires) stops counting at that
-   instant: every subject lookup filters it in SQL, the cached row's
-   `valid_until` holds the earliest expiry it used and is a miss from then, and
-   the per-request memo recompiles past it, so a long run loses the grant
-   mid-run. `subject_type = 'profile'` rows exist for profiles and never reach a
-   person: every lookup site excludes them. Automation (no actor) acts for the
-   org that owns the job, webhook, or subscription. The result is also cached
-   per request context.
+   every permission; Admin holds every permission except `org:delete`
+   (`hasOwnerAuthority` is Owner or Admin); Member and Billing hold their
+   org-level basics plus any direct, team, or everyone-in-org grants
+   (`subject_type = 'org'`, whose `subject_id` must equal the grant's `org_id`,
+   a CHECK since migration 0201; it matches any live `org_memberships` row at
+   compile time, so joins and leaves need no grant rows, only the existing epoch
+   bumps); outside collaborators hold `search:read` plus grants (and
+   `org:execute` when they hold `package:execute` somewhere, the ad-hoc rule).
+   Compiled results are stored in `access_cache` and keyed by
+   `orgs.access_epoch`. A grant with `expires_at` (migration 0212; NULL never
+   expires) stops counting at that instant: every subject lookup filters it in
+   SQL, the cached row's `valid_until` holds the earliest expiry it used and is
+   a miss from then, and the per-request memo recompiles past it, so a long run
+   loses the grant mid-run. `subject_type = 'profile'` rows exist for profiles
+   and never reach a person: every lookup site excludes them. Automation (no
+   actor) acts for the org that owns the job, webhook, or subscription. The
+   result is also cached per request context.
 4. **Credential scopes.** Non-null `credential.scopes` narrow the result.
 5. **Profile chain.** A profile-bound credential (`credential.profileId`)
    intersects the result with the acting profile's grants and every ancestor's
@@ -76,8 +78,8 @@ synchronous, for callers that already hold the compiled permissions.
 
 **Member permissions.** A team org's `members_can_create_packages` (default off)
 and `members_can_create_credentials` (default on) columns on `orgs` add
-`package:create` + `app:create` and `secret:create` + `integration:create` to
-every Member's compiled org permissions (`memberCreationGrants` in
+`package:create` and `secret:create` + `integration:create` to every Member's
+compiled org permissions (`memberCreationGrants` in
 `authorization/member-creation-permissions.ts`, applied in
 `compileFromRoleAndGrants`). `updateOrgMemberCreation`
 (`orgs/member-creation.ts`) writes them with the `org.member_creation_changed`
@@ -96,12 +98,12 @@ through `requireWebsiteCreatePermission`.
 publish) or a team-org credential (on its `credential.created` audit) gets a
 `manage` user grant on it, and on the package's app, with
 `grants.origin = 'created'` (`grantCreatorAccess` in
-`packages/worker/src/orgs/creator-access.ts`). Owners get none; they already
-hold everything. Owners can revoke the grant like any other. Org transfer
-re-points a creator grant when its person is a target member and drops it
-otherwise; a `manual` grant still blocks the move. `adminCreatorAccessBackfill`
-writes the same grants for older creations from the audit log, skipping anyone
-whose grant was ever revoked.
+`packages/worker/src/orgs/creator-access.ts`). Owners and Admins get none; they
+already hold everything that grant would add. Owners and Admins can revoke the
+grant like any other. Org transfer re-points a creator grant when its person is
+a target member and drops it otherwise; a `manual` grant still blocks the move.
+`adminCreatorAccessBackfill` writes the same grants for older creations from the
+audit log, skipping anyone whose grant was ever revoked.
 
 **Org-wide read grants.** An `org` grant may carry the read-only resource
 permissions in `orgWideReadPermissions`
@@ -114,12 +116,45 @@ check (`canReadOrgRunHistory`): the Activity page and the Overview's run
 summary, charts, and recent runs need org-wide `job:read`, and without it they
 show a permission state that links to Grants. A job-scoped grant still reads
 that one job's runs (`runList` with `job_id`, the job's page). Nothing else
-rides along: `use`, `execute`, `write`, `delete`, `publish`, and `manage_access`
-are never grantable on the org, so triage (`runUpdate`), edits, and runs still
-need their own permission. `secret:read` (reveals values), `memory:read`
-(memories are personal, ADR 0072), and `execution_context:read` (machines are
-listed per share) are left out. Owners set these from the Grants page or with
-`accessGrant` (`resource_type: "org"`); a denial for one of them says so.
+rides along: outside packages and apps, `use`, `execute`, `write`, `delete`,
+`publish`, and `manage_access` are never grantable on the org, so triage
+(`runUpdate`), edits, and runs still need their own permission. `secret:read`
+(reveals values), `memory:read` (memories are personal, ADR 0072), and
+`execution_context:read` (machines are listed per share; an execution context
+shared with all members compiles into Use on that one context for every live
+Member instead, `loadAllMembersContextGrantRows` in `access-compile.ts`) are
+left out. Owners and Admins set org-wide presets from the Grants page or with
+`accessGrant` (`resource_type: "org"`). Per-person package, app, and credential
+grants live on **Access** (`/@<slug>/-/grants/user/<userId>`), linked from
+Members, Collaborators, and person-linked Grants rows. Team and everyone grants
+live on `/@<slug>/-/grants/team/<teamId>` and `/@<slug>/-/grants/everyone`; bulk
+removal (`revokeOrganizationGrants`) checks each grant like `accessRevoke` and
+reports per-grant results. A denial for one of the org-wide reads says so.
+
+**Org-wide package and app manage.** An `org` grant may also carry
+`orgWideManagePermissions` (`packages/shared/src/grant-presets.ts`): the
+non-read permissions of the package and app Manage presets. They compile into
+org-level permissions like the reads, so they cover every current and future
+package and app. Only an Owner or Admin may add them
+(`ownerOnlyOrgGrantPermissions`); `org:delete` stays Owner-only. The org rejects
+`subject_type: "org"` grants, and profiles cannot hold them
+(`profileOrgLevelAllowlist`). Org-wide `package:execute` also yields
+`org:execute` for ad-hoc code, like a package-scoped one. Unmappable-credential
+locks still apply: when someone without Owner authority holds org-wide
+`package:write` or `package:publish`, `loadUnmappableCredentialLocks` checks
+every live package in the org, and a locked package needs a grant on that
+package with `allow_unmappable_credential_changes` before those two pass.
+
+**Grantable but unenforced.** `app:write` and `app:delete` can be granted
+(advanced checklist only) but no surface checks them: an app shares its
+package's id, so changing or deleting it is `package:write` / `package:delete`.
+Holding one of them alone unlocks nothing. `permission-enforcement.node.test.ts`
+pins this list. Jobs and apps come from the package manifest and inboxes are
+made at signup, so there is no `job:create`, `app:create`, or `email:create`. A
+package's jobs go away with `package:write` / `package:delete`, so there is no
+`job:delete` either. Readers of stored scopes drop those values
+(`withoutRetiredOrgPermissions`), and migrations 0241 and 0251 strip stored
+rows.
 
 A surface check without a resource (capability `orgPermission`, Open API
 `x-kody-permission`) passes when the permission is held at org level **or on any
@@ -206,7 +241,9 @@ org transfer out of the personal org is blocked while a moved credential still
 has grants. Placeholders, scoped `credential()` clients, and name-based
 `createAuthenticatedFetch` resolve the same set (org credentials the actor can
 Use, plus the actor's own personal credentials granted into the org, org first
-by name). See
+by name). A token acting as a profile also needs every layer of its profile
+chain to hold Use on the personal credential, whether it is listed or named
+(`authorizeActorPersonalUse`). See
 ([ADR 0068](../decisions/0068-credentials-own-placement-scoped-clients.md)).
 
 **Pinned connections** (`integrations/pinned-connect.ts`,
@@ -362,10 +399,10 @@ which names the capability; Open API maps it to 403 `insufficient_scope` with
 
 Declared: `orgMemberUpdate`, `orgMemberRemove`, `inviteCreate`, `inviteAccept`,
 `inviteRevoke`, `inviteLinkCreate`, `inviteLinkAccept`, `inviteLinkRevoke`,
-`teamMemberAdd`, `teamMemberRemove`, and member or billing grants. Org billing
-writes are session-only web handlers. `registry.node.test.ts` fails when a
-member-changing capability does not declare it, and when a site-admin capability
-does.
+`teamMemberAdd`, `teamMemberRemove`, `teamDelete`, and member or billing grants.
+Org billing writes are session-only web handlers. `registry.node.test.ts` fails
+when a member-changing capability does not declare it, and when a site-admin
+capability does.
 
 ### Site-admin capabilities from triggered runs
 
@@ -412,12 +449,16 @@ the missing one. Its message prints the exact
 `cliCredentialBootstrap({ lifetime, scopes })` call and the matching
 `kody auth bootstrap --scopes` command. Open API adds `required_scope` and
 `mint_scopes` to the 403 `insufficient_scope` details so clients can print the
-same commands. Default bootstrap scopes include local-execute use scopes plus
-`package:write` and `token:delete`; callers can still narrow or expand via
-explicit `scopes`.
+same commands. Default bootstrap scopes match `kody login` (every org
+permission, capped by the org role and by a parent token or a session that
+narrows scopes). Callers pass `scopes` only to narrow.
 
 Profiles are a separate narrowing layer (not folded into scopes): a
-profile-bound token is narrowed by both its scopes and its profile chain.
+profile-bound token is narrowed by both its scopes and its profile chain. The
+chain is checked before the scope, so a request both lack reports
+`profile_grant` (the message also says the token lacks the scope). Open API maps
+`profile_grant` and `profile_inactive` to 403 with that code, not
+`insufficient_scope`, and without `mint_scopes`.
 
 ## Site admin
 
@@ -627,7 +668,9 @@ account creation can be retried once the environment is fixed.
 ## Session payload and client helpers
 
 `POST /session` (`packages/worker/src/app/handlers/session.ts`) includes `roles`
-and `permissions` in the session payload when the cookie is valid.
+and `permissions` in the session payload when the cookie is valid. Unclaimed
+guest accounts (Try it out) also include `guest`: `phase`, `claimUrl`,
+`fullAccessUntil`, and `deleteAt` when the sealed claim code can be opened.
 
 The Start root loads request-scoped identity and shell data through
 `packages/worker/start/routes/__root.tsx` and
@@ -789,6 +832,18 @@ Sends are skipped when the submitter has no current account email, outbound
 email is paused, or the account is suspended. One email is sent per feedback id
 per terminal status.
 
+Admins can reopen resolved or dismissed feedback to triaged with
+`adminPlatformFeedbackUpdate` `action: "triage"`. A reopen requires a non-empty
+`admin_note`; a missing, empty, or whitespace-only note is refused without any
+change. The same revision-guarded write sets the status, stores the note as
+`admin_note`, moves the closed submitter-visible outcome into
+`resolution_history`, and appends
+`{from_status, to_status, note, actor_user_id, recorded_at}` to the internal
+`reopen_history` using the authenticated admin and server time. A reopen sends
+no email or notification to the submitter, and `reopen_history` is excluded from
+submitter views and account export. No other change out of resolved or dismissed
+is allowed.
+
 After a consent-gated submission is persisted, Kody enqueues its id for durable
 `platform.feedback.submitted` package-subscription delivery. The Queue consumer
 fans out only to packages whose owners hold the admin role when the message is
@@ -893,20 +948,6 @@ operator retrospective on `/` and `/status.json`; that text is public
 operational narrative, not user data. Delivery is best-effort (no Queue);
 `/status.json` polling remains the backstop.
 
-**Admins can subscribe to fleet package-runtime error-rate elevations.** The
-hourly usage-aggregation lane compares anonymous Analytics Engine totals for
-`package_export`, `package_static_call`, `job_run`, and `workflow_run`. When the
-combined error rate rises, Kody fans `fleet.package_error_rate.elevated` only to
-packages whose owners hold the admin role at dispatch time. The event contains
-window bounds, per-metric counts and rates, the public status URL, and the
-insights URL. When one account or a few accounts own the recent-window errors,
-it also names those usernames and package name leaves. It omits user ids,
-package UUIDs, emails, error strings, logs, and unrelated account content. This
-is operator telemetry about kody itself, not a user-data exception. Delivery is
-best-effort (no Queue). A six-hour cooldown suppresses repeat pages. A
-concentrated spike still pages the fleet; it does not reroute as a per-user
-storm.
-
 **Admins can subscribe to fleet entitlement crossings.** The hourly
 `usage_entitlement_alert` lane sweeps the top ~15 active accounts and fans
 `fleet.entitlement.crossed` only to packages whose owners hold the admin role at
@@ -920,13 +961,15 @@ package source, and unrelated account content. Delivery is best-effort (no
 Queue). Staying over the same threshold does not emit again.
 
 **Admins can subscribe to person-account create and delete.** Password signup,
-social-login signup, and admin-created person accounts fan `user.created`.
-Self-service account deletion fans `user.deleted`. Fan-out selects only packages
-whose owners hold the admin role at dispatch time. The event contains the stable
-user id, username, email, create source or delete timestamp, and first-touch
-marketing attribution when present. It omits passwords, roles, plan, secrets,
-and unrelated account content. Delivery is best-effort (no Queue) after the
-account change commits.
+social-login signup, admin-created person accounts, and guest accounts fan
+`user.created`. Self-service account deletion and the unclaimed-guest purge fan
+`user.deleted`. Claiming a guest fans `user.guest_claimed` (claim mode and
+method, guest identity and timestamps, and per-category counts, never claim
+codes or secret values). Fan-out selects only packages whose owners hold the
+admin role at dispatch time. The event contains the stable user id, username,
+email, create source or delete timestamp, and first-touch marketing attribution
+when present. It omits passwords, roles, plan, secrets, and unrelated account
+content. Delivery is best-effort (no Queue) after the account change commits.
 
 **Admins can subscribe to verification-mail terminal failures.** The first
 bounce, failure, rejection, or complaint on a signup/verify send fans
@@ -964,26 +1007,31 @@ identities, tokens, recipients, and message content. A six-hour KV cooldown
 suppresses repeat pages. Delivery is best-effort (no Queue).
 
 **Admins can see** operator-owned system mail for reserved platform addresses
-(`kody`, `support`, `abuse`, `postmaster`, `security`, `admin`, and `psl`). That
-mail is stored under `system:email` as platform content, not under Kent's or any
-other user's account. Admin reads through MCP (`adminSystemEmailList`,
-`adminSystemEmailGet`) and the `/admin/system-email` UI are audit logged. Admins
-can **delete** that operator-owned mail with `adminSystemEmailDelete` (and the
-matching delete action on `/admin/system-email`), which removes the message row,
-attachments, delivery-event rows, blobs, and an empty parent thread — never
-user-owned mailbox content. Admins can also **send** from those reserved
-addresses with `adminSystemEmailSend` (also audit logged, with redacted
-recipients): that channel speaks for the platform, so it uses no user mailbox,
-sender identity, or plan entitlement, and it never reads or writes user-owned
-mail. Stored system mail also fans out metadata (never bodies or attachment
-bytes) on the `email.system-message.received` package subscription topic, and
-only to packages saved by users who hold the admin role at dispatch time — a
-non-admin subscriber never receives the event, and revoking admin stops delivery
-immediately. Successful reserved-sender sends fan `email.system-message.sent`
-the same admin-only way. That outbound topic includes the sent correspondence
-(recipients, subject, and bodies) because those sends are not written to the
-dedicated inbound graph (the graph refuses provider-message-id rows). It does
-not include user-owned mailbox content.
+(`systemEmailLocals`: `kody`, `support`, `abuse`, `dmca`, `postmaster`,
+`security`, `admin`, `psl`, `kent`, and `news`). That mail is stored under
+`system:email` as platform content, not under Kent's or any other user's
+account. Admin reads through MCP (`adminSystemEmailList`, `adminSystemEmailGet`)
+and the `/admin/system-email` UI are audit logged. Admins can **delete** that
+operator-owned mail with `adminSystemEmailDelete` (and the matching delete
+action on `/admin/system-email`), which removes the message row, attachments,
+delivery-event rows, blobs, and an empty parent thread — never user-owned
+mailbox content. Admins can also **send** from transactional reserved addresses
+with `adminSystemEmailSend` and from `news@` with `adminWhatsNewEmailSend` (also
+audit logged, with redacted recipients) and list or clear hard-bounce
+suppressions of system mail with `adminEmailSuppressionList` /
+`adminEmailSuppressionClear` (clears are audit logged with redacted recipients),
+and trace sent system mail with its delivery reports via
+`adminSystemEmailSendList`: that channel speaks for the platform, so it uses no
+user mailbox, sender identity, or plan entitlement, and it never reads or writes
+user-owned mail. Stored system mail also fans out metadata (never bodies or
+attachment bytes) on the `email.system-message.received` package subscription
+topic, and only to packages saved by users who hold the admin role at dispatch
+time — a non-admin subscriber never receives the event, and revoking admin stops
+delivery immediately. Successful reserved-sender sends fan
+`email.system-message.sent` the same admin-only way. That outbound topic
+includes the sent correspondence (recipients, subject, and bodies) because those
+sends are not written to the dedicated inbound graph (the graph refuses
+provider-message-id rows). It does not include user-owned mailbox content.
 
 This boundary is enforced structurally:
 

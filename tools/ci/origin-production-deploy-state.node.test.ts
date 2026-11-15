@@ -19,6 +19,7 @@ import {
 	originBootstrapConfigPath,
 	planOriginPreviewDeploy,
 	planOriginProductionDeploy,
+	platformInPlaceClassNames,
 	platformOwnedClassNames,
 	previewFleetScriptNames,
 	productionOriginScriptName,
@@ -675,11 +676,11 @@ test('fresh-account deploys only bind Durable Object classes their migrations co
 		'packages/highlight-worker/wrangler.jsonc',
 		'packages/jobs-worker/wrangler.jsonc',
 		'packages/mock-servers/cloudflare/wrangler.jsonc',
+		'packages/mock-servers/oauth/wrangler.jsonc',
 		'packages/nx-cache/wrangler.jsonc',
 		'packages/platform-worker/wrangler.jsonc',
 		'packages/push-queue-worker/wrangler.jsonc',
 		'packages/runtime-worker/wrangler.jsonc',
-		'packages/start-routing-worker/wrangler.jsonc',
 		'packages/status/wrangler.jsonc',
 		'packages/worker/wrangler.jsonc',
 	])
@@ -855,7 +856,11 @@ function assertFreshPlatformDeploy(config: Record<string, unknown>) {
 		productionRuntimeScriptName,
 	)
 	expect(localDurableObjectClassNames(production).sort()).toEqual(
-		[...platformOwnedClassNames, 'ExecutionContextSessionV1'].sort(),
+		[
+			...platformOwnedClassNames,
+			...platformInPlaceClassNames,
+			'ExecutionContextSessionV1',
+		].sort(),
 	)
 	expect(durableObjectScriptNames(production)).not.toContain(
 		productionRuntimeScriptName,
@@ -872,6 +877,8 @@ function assertFreshPlatformDeploy(config: Record<string, unknown>) {
 	expect(migrations[1]?.new_sqlite_classes).toEqual([
 		'ExecutionContextSessionV1',
 	])
+	expect(migrations[2]?.new_sqlite_classes).toEqual(['FileStore'])
+	expect(migrations[3]?.new_sqlite_classes).toEqual(['FileRoom'])
 	expect(durableObjectScriptNames(productionEnvOrRoot(withRuntime))).toContain(
 		productionRuntimeScriptName,
 	)

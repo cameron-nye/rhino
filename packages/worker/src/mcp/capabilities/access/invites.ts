@@ -1,14 +1,16 @@
+import { fileStoreRpc } from '#worker/files/client.ts'
+import { inviteRoleDenial, isSeatRole } from '#worker/orgs/admin-role-rules.ts'
 import { timingSafeEqualString } from '@kody-internal/shared/timing-safe.ts'
 import {
 	type GrantPreset,
 	resolveGrantPermissions,
 } from '@kody-internal/shared/grant-presets.ts'
-import {
-	type OrgPermission,
-	type OrgResourceType,
+import type {
+	OrgPermission,
+	OrgResourceType,
 } from '@kody-internal/shared/org-permissions.ts'
 import { ownerIdFromStored } from '@kody-internal/shared/owner-person-ids.ts'
-import { type OrgRole } from '@kody-internal/shared/request-context.ts'
+import type { OrgRole } from '@kody-internal/shared/request-context.ts'
 import { z } from 'zod'
 import { McpCallerError } from '#mcp/caller-error.ts'
 import { unmappableCredentialGrantWarnings } from '#mcp/capabilities/access/unmappable-credential-warnings.ts'
@@ -77,7 +79,7 @@ import {
 	rethrowAccessError,
 } from './shared.ts'
 
-function inviteMatchesUser(
+export function inviteMatchesUser(
 	invite: StoredInvite,
 	user: { email: string; username?: string },
 ) {
@@ -171,6 +173,14 @@ async function assertInviterStillValid(db: D1Database, invite: StoredInvite) {
 		}
 		return
 	}
+	if (invite.kind === 'membership' && invite.role === 'admin') {
+		if (!inviter || (inviter.role !== 'owner' && inviter.role !== 'admin')) {
+			throw new McpCallerError(
+				'This admin invite is no longer valid because the inviter is not an Owner or Admin.',
+			)
+		}
+		return
+	}
 	if (invite.kind === 'membership') {
 		if (!inviter) {
 			throw new McpCallerError(
@@ -207,12 +217,22 @@ async function assertInviterStillValid(db: D1Database, invite: StoredInvite) {
  * still exist and be live: an invite never creates a grant on a deleted id.
  */
 async function grantInviteFamily(
+	env: Env,
 	db: D1Database,
 	orgId: string,
 	resourceType: GrantResourceType,
 	resourceId: string,
 ): Promise<OrgResourceType | 'org'> {
 	switch (resourceType) {
+		case 'file': {
+			const owner = ownerIdFromStored(orgId)
+			const file = await fileStoreRpc(env, owner).metadata(owner, resourceId)
+			if (!file?.revisionId)
+				throw new McpCallerError(
+					'This invite is no longer valid because its file was deleted.',
+				)
+			return 'file'
+		}
 		case 'credential': {
 			const credential = await getOrgCredential(db, orgId, resourceId)
 			if (!credential?.live) {
@@ -244,6 +264,7 @@ type GrantInviteTarget = {
 }
 
 async function assertInviteTargetsStillValid(
+	env: Env,
 	db: D1Database,
 	invite: StoredInvite,
 ): Promise<GrantInviteTarget | null> {
@@ -258,6 +279,7 @@ async function assertInviteTargetsStillValid(
 				throw new McpCallerError('This grant invite is missing a resource.')
 			}
 			const family = await grantInviteFamily(
+				env,
 				db,
 				invite.orgId,
 				resourceType,
@@ -297,7 +319,11 @@ async function acceptStoredInvite(input: {
 		)
 	}
 	await assertInviterStillValid(input.db, invite)
-	const grantTarget = await assertInviteTargetsStillValid(input.db, invite)
+	const grantTarget = await assertInviteTargetsStillValid(
+		input.env,
+		input.db,
+		invite,
+	)
 	if (invite.kind === 'membership' && (invite.role ?? 'member') === 'owner') {
 		await assertCanAcceptFreeOrgOwnership({
 			db: input.db,
@@ -351,7 +377,7 @@ async function acceptStoredInvite(input: {
 					audit: input.audit,
 				})
 			}
-			if (role === 'owner' || role === 'member') {
+			if (isSeatRole(role)) {
 				await syncSeatsAfterMembershipChange({
 					db: input.db,
 					env: input.env,
@@ -536,17 +562,14 @@ export const inviteCreateCapability = defineDomainCapability(
 							)
 						}
 						role = args.role ?? 'member'
-						if (role === 'owner') {
-							const access = await computeEffectivePermissions({
+						const inviteDenial = inviteRoleDenial({
+							actor: await computeEffectivePermissions({
 								env: ctx.env,
 								request,
-							})
-							if (!access.isOwner) {
-								throw new McpCallerError(
-									'Only an Owner can invite another Owner.',
-								)
-							}
-						}
+							}),
+							role,
+						})
+						if (inviteDenial) throw new McpCallerError(inviteDenial)
 						const ids = args.team_ids ?? []
 						await assertTeamsInOrg(db, request.org.id, ids)
 						teamIds = ids.length > 0 ? ids : null

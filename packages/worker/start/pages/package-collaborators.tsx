@@ -1,4 +1,5 @@
 /** @jsxImportSource @emotion/react */
+import { createUiFeedback, type UiFeedback } from '#client/ui-feedback.ts'
 import { useRef, useState, type FormEvent } from 'react'
 import { PackageInviteLinksPanel } from './package-collaborators-invite-links.tsx'
 import { PackageCollaboratorInvites } from './package-collaborators-invites.tsx'
@@ -36,6 +37,7 @@ import {
 	type PackageCollaboratorsChange,
 	type PackageCollaboratorsLoaderData,
 	type PackageCollaboratorsView,
+	type PackageCollaboratorsWriteResult,
 	type PackageCollaboratorView,
 	packageCollaboratorPresetDescription,
 	packageCollaboratorPresetLabel,
@@ -90,8 +92,12 @@ export function PackageCollaboratorsRoute({
 	const mutationKey = collaboratorsMutationKey(actorKey, page)
 	const captureSubmitter = useSubmitterScope()
 	const [confirmed, setConfirmed] = useState<string | null>(null)
-	const [message, setMessage] = useState<string | null>(null)
-	const [messageTone, setMessageTone] = useState<'info' | 'error'>('info')
+	const [feedback, setFeedback] = useState<UiFeedback | null>(() =>
+		createUiFeedback(null, 'info'),
+	)
+	const message = feedback?.message ?? null
+	const messageTone = feedback?.tone ?? 'info'
+
 	const [warnings, setWarnings] = useState<Array<string>>([])
 	const [teamId, setTeamId] = useState('')
 	const [memberId, setMemberId] = useState('')
@@ -167,26 +173,29 @@ export function PackageCollaboratorsRoute({
 		key: string,
 		change: PackageCollaboratorsChange,
 		success: string,
+		onSaved?: (result: PackageCollaboratorsWriteResult) => void,
 	) {
 		if (inFlight.current || client.isMutating({ mutationKey, exact: true }))
 			return null
 		const isCurrent = captureSubmitter()
 		inFlight.current = true
-		setMessage(null)
+		setFeedback(createUiFeedback(null))
 		setWarnings([])
 		try {
 			const result = await mutation.mutateAsync({ key, change })
+			if (result) onSaved?.(result)
 			if (!isCurrent()) return null
-			setMessage(success)
-			setMessageTone('info')
+			setFeedback(createUiFeedback(success, 'info'))
 			setWarnings(result?.warnings ?? [])
 			return result
 		} catch (error) {
 			if (!isCurrent()) return null
-			setMessage(
-				error instanceof Error ? error.message : 'Kody could not save that.',
+			setFeedback(
+				createUiFeedback(
+					error instanceof Error ? error.message : 'Kody could not save that.',
+					'error',
+				),
 			)
-			setMessageTone('error')
 			return null
 		} finally {
 			inFlight.current = false
@@ -671,7 +680,7 @@ export function PackageCollaboratorsRoute({
 			<AccountManagementPanel title="Add an org member">
 				{view.options.members.length === 0 ? (
 					<p css={mutedCopyCss}>
-						No members left to add. Owners already have full access.
+						No members left to add. Owners and Admins already have full access.
 					</p>
 				) : (
 					<form
@@ -828,6 +837,7 @@ export function PackageCollaboratorsRoute({
 						{view.org.personal ? (
 							<PackageCollaboratorInvites
 								key={`${actorKey}/${username}/${kodyId}`}
+								handoffKey={`${actorKey}/${username}/${kodyId}`}
 								view={view}
 								busyKey={busy}
 								postChange={postChange}

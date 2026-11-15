@@ -24,6 +24,7 @@ import {
 	type EcpFramePayload,
 } from '@kody-internal/shared/execution-context-protocol/index.ts'
 import {
+	checkContextLogin,
 	generateContextKey,
 	importContextKey,
 	registerContext,
@@ -44,10 +45,18 @@ import {
 	welcomeTimeoutCloseCode,
 } from '../src/execution-context/daemon.js'
 import {
+	contextDir,
 	decryptPrivateKey,
 	encryptPrivateKey,
 	resolveWrappingKey,
 } from '../src/execution-context/keystore.js'
+import {
+	daemonInput,
+	ServerSocket,
+	serverFrames,
+	SilentSocket,
+	welcome,
+} from './execution-context-harness.js'
 
 test('context key round trips through passphrase and keyring wrapping', async () => {
 	const { privateKeyJwk } = await generateContextKey()
@@ -56,15 +65,15 @@ test('context key round trips through passphrase and keyring wrapping', async ()
 		create: true,
 		env: { KODY_CONTEXT_KEY_PASSPHRASE: 'correct horse battery staple' },
 	})
-	const file = encryptPrivateKey(privateKeyJwk, passphrase)
+	const file = await encryptPrivateKey(privateKeyJwk, passphrase)
 	assert.ok(!JSON.stringify(file).includes(privateKeyJwk.d))
-	assert.deepEqual(decryptPrivateKey(file, passphrase), privateKeyJwk)
+	assert.deepEqual(await decryptPrivateKey(file, passphrase), privateKeyJwk)
 	const wrong = resolveWrappingKey({
 		ecid: 'ec_test',
 		create: true,
 		env: { KODY_CONTEXT_KEY_PASSPHRASE: 'wrong' },
 	})
-	assert.throws(() => decryptPrivateKey(file, wrong), /Could not decrypt/)
+	await assert.rejects(decryptPrivateKey(file, wrong), /Could not decrypt/)
 
 	let stored: string | null = null
 	const keyring = resolveWrappingKey({
@@ -72,14 +81,14 @@ test('context key round trips through passphrase and keyring wrapping', async ()
 		create: true,
 		env: {},
 		keyringFactory: () => ({
-			getPassword: () => stored,
-			setPassword: (value) => {
+			getPassword: async () => stored,
+			setPassword: async (value) => {
 				stored = value
 			},
 		}),
 	})
-	const keyringFile = encryptPrivateKey(privateKeyJwk, keyring)
-	assert.deepEqual(decryptPrivateKey(keyringFile, keyring), privateKeyJwk)
+	const keyringFile = await encryptPrivateKey(privateKeyJwk, keyring)
+	assert.deepEqual(await decryptPrivateKey(keyringFile, keyring), privateKeyJwk)
 })
 
 test('registering with a pre-PR 2 login prints the exact kody login command', async () => {
@@ -116,6 +125,38 @@ test('registering with a pre-PR 2 login prints the exact kody login command', as
 	)
 })
 
+test('registerContext names a connect-phase fetch failure', async () => {
+	const { publicKeyJwk, privateKeyJwk } = await generateContextKey()
+	const fetchFn = (async () => {
+		throw new TypeError('fetch failed', {
+			cause: Object.assign(new Error('ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+		})
+	}) as typeof fetch
+	await assert.rejects(
+		registerContext({
+			apiUrl: 'https://api.kody.test',
+			token: 'kody_at_test',
+			name: 'my-machine',
+			publicKeyJwk,
+			privateKey: await importContextKey(privateKeyJwk),
+			thumbprint: await ed25519JwkThumbprint(publicKeyJwk),
+			capabilities: {},
+			client: { name: 'kody-cli', version: '0.0.0' },
+			fetchFn,
+		}),
+		(error: Error & { sent?: unknown }) => {
+			assert.match(
+				error.message,
+				/Could not reach the Kody API at https:\/\/api\.kody\.test/,
+			)
+			assert.match(error.message, /fetch failed: ECONNREFUSED/)
+			assert.match(error.message, /The request was not sent/)
+			assert.equal(error.sent, false)
+			return true
+		},
+	)
+})
+
 test('registering with a scoped credential keeps the server message', async () => {
 	const { publicKeyJwk, privateKeyJwk } = await generateContextKey()
 	const message =
@@ -144,52 +185,6 @@ test('registering with a scoped credential keeps the server message', async () =
 		},
 	)
 })
-
-/** Opens, answers nothing: the production failure where welcome never came. */
-class SilentSocket extends EventTarget {
-	static instances: Array<SilentSocket> = []
-	readonly OPEN = 1
-	readyState = 1
-	closed: { code: number; reason: string } | null = null
-	constructor(readonly url: string) {
-		super()
-		SilentSocket.instances.push(this)
-	}
-	send(_data?: string) {}
-	close(code = 1000, reason = '') {
-		if (this.closed) return
-		this.closed = { code, reason }
-		this.readyState = 3
-		const event = Object.assign(new Event('close'), { code, reason })
-		queueMicrotask(() => this.dispatchEvent(event))
-	}
-}
-
-async function daemonInput(overrides: Record<string, unknown> = {}) {
-	const { privateKeyJwk } = await generateContextKey()
-	const lines: Array<string> = []
-	return {
-		lines,
-		input: {
-			apiUrl: 'https://api.kody.test',
-			ecid: 'ec_test',
-			privateKey: await importContextKey(privateKeyJwk),
-			serverKeys: [],
-			maxConcurrent: 1,
-			client: { name: 'kody-cli', version: '0.0.0' },
-			capabilities: {},
-			execute: async () => ({ isError: false }),
-			log: (line: string) => lines.push(line),
-			fetchFn: (async () =>
-				Response.json({
-					ticket: 'ticket_1',
-					expiresAt: '2099-01-01T00:00:00.000Z',
-				})) as typeof fetch,
-			WebSocketImpl: SilentSocket as unknown as typeof WebSocket,
-			...overrides,
-		},
-	}
-}
 
 test('a connection with no welcome frame times out with a clear error', async () => {
 	SilentSocket.instances = []
@@ -336,6 +331,46 @@ test('run-scoped fetch signs Kody API calls and never sends the bearer token', a
 	)
 	assert.equal(other!.headers.get('authorization'), 'Bearer other')
 	assert.equal(other!.headers.get(ecpSignatureHeader), null)
+})
+
+test('the login check signs with the context key and sends the box login token', async () => {
+	const { publicKeyJwk, privateKeyJwk } = await generateContextKey()
+	const seen: Array<Request> = []
+	const result = await checkContextLogin({
+		apiUrl: 'https://api.kody.test',
+		ecid: 'ec_test',
+		privateKey: await importContextKey(privateKeyJwk),
+		token: 'box-token',
+		fetchFn: (async (
+			resource: Parameters<typeof fetch>[0],
+			init?: RequestInit,
+		) => {
+			seen.push(new Request(resource, init))
+			return Response.json({
+				id: 'ec_test',
+				login: { kind: 'profile', profileId: 'prof_1' },
+				changed: true,
+			})
+		}) as typeof fetch,
+	})
+	assert.equal(result.login.kind, 'profile')
+	const [request] = seen
+	assert.equal(new URL(request!.url).pathname, '/v1/execution-contexts/login')
+	assert.equal(request!.headers.get('authorization'), 'Bearer box-token')
+	const signature = parseEcpSignatureHeader(
+		request!.headers.get(ecpSignatureHeader),
+	)
+	assert.equal(signature?.ec, 'ec_test')
+	assert.equal(
+		await verifyEcpHttpSignature({
+			signature: signature!,
+			method: 'POST',
+			pathAndQuery: '/v1/execution-contexts/login',
+			body: '{}',
+			publicKey: await importEd25519PublicKey(publicKeyJwk),
+		}),
+		'ok',
+	)
 })
 
 test('kody chain show and add read the chain out of the API response', async () => {
@@ -494,71 +529,6 @@ test('the daemon accepts runs naming its API origin and refuses any other origin
 		'deadline_passed',
 	)
 })
-
-/**
- * A Kody-side socket that opens with a signed welcome. Like Node's
- * WebSocket, close() only accepts 1000 or 3000-4999.
- */
-class ServerSocket extends SilentSocket {
-	static frames: Array<string> = []
-	static answerPings = false
-	sent: Array<string> = []
-	constructor(url: string) {
-		super(url)
-		const frames = ServerSocket.frames
-		setTimeout(() => {
-			for (const data of frames) {
-				this.dispatchEvent(Object.assign(new Event('message'), { data }))
-			}
-		}, 0)
-	}
-	override send(data = '') {
-		this.sent.push(data)
-		if (data === ecpPingFrame && ServerSocket.answerPings) {
-			queueMicrotask(() =>
-				this.dispatchEvent(
-					Object.assign(new Event('message'), { data: ecpPongFrame }),
-				),
-			)
-		}
-	}
-	override close(code = 1000, reason = '') {
-		if (code !== 1000 && (code < 3000 || code > 4999)) {
-			throw new DOMException('invalid code', 'InvalidAccessError')
-		}
-		super.close(code, reason)
-	}
-}
-
-async function serverFrames(
-	frames: Array<Pick<EcpFramePayload, 't' | 'body'> & { kid?: string }>,
-) {
-	const { privateKeyJwk } = await generateContextKey()
-	const privateKey = await importContextKey(privateKeyJwk)
-	const signed = await Promise.all(
-		frames.map((frame, index) =>
-			signFrame({
-				privateKey,
-				kid: frame.kid ?? 'srv_test',
-				payload: {
-					v: 1,
-					t: frame.t,
-					ec: 'ec_test',
-					sid: 'sid_test',
-					seq: index + 1,
-					ts: Date.now(),
-					body: frame.body,
-				},
-			}),
-		),
-	)
-	return {
-		signed,
-		serverKeys: [{ kid: 'srv_test', x: privateKeyJwk.x, notAfter: 4e12 }],
-	}
-}
-
-const welcome = { t: 'welcome', body: { sid: 'sid_test', grantVersion: 1 } }
 
 test('a half-dead socket that stops answering pings is closed with a heartbeat code', async () => {
 	SilentSocket.instances = []
@@ -850,7 +820,14 @@ export default async function main(p) {
 	const { signed, serverKeys } = await serverFrames([
 		{
 			t: 'welcome',
-			body: { sid: 'sid_test', grantVersion: 1, grant: { fs: [] } },
+			// The fake server never answers pings; a slow workerd start must not
+			// hit the 30s ping + 10s pong heartbeat close first.
+			body: {
+				sid: 'sid_test',
+				grantVersion: 1,
+				grant: { fs: [] },
+				pingMs: 300_000,
+			},
 		},
 		{
 			t: 'grant.update',
@@ -914,15 +891,16 @@ export default async function main(p) {
 	const hello = frames.find((frame) => frame.t === 'hello')
 	assert.deepEqual(
 		(hello?.body.capabilities as { features?: unknown }).features,
-		[],
+		['host-operator-only'],
 	)
 	const update = frames.find((frame) => frame.t === 'capabilities.update')
 	assert.deepEqual(
 		(update?.body.capabilities as { features?: unknown }).features,
-		['fs'],
+		['host-operator-only', 'fs'],
 	)
 	const result = frames.find((frame) => frame.t === 'run.result')
-	assert.equal(result?.body.isError, false, JSON.stringify(result?.body))
+	assert.ok(result, 'the daemon never sent run.result')
+	assert.equal(result.body.isError, false, JSON.stringify(result.body))
 	// Outside the mounts the host is unreachable: EACCES from the bridge, or
 	// ENOENT when the path falls in workerd's own virtual /tmp (Linux tmpdir).
 	assert.match(
@@ -1121,6 +1099,57 @@ test('kody context revoke and delete call the revoke and delete routes', async (
 	await assert.rejects(run(['delete']), /Usage: kody context delete/)
 })
 
+test('kody context register rolls the server context back when the local key write fails', async () => {
+	const apiUrl = 'https://api.kody.test'
+	const ecid = 'ec_savefails'
+	const home = mkdtempSync(join(tmpdir(), 'kody-ec-save-'))
+	const saved = { HOME: process.env.HOME, XDG: process.env.XDG_CONFIG_HOME }
+	process.env.HOME = home
+	process.env.XDG_CONFIG_HOME = home
+	// A directory where key.enc belongs makes saveContext throw after register.
+	mkdirSync(join(contextDir(apiUrl, ecid), 'key.enc'), { recursive: true })
+	const calls: Array<string> = []
+	const fetchFn = (async (url: URL | string, init?: RequestInit) => {
+		const path = new URL(url).pathname
+		calls.push(`${init?.method} ${path}`)
+		if (path.endsWith('/registration-challenge')) {
+			return Response.json({ challenge: 'challenge' })
+		}
+		if (path === '/v1/execution-contexts' && init?.method === 'POST') {
+			return Response.json({
+				ecid,
+				name: 'box',
+				owner: { orgSlug: 'acme' },
+			})
+		}
+		return Response.json({ ok: true })
+	}) as typeof fetch
+	try {
+		await assert.rejects(
+			runExecutionContextCommand({
+				command: 'context',
+				positionals: ['register'],
+				values: { name: 'box', keyStorage: 'file' },
+				apiUrl,
+				token: async () => 'kody_at_test',
+				clientVersion: '0.0.0',
+				write: () => {},
+				fetchFn,
+			}),
+			/EISDIR|illegal operation on a directory/,
+		)
+	} finally {
+		if (saved.HOME === undefined) delete process.env.HOME
+		else process.env.HOME = saved.HOME
+		if (saved.XDG === undefined) delete process.env.XDG_CONFIG_HOME
+		else process.env.XDG_CONFIG_HOME = saved.XDG
+	}
+	assert.deepEqual(calls.slice(-2), [
+		`DELETE /v1/execution-contexts/${ecid}`,
+		`POST /v1/execution-contexts/${ecid}/delete`,
+	])
+})
+
 test('kody context cancel-run posts to the run cancel route', async () => {
 	const calls: Array<string> = []
 	const replies = [
@@ -1203,6 +1232,8 @@ export default async function main(p) {
 				sid: 'sid_test',
 				grantVersion: 1,
 				grant: { fs: [], commands: { enabled: true } },
+				// See the fs test: keep the heartbeat out of a slow workerd run.
+				pingMs: 300_000,
 			},
 		},
 		{
@@ -1274,7 +1305,8 @@ export default async function main(p) {
 	hostCommands.killAll('shutdown')
 	const frames = decoded()
 	const result = frames.find((frame) => frame.t === 'run.result')
-	assert.equal(result?.body.isError, false, JSON.stringify(result?.body))
+	assert.ok(result, 'the daemon never sent run.result')
+	assert.equal(result.body.isError, false, JSON.stringify(result.body))
 	const value = (result?.body.structuredContent as { result: any }).result
 	assert.equal(value.fg.exitCode, 2)
 	assert.equal(

@@ -256,7 +256,132 @@ test('names an origin memory or CPU limit and echoes the ray id as the request i
 		request_id: '8f00aa11bb22cc33-SJC',
 	})
 	expect(body.error.message).toMatch(/ran out of server memory or CPU time/)
+	expect(body.error.message).toContain('a retry can pass')
 	expect(body.error.message).not.toMatch(/temporarily unavailable/)
+})
+
+test('names the step and package size origin recorded before it hit a CPU limit', async () => {
+	consoleError.mockImplementation(() => {})
+	const forwarded: Array<Request> = []
+	const progressReads: Array<string> = []
+	const env: ApiWorkerEnv = {
+		KODY_API: {
+			async fetch(request: Request) {
+				forwarded.push(request)
+				throw new Error('Worker exceeded CPU time limit.')
+			},
+			async readRequestProgress(requestId: string) {
+				progressReads.push(requestId)
+				return {
+					step: 'artifact_reuse_scan',
+					packageName: '@danj/audible',
+					fileCount: 178,
+					totalBytes: 1_960_000,
+					maxFiles: 2_000,
+					maxTotalBytes: 32 * 1024 * 1024,
+				}
+			},
+		} as unknown as ApiWorkerEnv['KODY_API'],
+	}
+	const response = await handleApiEdgeRequest(
+		new Request('https://api.kody.test/v1/packages/check', {
+			method: 'POST',
+			headers: {
+				Authorization: `Bearer ${token}`,
+				'Content-Type': 'application/json',
+				'CF-Ray': 'a58d7375e847dfaf',
+				'X-Kody-Request-Id': 'spoofed',
+			},
+			body: JSON.stringify({ files: { 'package.json': '{}' } }),
+		}),
+		env,
+	)
+	expect(response.status).toBe(503)
+	expect(forwarded[0]?.headers.get('X-Kody-Request-Id')).toBe(
+		'a58d7375e847dfaf',
+	)
+	expect(progressReads).toEqual(['a58d7375e847dfaf'])
+	const body = (await response.json()) as {
+		error: { message: string; details: Record<string, unknown> }
+	}
+	expect(body.error.details).toEqual({
+		reason: 'origin_resource_limit',
+		request_id: 'a58d7375e847dfaf',
+		step: 'artifact_reuse_scan',
+		package_bytes: 1_960_000,
+		package_files: 178,
+	})
+	expect(body.error.message).toContain(
+		'during package checks: the artifact reuse scan',
+	)
+	expect(body.error.message).toContain('for @danj/audible')
+	expect(body.error.message).toContain(
+		'1.96 MB in 178 files: 6% of the 32 MiB check size limit and 9% of the 2,000 file limit',
+	)
+	expect(body.error.message).toContain('a retry can pass')
+	expect(body.error.message).not.toMatch(/usually fails/)
+	expect(body.error.message).not.toContain('\u2014')
+})
+
+test('names the execute run that had started when origin died, instead of inviting a retry', async () => {
+	consoleError.mockImplementation(() => {})
+	const runId = 'd882cc5a-beb8-4682-ba06-7a26ccff8864'
+	const call = async (failure: string, idempotencyKey: string | null) => {
+		const env: ApiWorkerEnv = {
+			KODY_API: {
+				async fetch() {
+					throw new Error(failure)
+				},
+				async readRequestProgress() {
+					return { step: 'execute_run', runId, idempotencyKey }
+				},
+			} as unknown as ApiWorkerEnv['KODY_API'],
+		}
+		const response = await handleApiEdgeRequest(
+			new Request('https://api.kody.test/v1/execute', {
+				method: 'POST',
+				headers: {
+					Authorization: `Bearer ${token}`,
+					'Content-Type': 'application/json',
+					'CF-Ray': 'a59bd2a6b99f24b9',
+				},
+				body: JSON.stringify({ code: 'export default () => 1' }),
+			}),
+			env,
+		)
+		const body = (await response.json()) as {
+			error: { message: string; details: Record<string, unknown> }
+		}
+		return { response, ...body.error }
+	}
+
+	const keyed = await call('Worker exceeded memory limit.', 'daily-run-1')
+	expect(keyed.response.status).toBe(503)
+	expect(keyed.details).toEqual({
+		reason: 'origin_resource_limit',
+		request_id: 'a59bd2a6b99f24b9',
+		step: 'execute_run',
+		run_id: runId,
+		idempotency_key: 'daily-run-1',
+	})
+	expect(keyed.message).toContain(`Execute had already started run ${runId}`)
+	expect(keyed.message).toContain(`GET /v1/runs/${runId}`)
+	expect(keyed.message).toContain('idempotencyKey "daily-run-1"')
+	expect(keyed.message).not.toContain('a retry can pass')
+	expect(keyed.message).not.toContain('\u2014')
+
+	const unkeyed = await call('binding down', null)
+	expect(unkeyed.response.headers.get('Retry-After')).toBeNull()
+	expect(unkeyed.details).toEqual({
+		reason: 'origin_unreachable',
+		request_id: 'a59bd2a6b99f24b9',
+		step: 'execute_run',
+		run_id: runId,
+	})
+	expect(unkeyed.message).toContain(
+		'Do not start it again until runGet shows it ended.',
+	)
+	expect(unkeyed.message).not.toMatch(/Retry in a few seconds/)
 })
 
 test('gateway-fetch streams the body past the JSON cap and forwards hop headers', async () => {

@@ -10,16 +10,18 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { rmSync } from 'node:fs'
+import { rmSync, statSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import {
+	type IncomingHttpHeaders,
 	createServer,
 	request as httpRequest,
 	type IncomingMessage,
 	type Server,
 	type ServerResponse,
 } from 'node:http'
-import { type AddressInfo } from 'node:net'
+import type { AddressInfo } from 'node:net'
+import type { Duplex } from 'node:stream'
 import { tmpdir } from 'node:os'
 import { join, relative, resolve, sep } from 'node:path'
 import {
@@ -52,11 +54,16 @@ import {
 	buildDevProxyUpstreamHeaders,
 	buildTrustedDevForwardUrl,
 	buildTrustedDevPublicUrl,
-	isAllowedDevHost,
+	resolveAllowedDevHost,
 	trustedDevHostFromHostedUrl,
 } from './dev/dev-proxy-origin.js'
 import { listenDevServer } from './dev/dev-port.js'
-import { devStatusPath, type DevServerStatus } from './dev/dev-registry.js'
+import {
+	devCallPath,
+	devOutboxPath,
+	devStatusPath,
+	type DevServerStatus,
+} from './dev/dev-registry.js'
 import { createDevWatcher, type DevWatcher } from './dev/dev-watcher.js'
 import { sendDevError, type DevErrorView } from './dev/error-page.js'
 import {
@@ -117,14 +124,19 @@ import {
 	resolvePackagePath,
 } from './package-manifest.js'
 import { redact } from './redact.js'
-import { type KodyTarget } from './target.js'
+import type { KodyTarget } from './target.js'
 import { ensureWorkerdBinary } from './workerd-binary.js'
+import { defaultDevHost, planDevListen } from './dev/dev-host.js'
 
 export type PackageAppDevOptions = {
 	manifest: KodyPackageManifest
 	token: string
 	apiUrl: string
 	target: KodyTarget
+	/**
+	 * Proxy listen address (default 127.0.0.1). Non-loopback binds also accept
+	 * this machine's LAN addresses as Host; workerd stays on loopback.
+	 */
 	host?: string
 	/** Listen on exactly this port (0 = any free port); EADDRINUSE is an error. */
 	port?: number
@@ -149,6 +161,11 @@ export type PackageAppDevOptions = {
 	}
 	allowPrivateNetwork?: boolean
 	/**
+	 * Warn when one request runs longer than this (ms). A simulation: local
+	 * workerd reports no CPU time, so this uses wall time, an upper bound.
+	 */
+	cpuLimitMs?: number
+	/**
 	 * Hosts that may hit the real network under --target mock when
 	 * `.kody/mocks.ts` is active (never carries real secrets).
 	 */
@@ -160,6 +177,7 @@ export type PackageAppDevOptions = {
 	 */
 	hostAliases?: ReadonlyArray<string>
 	workerdPath?: string
+	localKody?: LocalKodyUpstream
 	fetchFn?: typeof fetch
 	/**
 	 * Rebuild on file changes (default true). One-shot `dev fetch` turns this
@@ -185,6 +203,8 @@ export type PackageAppDevOptions = {
 	onListening?: (info: {
 		port: number
 		hostedUrl: string
+		/** Loopback origin for this machine when bound to 0.0.0.0 / ::. */
+		localUrl: string
 		appBasePath: string
 	}) => void | Promise<void>
 }
@@ -193,6 +213,10 @@ export type PackageAppDevServer = {
 	url: string
 	port: number
 	hostedUrl: string
+	/** Origin this machine uses to reach the server (attach, fetchPath). */
+	localUrl: string
+	/** URLs for other devices; empty on a loopback bind. */
+	networkUrls: Array<string>
 	appBasePath: string
 	packageContext: PackageLocalContext
 	fetchPath: (
@@ -208,10 +232,32 @@ export type PackageAppDevServer = {
 	close: () => Promise<void>
 }
 
+/**
+ * The real Kody stack running locally (`@kodycodes/dev-runtime`). When set,
+ * each build is saved into that local Kody and requests go to the package
+ * app on its origin, instead of a per-build workerd with a stub runtime.
+ */
+export type LocalKodyUpstream = {
+	origin: string
+	/** `/@{username}/packages/{name}` on the local origin. */
+	appPath: string
+	/** Session `Cookie` header for the local account. */
+	cookie: string
+	/** Save the working tree into the local Kody. */
+	sync: () => Promise<void>
+	/** Email captured by the local email boundary instead of being sent. */
+	listOutbox: () => Promise<unknown>
+	/** Package id of the local saved copy, once the first sync lands. */
+	packageId: () => string | null
+	/** Run one real capability on the local stack via the capability proxy. */
+	call: (operation: string, input: unknown) => Promise<unknown>
+}
+
 type Generation = {
 	id: number
 	dir: string
 	workerd: WorkerdHandle
+	upstream?: LocalKodyUpstream
 	code: string
 	client: DevClientBundle | null
 	mapStack: StackMapper
@@ -249,7 +295,7 @@ export async function startPackageAppDev(
 	}
 	assertTokenSafeApiUrl(options.apiUrl)
 
-	const host = options.host ?? '127.0.0.1'
+	const host = options.host ?? defaultDevHost
 	const appBasePath = normalizeBasePath(options.appBasePath ?? '')
 	const root = options.manifest.root
 	const runSecret = randomBytes(32).toString('hex')
@@ -307,6 +353,7 @@ export async function startPackageAppDev(
 
 	const killAllSync = () => {
 		for (const generation of generations) {
+			if (generation.upstream) continue
 			try {
 				process.kill(generation.workerd.pid, 'SIGKILL')
 			} catch {}
@@ -333,11 +380,69 @@ export async function startPackageAppDev(
 		throw error
 	}
 	const address = proxy.address() as AddressInfo
-	const hostedUrl = `http://${host}:${address.port}`
+	const listenPlan = planDevListen({ bindHost: host, port: address.port })
+	const { hostedUrl, localUrl, networkUrls } = listenPlan
+	// Realtime `/ws` upgrades go straight to the local Kody origin.
+	proxy.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+		const upstream = active?.upstream
+		const publicHost = resolveAllowedDevHost({
+			incomingHost: req.headers.host,
+			trustedHost: trustedDevHostFromHostedUrl(hostedUrl),
+			aliases: [
+				...(options.hostAliases ?? []),
+				...listenPlan.extraAllowedHosts(),
+			],
+		})
+		if (!upstream || !publicHost) {
+			socket.destroy()
+			return
+		}
+		const incomingUrl = new URL(req.url ?? '/', hostedUrl)
+		const restPath = stripMount(incomingUrl.pathname, appBasePath)
+		const forwardUrl = new URL(
+			buildTrustedDevForwardUrl({
+				baseUrl: upstream.origin,
+				restPath: `${upstream.appPath}${restPath === '/' ? '/' : restPath}`,
+				search: incomingUrl.search,
+			}),
+		)
+		const upstreamReq = httpRequest(forwardUrl, {
+			method: req.method,
+			headers: devVisitorHeaders(req.headers, {
+				host: forwardUrl.host,
+				cookie: upstream.cookie,
+			}),
+		})
+		upstreamReq.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
+			const lines = [
+				`HTTP/1.1 101 ${upstreamRes.statusMessage ?? 'Switching Protocols'}`,
+			]
+			for (let i = 0; i < upstreamRes.rawHeaders.length; i += 2) {
+				lines.push(
+					`${upstreamRes.rawHeaders[i]}: ${upstreamRes.rawHeaders[i + 1]}`,
+				)
+			}
+			socket.write(`${lines.join('\r\n')}\r\n\r\n`)
+			if (upstreamHead.length > 0) socket.write(upstreamHead)
+			if (head.length > 0) upstreamSocket.write(head)
+			upstreamSocket.pipe(socket).pipe(upstreamSocket)
+			upstreamSocket.on('error', () => socket.destroy())
+			socket.on('error', () => upstreamSocket.destroy())
+		})
+		upstreamReq.on('response', (upstreamRes) => {
+			socket.end(
+				`HTTP/1.1 ${upstreamRes.statusCode ?? 502} ${upstreamRes.statusMessage ?? ''}\r\nconnection: close\r\n\r\n`,
+			)
+			upstreamRes.resume()
+		})
+		upstreamReq.on('error', () => socket.destroy())
+		upstreamReq.end()
+	})
 	try {
 		await options.onListening?.({
 			port: address.port,
 			hostedUrl,
+			localUrl,
 			appBasePath,
 		})
 	} catch (error) {
@@ -349,7 +454,8 @@ export async function startPackageAppDev(
 		await new Promise<void>((resolve) => {
 			proxy.close(() => resolve())
 		})
-		await rm(workDir, { recursive: true, force: true })
+		// Windows can hold a just-stopped workerd's handles for a moment (EPERM).
+		await rm(workDir, { recursive: true, force: true, maxRetries: 10 })
 		throw error
 	}
 	const contextFor = (client: DevClientBundle | null) =>
@@ -415,6 +521,17 @@ export async function startPackageAppDev(
 	let prebuildSettledAt = 0
 	/** `performance.now()` until which onChange ignores events (failed-prebuild absorb). */
 	let ignoreWatcherUntil = 0
+	/** Files the current build was triggered by (watcher paths). */
+	let currentBuildFiles: Array<string> = []
+	/**
+	 * Trigger files of the last failed prebuild and its wall-clock start. A
+	 * late watcher event for one of them whose mtime predates that start is an
+	 * echo of the edit the failed build already consumed, not a new save.
+	 */
+	let failedPrebuildTrigger: {
+		startedAtMs: number
+		paths: Set<string>
+	} | null = null
 	let prebuildAbort: AbortController | undefined
 	const workerdEnv: NodeJS.ProcessEnv = {
 		...process.env,
@@ -444,6 +561,7 @@ export async function startPackageAppDev(
 
 	async function buildOnce(files: Array<string>): Promise<void> {
 		const started = performance.now()
+		currentBuildFiles = files
 		emit({
 			type: 'rebuild_start',
 			files: files.map((file) => relative(root, file) || file),
@@ -543,7 +661,19 @@ export async function startPackageAppDev(
 
 	let clearWatcherPending: (() => void) | null = null
 
+	function isFailedPrebuildEcho(path: string): boolean {
+		const trigger = failedPrebuildTrigger
+		if (!trigger?.paths.has(path)) return false
+		try {
+			return statSync(path).mtimeMs < trigger.startedAtMs
+		} catch {
+			return false
+		}
+	}
+
 	async function runPrebuildStep(command: string): Promise<void> {
+		const startedAtMs = Date.now()
+		failedPrebuildTrigger = null
 		prebuildRunning = true
 		prebuildAbort = new AbortController()
 		let failed = false
@@ -580,6 +710,10 @@ export async function startPackageAppDev(
 				rebuildAgain = false
 				clearWatcherPending?.()
 				ignoreWatcherUntil = performance.now() + failedPrebuildAbsorbMs
+				failedPrebuildTrigger = {
+					startedAtMs,
+					paths: new Set(currentBuildFiles),
+				}
 			}
 		}
 	}
@@ -590,6 +724,31 @@ export async function startPackageAppDev(
 	): Promise<Generation> {
 		const id = ++generationCounter
 		const dir = join(workDir, `g${id}`)
+		if (options.localKody) {
+			await options.localKody.sync()
+			const generation: Generation = {
+				id,
+				dir,
+				workerd: {
+					pid: 0,
+					port: Number(new URL(options.localKody.origin).port),
+					exited: new Promise<string>(() => {}),
+					kill: async () => {},
+				},
+				upstream: options.localKody,
+				code: bundle.code,
+				client,
+				mapStack: createStackMapper({
+					sourceMap: bundle.sourceMap,
+					userModule: localWorkerModuleNames.user,
+				}),
+				inflight: 0,
+				retired: false,
+				stopped: false,
+			}
+			generations.add(generation)
+			return generation
+		}
 		await writeWorkerFiles({
 			workDir: dir,
 			code: bundle.code,
@@ -679,8 +838,10 @@ export async function startPackageAppDev(
 		if (generation.stopped) return
 		generation.stopped = true
 		generation.retired = true
-		await generation.workerd.kill()
-		reaper.untrack(generation.workerd.pid)
+		if (!generation.upstream) {
+			await generation.workerd.kill()
+			reaper.untrack(generation.workerd.pid)
+		}
 		generations.delete(generation)
 		await rm(generation.dir, { recursive: true, force: true })
 	}
@@ -751,6 +912,67 @@ export async function startPackageAppDev(
 			res.end(`${JSON.stringify(status(), null, 2)}\n`)
 			return true
 		}
+		if (pathname === devCallPath) {
+			const send = (code: number, body: unknown) => {
+				res.writeHead(code, {
+					'content-type': 'application/json; charset=utf-8',
+					'cache-control': 'no-store',
+				})
+				res.end(`${JSON.stringify(body, null, 2)}\n`)
+			}
+			const localKody = options.localKody
+			if (!localKody || req.method !== 'POST') {
+				send(localKody ? 405 : 404, {
+					error: localKody
+						? 'POST {operation, input}.'
+						: 'This kody dev server is not running local Kody.',
+				})
+				return true
+			}
+			void readDevCallBody(req)
+				.then(async ({ operation, input }) => {
+					if (!devCallOperations.has(operation)) {
+						send(400, {
+							error: `Unsupported operation ${JSON.stringify(operation)}.`,
+						})
+						return
+					}
+					await waitForBuild()
+					const packageId = localKody.packageId()
+					const scoped =
+						packageId && operation !== 'jobList' && operation !== 'jobRunNow'
+							? { ...input, package_id: packageId }
+							: input
+					send(200, { result: await localKody.call(operation, scoped) })
+				})
+				.catch((error: unknown) =>
+					send(502, {
+						error: error instanceof Error ? error.message : String(error),
+					}),
+				)
+			return true
+		}
+		if (pathname === devOutboxPath) {
+			const send = (code: number, body: unknown) => {
+				res.writeHead(code, {
+					'content-type': 'application/json; charset=utf-8',
+					'cache-control': 'no-store',
+				})
+				res.end(`${JSON.stringify(body, null, 2)}\n`)
+			}
+			if (!options.localKody) {
+				send(200, { count: 0, messages: [] })
+				return true
+			}
+			options.localKody.listOutbox().then(
+				(outbox) => send(200, outbox),
+				(error: unknown) =>
+					send(502, {
+						error: error instanceof Error ? error.message : String(error),
+					}),
+			)
+			return true
+		}
 		if (!liveReload) return false
 		if (pathname === liveReloadEventsPath) {
 			liveReloadHub.handleEvents(req, res)
@@ -772,14 +994,15 @@ export async function startPackageAppDev(
 		res: ServerResponse,
 	): Promise<void> {
 		try {
-			const trustedHost = trustedDevHostFromHostedUrl(hostedUrl)
-			if (
-				!isAllowedDevHost({
-					incomingHost: req.headers.host,
-					trustedHost,
-					aliases: options.hostAliases,
-				})
-			) {
+			const publicHost = resolveAllowedDevHost({
+				incomingHost: req.headers.host,
+				trustedHost: trustedDevHostFromHostedUrl(hostedUrl),
+				aliases: [
+					...(options.hostAliases ?? []),
+					...listenPlan.extraAllowedHosts(),
+				],
+			})
+			if (!publicHost) {
 				res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
 				res.end(
 					`Unrecognized Host ${JSON.stringify(req.headers.host ?? '')}. ` +
@@ -823,7 +1046,7 @@ export async function startPackageAppDev(
 			}
 			generation.inflight += 1
 			try {
-				await forwardRequest(generation, req, res)
+				await forwardRequest(generation, req, res, publicHost)
 			} finally {
 				generation.inflight -= 1
 				if (generation.retired && generation.inflight === 0) {
@@ -846,19 +1069,24 @@ export async function startPackageAppDev(
 		generation: Generation,
 		req: IncomingMessage,
 		res: ServerResponse,
+		/** Allowlisted Host this request came in on (LAN or loopback alias). */
+		trustedHost: string,
 	): Promise<void> {
-		const trustedHost = trustedDevHostFromHostedUrl(hostedUrl)
 		const incomingUrl = new URL(req.url ?? '/', hostedUrl)
 		const restPath = stripMount(incomingUrl.pathname, appBasePath)
 		const publicUrl = buildTrustedDevPublicUrl({
-			hostedUrl,
+			hostedUrl: `http://${trustedHost}`,
 			restPath,
 			search: incomingUrl.search,
 		})
+		const upstream = generation.upstream
 		const forwardUrl = new URL(
 			buildTrustedDevForwardUrl({
-				baseUrl: `http://127.0.0.1:${generation.workerd.port}`,
-				restPath,
+				baseUrl:
+					upstream?.origin ?? `http://127.0.0.1:${generation.workerd.port}`,
+				restPath: upstream
+					? `${upstream.appPath}${restPath === '/' ? '/' : restPath}`
+					: restPath,
 				search: incomingUrl.search,
 			}),
 		)
@@ -874,6 +1102,25 @@ export async function startPackageAppDev(
 			runSecret,
 			requestId: tag.id,
 		})
+		if (upstream) {
+			headers.host = forwardUrl.host
+			if (isAnonymousDevVisitor(req.headers)) delete headers.cookie
+			else headers.cookie = upstream.cookie
+			delete headers[devVisitorHeader]
+		}
+		const startedAt = performance.now()
+		const cpuLimitMs = options.cpuLimitMs ?? defaultDevCpuLimitMs
+		const warnIfOverCpuLimit = () => {
+			const ms = Math.round(performance.now() - startedAt)
+			if (cpuLimitMs <= 0 || ms <= cpuLimitMs) return
+			emit({
+				type: 'log',
+				source: 'app',
+				level: 'warn',
+				message: `took ${ms}ms, over the ${cpuLimitMs}ms CPU limit (simulated from wall time; Cloudflare may stop this request)`,
+				request: tag,
+			})
+		}
 		return new Promise<void>((resolve, reject) => {
 			const upstream = httpRequest(
 				forwardUrl,
@@ -922,7 +1169,10 @@ export async function startPackageAppDev(
 					}
 					res.writeHead(status, upstreamRes.headers)
 					upstreamRes.pipe(res)
-					upstreamRes.on('end', () => resolve())
+					upstreamRes.on('end', () => {
+						warnIfOverCpuLimit()
+						resolve()
+					})
 					upstreamRes.on('error', reject)
 				},
 			)
@@ -1016,6 +1266,9 @@ export async function startPackageAppDev(
 							if (now < ignoreWatcherUntil) {
 								return false
 							}
+							// Late echo of the failed build's own trigger (slow CI
+							// watchers can deliver it after the absorb window).
+							if (isFailedPrebuildEcho(path)) return
 							// Fold mid-build watcher events into the active loop
 							// (including another save of a file already building).
 							// Debouncing them instead schedules a second rebuild
@@ -1075,7 +1328,8 @@ export async function startPackageAppDev(
 		await new Promise<void>((resolve) => {
 			proxy.close(() => resolve())
 		})
-		await rm(workDir, { recursive: true, force: true })
+		// Windows can hold a just-stopped workerd's handles for a moment (EPERM).
+		await rm(workDir, { recursive: true, force: true, maxRetries: 10 })
 	}
 
 	try {
@@ -1098,7 +1352,7 @@ export async function startPackageAppDev(
 		path,
 		init = {},
 	) => {
-		const url = new URL(joinUrlPath(appBasePath, path), hostedUrl)
+		const url = new URL(joinUrlPath(appBasePath, path), localUrl)
 		const response = await fetch(url, {
 			method: init.method ?? 'GET',
 			headers: init.headers,
@@ -1116,6 +1370,8 @@ export async function startPackageAppDev(
 		url: hostedUrl,
 		port: address.port,
 		hostedUrl,
+		localUrl,
+		networkUrls,
 		appBasePath,
 		get packageContext() {
 			return contextFor(active?.client ?? null)
@@ -1285,4 +1541,53 @@ function joinUrlPath(base: string, path: string): string {
 	const rest = path.startsWith('/') ? path : `/${path}`
 	if (!base) return rest
 	return `${base}${rest === '/' ? '' : rest}` || base
+}
+
+/** Cloudflare's default per-request CPU limit for Workers on paid plans. */
+const defaultDevCpuLimitMs = 30_000
+
+/** `x-kody-dev-visitor: anonymous` sends a request without the local session. */
+const devVisitorHeader = 'x-kody-dev-visitor'
+
+function isAnonymousDevVisitor(headers: IncomingHttpHeaders) {
+	return String(headers[devVisitorHeader] ?? '').trim() === 'anonymous'
+}
+
+function devVisitorHeaders(
+	base: IncomingHttpHeaders,
+	local: { host: string; cookie: string },
+): IncomingHttpHeaders {
+	const headers: IncomingHttpHeaders = { ...base, host: local.host }
+	delete headers[devVisitorHeader]
+	if (isAnonymousDevVisitor(base)) delete headers.cookie
+	else headers.cookie = local.cookie
+	return headers
+}
+
+const devCallOperations = new Set([
+	'jobList',
+	'jobRunNow',
+	'packageSubscriptionDispatch',
+	'webhookSyntheticDispatch',
+])
+
+async function readDevCallBody(
+	req: IncomingMessage,
+): Promise<{ operation: string; input: Record<string, unknown> }> {
+	const chunks: Array<Buffer> = []
+	for await (const chunk of req) chunks.push(Buffer.from(chunk as Buffer))
+	const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+		operation?: unknown
+		input?: unknown
+	}
+	if (typeof parsed.operation !== 'string') {
+		throw new Error('POST {operation, input}.')
+	}
+	const input =
+		parsed.input &&
+		typeof parsed.input === 'object' &&
+		!Array.isArray(parsed.input)
+			? (parsed.input as Record<string, unknown>)
+			: {}
+	return { operation: parsed.operation, input }
 }

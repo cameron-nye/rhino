@@ -23,6 +23,7 @@ import {
 	createStorageKodyTools,
 	createExecuteStorageId,
 	emptyStorageRunnerEstimatedBytes,
+	isMissingStorageRunnerMethodError,
 	readOnlyStorageSqlDeniedMessage,
 	StorageRunner,
 	storageRunnerRpc,
@@ -32,6 +33,8 @@ import { testStableUserIdFromEmail } from '#worker/test-support/stable-user-id.t
 import { ensureUsageRollupsTestSchema } from '#worker/usage/test-schema.ts'
 
 import { ownerIdFromStored } from '@kody-internal/shared/owner-person-ids.ts'
+import { storageSqlParitySteps } from '@kody-internal/shared/storage-sql-parity.fixture.ts'
+import { runStorageKvContract } from '@kody-internal/shared/storage-kv-contract.fixture.ts'
 
 async function ensureStorageRunnerTestSchema() {
 	await ensureUserStorageBucketsTestSchema(env.APP_DB)
@@ -225,6 +228,155 @@ test('storage runner write tools enforce storage byte entitlements for planned u
 	).resolves.toEqual({ ok: true, key: 'new-key' })
 })
 
+async function seedBucketNearLimit(prefix: string, roomBytes: number) {
+	const limit = proStorageLimit()
+	const user = await seedPlannedStorageUser(prefix, 'pro', 0)
+	const storageId = createExecuteStorageId()
+	const runner = runnerFor(user.userId, storageId)
+	await runner.setValue({ key: 'seed', value: 'seed' })
+	const seededBytes = (await runner.getEstimatedBytes()).estimatedBytes
+	// Leave exactly `roomBytes` of growth for this bucket.
+	await setMeterBytes(user.userId, limit - seededBytes - roomBytes)
+	const tools = writableStorageTools({
+		env,
+		...user,
+		storageId,
+		writable: true,
+	})
+	return { ...user, limit, storageId, runner, tools, seededBytes }
+}
+
+test('in-write storage check rolls back key/value writes that exceed the limit', async () => {
+	const { runner, tools, limit, seededBytes } = await seedBucketNearLimit(
+		'storage-inwrite-kv',
+		64_000,
+	)
+	await expect(
+		tools.storageSet({ key: 'small', value: 'fits' }),
+	).resolves.toEqual({ ok: true, key: 'small' })
+
+	const sizeBefore = (await runner.getEstimatedBytes()).estimatedBytes
+	const denied = await entitlementRejection(
+		tools.storageSet({ key: 'big', value: 'x'.repeat(200_000) }),
+	)
+	expect(denied.details).toMatchObject({
+		resource: 'storage_bytes',
+		plan: 'pro',
+		limit,
+	})
+	expect(denied.details.current).toBe(limit - seededBytes - 64_000 + sizeBefore)
+	await expect(runner.getValue({ key: 'big' })).resolves.toEqual({
+		key: 'big',
+		value: null,
+	})
+	await expect(runner.getEstimatedBytes()).resolves.toEqual({
+		estimatedBytes: sizeBefore,
+	})
+
+	// Shrinking writes stay allowed.
+	await expect(tools.storageSet({ key: 'small', value: '' })).resolves.toEqual({
+		ok: true,
+		key: 'small',
+	})
+	await expect(tools.storageDelete({ key: 'small' })).resolves.toMatchObject({
+		ok: true,
+		deleted: true,
+	})
+})
+
+test('in-write storage check rolls back SQL writes and keeps RETURNING rows', async () => {
+	const { runner, tools } = await seedBucketNearLimit(
+		'storage-inwrite-sql',
+		64_000,
+	)
+	await tools.storageSql({
+		query:
+			'CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)',
+	})
+	await expect(
+		tools.storageSql({
+			query: 'INSERT INTO notes (body) VALUES (?), (?) RETURNING id, body',
+			params: ['a', 'b'],
+		}),
+	).resolves.toMatchObject({
+		columns: ['id', 'body'],
+		rows: [
+			{ id: 1, body: 'a' },
+			{ id: 2, body: 'b' },
+		],
+		rowCount: 2,
+	})
+
+	const sizeBefore = (await runner.getEstimatedBytes()).estimatedBytes
+	await entitlementRejection(
+		tools.storageSql({
+			query: 'INSERT INTO notes (body) VALUES (?) RETURNING id',
+			params: ['y'.repeat(200_000)],
+		}),
+	)
+	await expect(
+		tools.storageSql({ query: 'SELECT COUNT(*) AS count FROM notes' }),
+	).resolves.toMatchObject({ rows: [{ count: 2 }] })
+	await expect(runner.getEstimatedBytes()).resolves.toEqual({
+		estimatedBytes: sizeBefore,
+	})
+
+	await expect(
+		tools.storageSql({
+			query: 'DELETE FROM notes WHERE id = ? RETURNING id',
+			params: [1],
+		}),
+	).resolves.toMatchObject({ rows: [{ id: 1 }] })
+	await expect(
+		tools.storageSql({ query: 'DELETE FROM notes' }),
+	).resolves.toMatchObject({ rowsWritten: 1 })
+})
+
+test('in-write storage check bounds concurrent writes to one bucket', async () => {
+	const room = 250_000
+	const { userId, email, storageId, runner, limit, seededBytes } =
+		await seedBucketNearLimit('storage-inwrite-concurrent', room)
+	// Separate tool instances (no shared run cache), like parallel runs.
+	const writes = Array.from({ length: 6 }, (_, index) =>
+		writableStorageTools({
+			env,
+			userId,
+			email,
+			storageId,
+			writable: true,
+		}).storageSet({ key: `chunk-${index}`, value: 'z'.repeat(100_000) }),
+	)
+	const results = await Promise.allSettled(writes)
+	const accepted = results.filter((result) => result.status === 'fulfilled')
+	const rejected = results.filter((result) => result.status === 'rejected')
+	expect(accepted.length).toBeGreaterThan(0)
+	expect(rejected.length).toBeGreaterThan(0)
+	for (const result of rejected) {
+		expect(result.reason).toBeInstanceOf(EntitlementLimitError)
+	}
+	const { estimatedBytes } = await runner.getEstimatedBytes()
+	expect(estimatedBytes).toBeLessThanOrEqual(seededBytes + room)
+	expect(limit - seededBytes - room + estimatedBytes).toBeLessThanOrEqual(limit)
+})
+
+test('a StorageRunner without an RPC method is detected before it runs', async () => {
+	await ensureStorageRunnerTestSchema()
+	const stub = storageRunnerStub(
+		'user-123',
+		createExecuteStorageId(),
+	) as unknown as {
+		notARealStorageMethod: () => Promise<unknown>
+	}
+	const error = await stub.notARealStorageMethod().then(
+		() => null,
+		(thrown: unknown) => thrown,
+	)
+	expect(
+		isMissingStorageRunnerMethodError(error, 'notARealStorageMethod'),
+	).toBe(true)
+	expect(isMissingStorageRunnerMethodError(error, 'otherMethod')).toBe(false)
+})
+
 test('storage runner storage byte entitlement aggregates only inventoried user buckets', async () => {
 	const limit = proStorageLimit()
 	const { email, userId } = await seedPlannedStorageUser(
@@ -375,6 +527,32 @@ test('storage runner supports raw SQL with explicit writable access', async () =
 			expect(state.storage.sql.databaseSize).toBeGreaterThan(0)
 		},
 	)
+})
+
+test('sqlQuery matches the shared mock parity steps', async () => {
+	await ensureStorageRunnerTestSchema()
+	const runner = runnerFor('user-123', createExecuteStorageId())
+	for (const step of storageSqlParitySteps) {
+		const run = runner.sqlQuery({
+			query: step.query,
+			params: step.params,
+			writable: true,
+		})
+		if ('error' in step) {
+			await expect(run, step.query).rejects.toThrow(step.error)
+			continue
+		}
+		const { rows, firstRow, ...expected } = step.result
+		const actual = await run
+		const { rows: actualRows, ...actualRest } = actual
+		expect(Object.keys(actual).sort(), step.query).toEqual(
+			[...Object.keys(expected), 'rows'].sort(),
+		)
+		expect(actualRest, step.query).toEqual(expected)
+		if (rows) expect(actualRows, step.query).toEqual(rows)
+		if (firstRow) expect(actualRows[0], step.query).toEqual(firstRow)
+		expect(actualRows, step.query).toHaveLength(expected.rowCount)
+	}
 })
 
 test('sqlQuery caps large result sets and still finishes RETURNING writes', async () => {
@@ -726,4 +904,39 @@ test('clearStorage during account-deletion purge must not recreate ownership row
 	} finally {
 		releaseInsert()
 	}
+})
+
+test('StorageRunner key-value methods match the shared kody dev contract', async () => {
+	await ensureStorageRunnerTestSchema()
+	const userId = ownerIdFromStored(`storage-kv-contract-${crypto.randomUUID()}`)
+	const runner = createMeteredDurableObjectStub({
+		env: { USAGE_EVENTS: { writeDataPoint() {} } },
+		userId,
+		doClass: 'StorageRunner',
+		stub: storageRunnerNamespace.get(
+			storageRunnerNamespace.idFromName(
+				storageRunnerDurableObjectName(userId, createExecuteStorageId()),
+			),
+		),
+	})
+	const results = await runStorageKvContract({
+		get: async (key) => (await runner.getValue({ key })).value,
+		set: async (key, value) => {
+			await runner.setValue({ key, value })
+		},
+		delete: async (key) => (await runner.deleteValue({ key })).deleted,
+		// Stored values are `unknown`, which the RPC stub types as never.
+		list: async (input) =>
+			(
+				(await runner.listValues({
+					prefix: input?.prefix ?? null,
+				})) as unknown as { entries: Array<{ key: string; value: unknown }> }
+			).entries,
+		clear: async () => {
+			await runner.clearStorage()
+		},
+	})
+	expect(results.map(({ step, actual }) => ({ step, value: actual }))).toEqual(
+		results.map(({ step, expected }) => ({ step, value: expected })),
+	)
 })

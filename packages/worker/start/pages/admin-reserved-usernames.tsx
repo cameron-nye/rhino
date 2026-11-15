@@ -1,9 +1,11 @@
 /** @jsxImportSource @emotion/react */
+import { LoadingIndicator } from '../components/loading-indicator.tsx'
+import { createUiFeedback, type UiFeedback } from '#client/ui-feedback.ts'
 import {
 	addAdminReservedUsernames,
 	removeAdminReservedUsernames,
 } from '#start/server/admin-mutations'
-import { type AdminReservedUsernamesLoaderData } from '#universal/loader-data.ts'
+import type { AdminReservedUsernamesLoaderData } from '#universal/loader-data.ts'
 import {
 	cardCss,
 	descriptionCss,
@@ -47,8 +49,12 @@ export function AdminReservedUsernamesPage(props: {
 		onSettled: (_data, _error, _input, reconcile) => reconcile?.(),
 	})
 	const [builtInQuery, setBuiltInQuery] = useState('')
-	const [message, setMessage] = useState<string | null>(null)
-	const [messageTone, setMessageTone] = useState<'info' | 'error'>('info')
+	const [feedback, setFeedback] = useState<UiFeedback | null>(() =>
+		createUiFeedback(null, 'info'),
+	)
+	const message = feedback?.message ?? null
+	const messageTone = feedback?.tone ?? 'info'
+
 	const actionState: ActionState = addMutation.isPending
 		? 'adding'
 		: removeMutation.isPending
@@ -61,26 +67,29 @@ export function AdminReservedUsernamesPage(props: {
 	) {
 		if (actionState !== 'idle') return false
 		const isCurrent = captureSubmitter()
-		setMessage(null)
-		setMessageTone('info')
+		setFeedback(createUiFeedback(null, 'info'))
 		try {
 			await submit()
 			if (!isCurrent()) return false
-			setMessage(
-				nextState === 'adding'
-					? 'Reserved usernames updated.'
-					: 'Reserved username removed.',
+			setFeedback(
+				createUiFeedback(
+					nextState === 'adding'
+						? 'Reserved usernames updated.'
+						: 'Reserved username removed.',
+					'info',
+				),
 			)
-			setMessageTone('info')
 			return true
 		} catch (error) {
 			if (!isCurrent()) return false
-			setMessage(
-				error instanceof Error
-					? error.message
-					: 'Unable to update reserved usernames.',
+			setFeedback(
+				createUiFeedback(
+					error instanceof Error
+						? error.message
+						: 'Unable to update reserved usernames.',
+					'error',
+				),
 			)
-			setMessageTone('error')
 			return false
 		}
 	}
@@ -122,9 +131,7 @@ export function AdminReservedUsernamesPage(props: {
 				currentHref={currentHref}
 			/>
 			{status === 'loading' ? (
-				<p css={{ color: colors.textMuted, margin: 0 }}>
-					Loading reserved usernames…
-				</p>
+				<LoadingIndicator label="Loading reserved usernames…" />
 			) : null}
 			{message ? (
 				<AccountManagementMessage tone={messageTone}>

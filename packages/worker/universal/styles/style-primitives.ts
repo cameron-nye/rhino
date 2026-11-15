@@ -1,3 +1,4 @@
+import type { CSSObject } from '@emotion/react'
 import { surfaceCardCss } from './surface.ts'
 import {
 	colors,
@@ -27,6 +28,7 @@ function getBaseButtonCss(options: ButtonCssOptions = {}) {
 	return {
 		padding: `${spacing.sm} ${size === 'lg' ? spacing.lg : spacing.md}`,
 		borderRadius: radius.full,
+		fontFamily: typography.fontFamilyDisplay,
 		fontSize: typography.fontSize.base,
 		fontWeight: typography.fontWeight[weight],
 		cursor: 'pointer',
@@ -629,7 +631,9 @@ type SurfaceCardCssOptions = {
 	interactive?: boolean
 }
 
-export function getSurfaceCardCss(options: SurfaceCardCssOptions = {}) {
+export function getSurfaceCardCss(
+	options: SurfaceCardCssOptions = {},
+): CSSObject {
 	return {
 		...surfaceCardCss,
 		...(options.interactive
@@ -712,6 +716,15 @@ export const accountRailGapBelowHeader = `calc(${accountRailContentTop} - ${site
  * whisper so switching tabs does not change background. The app shell leaves
  * these routes unpadded; gutters live here.
  */
+export const workspaceTextureCss = {
+	...pageHeadCss['&::before'],
+	inset: 'auto',
+	top: '-3rem',
+	insetInline: 0,
+	height: '44rem',
+	background: `radial-gradient(ellipse 46% 55% at 70% 22%, oklch(from ${colors.text} l c h / 0.025), transparent 72%)`,
+}
+
 export const packageDetailPageCss = {
 	position: 'relative' as const,
 	isolation: 'isolate' as const,
@@ -722,14 +735,10 @@ export const packageDetailPageCss = {
 		padding: `${spacing.md} ${pageGutter} ${spacing.xl}`,
 	},
 	'&::before': {
-		...pageHeadCss['&::before'],
-		inset: 'auto',
-		top: '-3rem',
-		left: '-30%',
-		right: '-30%',
-		height: '44rem',
-		background: `radial-gradient(ellipse 46% 55% at 70% 22%, oklch(from ${colors.text} l c h / 0.05), transparent 72%)`,
+		...workspaceTextureCss,
+		insetInline: '-30%',
 	},
+	'[data-workspace-panel] &::before': { display: 'none' },
 }
 
 export const pageHeaderCss = {
@@ -756,7 +765,7 @@ export const pageDescriptionCss = {
 	color: colors.textMuted,
 }
 
-export const cardCss = {
+export const cardCss: CSSObject = {
 	...surfaceCardCss,
 	padding: spacing.lg,
 	display: 'grid',
@@ -938,30 +947,25 @@ export function getAuthInputCss(options: AuthInputCssOptions = {}) {
 
 /**
  * `<select>` in the redesign's field vocabulary: the same box as
- * `getAuthInputCss` with the platform chevron replaced by our own, so every
- * dropdown in the app reads identically instead of inheriting whatever the OS
- * draws. The chevron is a background image inset by the field's own padding —
- * the text gets matching room on the right so a long option never runs under
- * it. A background image cannot read `currentColor`, so the chevron's stroke
- * is baked into a themed `--select-chevron` token (see `public/styles.css`)
- * rather than picked as one compromise gray for both themes.
+ * `getAuthInputCss` with a small solid caret. The themed background image is
+ * inset from the right edge, with an extra 8px gap between text and caret.
  *
  * Markup contract: same as `getAuthInputCss` — put `data-field-ring` on the
  * element so the global `:focus-visible` outline stands down for the field's
  * own green ring.
  */
 export function getSelectCss(options: AuthInputCssOptions = {}) {
-	const chevronInset = 'var(--control-padding-x, 1.05rem)'
+	const caretInset = 'var(--control-padding-x, 1.05rem)'
 	return {
 		...getAuthInputCss(options),
 		appearance: 'none' as const,
 		WebkitAppearance: 'none' as const,
 		cursor: 'pointer',
-		paddingRight: `calc(${chevronInset} * 2 + 16px)`,
-		backgroundImage: 'var(--select-chevron)',
+		paddingRight: `calc(${caretInset} + 16px)`,
+		backgroundImage: 'var(--select-caret)',
 		backgroundRepeat: 'no-repeat',
-		backgroundPosition: `right ${chevronInset} center`,
-		backgroundSize: '16px 16px',
+		backgroundPosition: `right ${caretInset} center`,
+		backgroundSize: '8px 5px',
 	}
 }
 

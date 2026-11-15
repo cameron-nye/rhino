@@ -5,11 +5,11 @@ import {
 	normalizePackageExportKey,
 	normalizePackageWorkspacePath,
 } from '#worker/package-registry/manifest.ts'
-import {
-	type AuthoredPackageJson,
-	type PackageExportTarget,
+import type {
+	AuthoredPackageJson,
+	PackageExportTarget,
 } from '#worker/package-registry/types.ts'
-import { type BundleArtifactKind } from './published-runtime-artifacts.ts'
+import type { BundleArtifactKind } from './published-runtime-artifacts.ts'
 import { buildPackageSubscriptionArtifactName } from './subscription-artifacts.ts'
 
 export type PublishedPackageArtifactBuildTarget = {
@@ -17,6 +17,19 @@ export type PublishedPackageArtifactBuildTarget = {
 	artifactName?: string | null
 	entryPoint: string
 	bundleKind: 'app' | 'app-client' | 'module' | 'importable-module'
+}
+
+/**
+ * Targets with the same key build the same bundle: an export's `module`
+ * target and every job or subscription handler on that file.
+ */
+export function publishedPackageArtifactBuildKey(
+	target: Pick<
+		PublishedPackageArtifactBuildTarget,
+		'bundleKind' | 'entryPoint'
+	>,
+) {
+	return `${target.bundleKind}\0${target.entryPoint}`
 }
 
 function resolvePackageExportRuntimeEntryPoint(target: PackageExportTarget) {

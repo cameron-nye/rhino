@@ -213,8 +213,13 @@
 						"name": "REPO_SESSION_INDEX",
 						"script_name": "kody-platform",
 					},
-					// Workflow steps (and other background invokes) that route through
-					// an execution context call sessionStub → EXECUTION_CONTEXT_SESSION.
+					{
+						"class_name": "FileStore",
+						"name": "FILE_STORE",
+						"script_name": "kody-platform",
+					},
+					// Workflow steps with `execution` dispatch to the context's
+					// session DO, which the platform Worker owns (ADR 0086).
 					{
 						"class_name": "ExecutionContextSessionV1",
 						"name": "EXECUTION_CONTEXT_SESSION",
@@ -418,6 +423,13 @@
 						"name": "REPO_SESSION_INDEX",
 						"script_name": "kody-platform",
 					},
+					{
+						"class_name": "FileStore",
+						"name": "FILE_STORE",
+						"script_name": "kody-platform",
+					},
+					// Workflow steps with `execution` dispatch to the context's
+					// session DO, which the platform Worker owns (ADR 0086).
 					{
 						"class_name": "ExecutionContextSessionV1",
 						"name": "EXECUTION_CONTEXT_SESSION",

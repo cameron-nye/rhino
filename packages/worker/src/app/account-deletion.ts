@@ -1,12 +1,14 @@
+import { fileStoreRpc } from '#worker/files/client.ts'
 /**
  * soft-delete-read-filter: opt-out
  *
  * Account deletion and soft-delete purge both read and remove user-owned rows
  * including tombstones. Live product paths keep deleted_at filters elsewhere.
  */
+import { linkedArtifactSourceKvPrefix } from '#worker/package-runtime/linked-artifact-store.ts'
 import { invalidatePackageAppOwnerCache } from '#app/package-app-owner.ts'
 import { getErrorMessage } from '@kody-internal/shared/error-message.ts'
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
 import {
 	type OAuthGrantHelpers,
 	revokeAllOAuthGrantsBestEffort,
@@ -25,12 +27,15 @@ import {
 	listSubscriptions,
 	StripeCreditNoteListIncompleteError,
 	type StripeCreditNote,
-	type StripeInvoiceLineItem,
-	type StripePaidInvoice,
 	type StripeSubscription,
 } from '#worker/billing/stripe-client.ts'
 import { auditDatabaseFromEnv, logAuditEvent } from '#worker/audit-log.ts'
 import { isKodySubscription } from '#worker/billing/billing-config.ts'
+import {
+	computeMaxRefundMinor,
+	computeProratedRefundMinor,
+	selectRefundableInvoice,
+} from '#worker/billing/unused-subscription-value.ts'
 import { purgeStripePlanRefreshForUser } from '#worker/billing/stripe-plan-refresh-client.ts'
 import { storageRunnerRpc } from '#worker/storage-runner.ts'
 import { purgeJobManagerForUser } from '#worker/jobs/manager-client.ts'
@@ -84,10 +89,11 @@ import {
 	type McpAgentSession,
 } from '#mcp/session-registry.ts'
 import {
-	AccountDeletionWritersActiveError,
 	abortAccountDeleting,
 	clearUserMeterDeletionTombstone,
 	markAccountDeleting,
+	accountDeletionWritersActive,
+	type BlockingAccountWriteLease,
 } from '#worker/account/deletion-state.ts'
 import {
 	buildPublishedSourceManifestSnapshotKvKey,
@@ -553,65 +559,6 @@ function isStripeSubscriptionRefundable(subscription: StripeSubscription) {
 	)
 }
 
-/**
- * Unused-time refund for one invoice line, in the smallest currency unit:
- * `floor(lineAmount * (periodEnd - now) / (periodEnd - periodStart))`. Zero
- * when the period has already ended, has no length, or the line was free.
- *
- * `lineAmount` is the line's gross amount (before discounts and exclusive
- * tax), so this is the gross amount to credit, not what the customer gets
- * back: Stripe prorates the line's discounts and tax into the credit note and
- * the previewed total is what is refunded.
- */
-function computeProratedRefundMinor(input: {
-	lineAmount: number
-	periodStart: number
-	periodEnd: number
-	nowSeconds: number
-}) {
-	const periodLength = input.periodEnd - input.periodStart
-	const remaining = input.periodEnd - input.nowSeconds
-	if (input.lineAmount <= 0 || periodLength <= 0 || remaining <= 0) return 0
-	const unusedFraction = Math.min(1, remaining / periodLength)
-	return Math.floor(input.lineAmount * unusedFraction)
-}
-
-/**
- * Every positive invoice line whose service period covers `now`. A mid-cycle
- * upgrade invoice also carries a negative proration credit for the old price,
- * which cannot be credited again; lines for periods that already ended (or
- * have not started) have no unused time.
- */
-function selectRefundableInvoiceLines(
-	invoice: StripePaidInvoice,
-	nowSeconds: number,
-): Array<StripeInvoiceLineItem> {
-	return invoice.lines.data.filter(
-		(line) =>
-			line.amount > 0 &&
-			line.period.start <= nowSeconds &&
-			line.period.end > nowSeconds,
-	)
-}
-
-/**
- * Walks the subscription's recent paid invoices, newest first, to the first
- * one that both took money and still has a line covering `now`. The newest
- * paid invoice is often a $0 proration invoice (a downgrade) with nothing to
- * give back; the real payment for the running period sits behind it.
- */
-function selectRefundableInvoice(
-	invoices: ReadonlyArray<StripePaidInvoice>,
-	nowSeconds: number,
-) {
-	for (const invoice of invoices) {
-		if (invoice.amount_paid <= 0) continue
-		const lines = selectRefundableInvoiceLines(invoice, nowSeconds)
-		if (lines.length > 0) return { invoice, lines }
-	}
-	return null
-}
-
 function creditNoteToRefund(
 	creditNote: StripeCreditNote,
 	fallbackSubscriptionId: string | null,
@@ -625,24 +572,6 @@ function creditNoteToRefund(
 		invoiceId: creditNote.invoice,
 		creditNoteId: creditNote.id,
 	}
-}
-
-/**
- * The most an invoice can still give back: what was actually paid minus every
- * credit note already issued against it, by anyone. A mid-cycle upgrade
- * invoice (portal upgrades use `always_invoice`) carries a positive new-plan
- * line plus a negative unused-time credit for the old plan, so `amount_paid`
- * is the net and the unused fraction of the positive line alone can exceed
- * it; Stripe would reject that credit note.
- */
-function computeMaxRefundMinor(
-	invoice: StripePaidInvoice,
-	creditNotes: ReadonlyArray<StripeCreditNote>,
-) {
-	const credited = creditNotes
-		.filter((creditNote) => creditNote.status === 'issued')
-		.reduce((sum, creditNote) => sum + creditNote.total, 0)
-	return invoice.amount_paid - credited
 }
 
 /**
@@ -1575,6 +1504,16 @@ export async function purgeOwnerOutOfBandSurfaces(input: {
 		return 0
 	})
 
+	if (input.env.FILE_STORE) {
+		try {
+			await fileStoreRpc(input.env, input.ownerId).purge(input.ownerId)
+			result.clearedDurableObjects.fileStores = 1
+		} catch (error) {
+			warnings.push(`File store purge failed: ${getErrorMessage(error)}`)
+			throw new AccountDeletionCleanupError(warnings, result)
+		}
+	}
+
 	result.clearedDurableObjects.repoSessions = await purgeRepoSessions({
 		env: input.env,
 		userId: input.ownerId,
@@ -1636,6 +1575,7 @@ export async function purgeOwnerOutOfBandSurfaces(input: {
 				...inventory.sourceSnapshots.flatMap((source) => [
 					`source-snapshot:v1:${source.sourceId}:`,
 					`source-manifest-snapshot:v1:${source.sourceId}:`,
+					linkedArtifactSourceKvPrefix(source.sourceId),
 					`credential-needs:v1:${source.sourceId}:`,
 					`credential-stamp:v1:${source.sourceId}:`,
 				]),
@@ -1762,11 +1702,17 @@ export async function deleteUserAccount(input: {
 	 * users row.
 	 */
 	purgeSoftDeleted?: boolean
+	/**
+	 * Guest merge: the claiming person inherits this account's OAuth grants
+	 * through the guest alias, so they must survive the deletion.
+	 */
+	keepOAuthGrants?: boolean
 }): Promise<AccountDeletionResult> {
 	const personUserId = input.personUserId ?? input.mcpUserId
 	const purgeSoftDeleted = input.purgeSoftDeleted === true
 	let marked: {
 		leaseCount: number
+		blockingLeases?: ReadonlyArray<BlockingAccountWriteLease>
 		created: boolean
 		deletingAt: string
 	}
@@ -1803,7 +1749,7 @@ export async function deleteUserAccount(input: {
 					expectedDeletingAt: marked.deletingAt,
 				})
 			}
-			throw new AccountDeletionWritersActiveError(marked.leaseCount)
+			throw accountDeletionWritersActive(marked)
 		}
 	}
 	const warnings: Array<string> = []
@@ -1905,6 +1851,16 @@ export async function deleteUserAccount(input: {
 		return 0
 	})
 
+	if (input.env.FILE_STORE) {
+		try {
+			await fileStoreRpc(input.env, input.mcpUserId).purge(input.mcpUserId)
+			result.clearedDurableObjects.fileStores = 1
+		} catch (error) {
+			warnings.push(`File store purge failed: ${getErrorMessage(error)}`)
+			throw new AccountDeletionCleanupError(warnings, result)
+		}
+	}
+
 	result.clearedDurableObjects.repoSessions = await purgeRepoSessions({
 		env: input.env,
 		userId: input.mcpUserId,
@@ -1965,6 +1921,7 @@ export async function deleteUserAccount(input: {
 				...inventory.sourceSnapshots.flatMap((source) => [
 					`source-snapshot:v1:${source.sourceId}:`,
 					`source-manifest-snapshot:v1:${source.sourceId}:`,
+					linkedArtifactSourceKvPrefix(source.sourceId),
 					`credential-needs:v1:${source.sourceId}:`,
 					`credential-stamp:v1:${source.sourceId}:`,
 				]),
@@ -2098,16 +2055,17 @@ export async function deleteUserAccount(input: {
 				)
 			}
 		}
-		try {
-			result.revokedOAuthGrants = await revokeAllOAuthGrantsBestEffort({
-				helpers,
-				userId: input.mcpUserId,
-				warnings,
-			})
-		} catch (error) {
-			const message = getErrorMessage(error)
-			warnings.push(`OAuth grant revocation failed unexpectedly: ${message}`)
-		}
+		if (!input.keepOAuthGrants)
+			try {
+				result.revokedOAuthGrants = await revokeAllOAuthGrantsBestEffort({
+					helpers,
+					userId: input.mcpUserId,
+					warnings,
+				})
+			} catch (error) {
+				const message = getErrorMessage(error)
+				warnings.push(`OAuth grant revocation failed unexpectedly: ${message}`)
+			}
 	} else {
 		warnings.push(
 			'OAuth provider binding and OAUTH_KV were unavailable; OAuth grants were not revoked.',

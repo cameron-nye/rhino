@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest'
 import { http, HttpResponse } from 'msw'
+import { withAgentYoutubeVideoIds } from '#universal/with-agents.ts'
 import { youtubeWatchSampleVideoId } from '#universal/youtube-watch.ts'
 import { createMswNodeServer } from '#worker/test-support/msw-node-server.ts'
 import {
@@ -56,6 +57,10 @@ test('loadPlaylistVideoIds fails open when YouTube is unreachable', async () => 
 	).resolves.toEqual([])
 })
 
+test('bundledDocWatchVideoIds includes watch blocks from blog posts', () => {
+	expect(bundledDocWatchVideoIds()).toContain('m8I2p3nQtR4')
+})
+
 test('resolveYoutubeWatchAllowedVideoIds skips playlist fetch when loadPlaylists is false', async () => {
 	using _server = createMswNodeServer([])
 	const ids = await resolveYoutubeWatchAllowedVideoIds({
@@ -67,4 +72,5 @@ test('resolveYoutubeWatchAllowedVideoIds skips playlist fetch when loadPlaylists
 	})
 	expect(ids).toContain(videoId)
 	expect(ids).toEqual(expect.arrayContaining(bundledDocWatchVideoIds()))
+	expect(ids).toEqual(expect.arrayContaining(withAgentYoutubeVideoIds()))
 })

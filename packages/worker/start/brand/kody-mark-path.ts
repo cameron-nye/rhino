@@ -5,9 +5,23 @@
 import {
 	rhinoBodyOnDark,
 	rhinoBodyOnLight,
+	rhinoBodyPathDs,
+	rhinoHornPathD,
 	rhinoIconSvgMarkup,
 	rhinoMarkSvgMarkup,
+	rhinoMarkViewBox,
 } from './rhino-mark.ts'
+
+/** Rhino jet viewBox; names stay upstream for the loading mark animation. */
+export const kodyMarkViewBox = rhinoMarkViewBox
+
+export const kodyMarkPathTransform = ''
+
+/** Loading spinner stroke paths: canopy, port intake, starboard intake, horn. */
+export const kodyMarkOutlinedOuterPathD = rhinoBodyPathDs[0]!
+export const kodyMarkOutlinedLeftEyePathD = rhinoBodyPathDs[1]!
+export const kodyMarkOutlinedRightEyePathD = rhinoBodyPathDs[2]!
+export const kodyMarkOutlinedNosePathD = rhinoHornPathD
 
 /** Public asset paths for brand downloads. Filenames stay upstream. */
 export const kodyBrandAssets = {

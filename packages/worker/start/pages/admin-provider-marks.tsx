@@ -1,11 +1,12 @@
 /** @jsxImportSource @emotion/react */
+import { createUiFeedback, type UiFeedback } from '#client/ui-feedback.ts'
 import { publicAsset } from '../public-assets.ts'
-import { type ProviderMarkSaveInput } from '#universal/admin-provider-mutations.ts'
+import type { ProviderMarkSaveInput } from '#universal/admin-provider-mutations.ts'
 import {
 	saveAdminProviderMark,
 	deleteAdminProviderMark,
 } from '#start/server/admin-mutations'
-import { type CSSObject } from '@emotion/react'
+import type { CSSObject } from '@emotion/react'
 import {
 	useEffect,
 	useRef,
@@ -26,9 +27,9 @@ import {
 	markGroupKey,
 	splitAliasInput,
 } from '#client/routes/admin-provider-marks-shared.ts'
-import {
-	type AdminProviderMark,
-	type AdminProviderMarksLoaderData,
+import type {
+	AdminProviderMark,
+	AdminProviderMarksLoaderData,
 } from '#universal/loader-data.ts'
 import {
 	fieldCss,
@@ -105,8 +106,12 @@ export function AdminProviderMarksRoute({
 	initialData: AdminProviderMarksLoaderData
 }) {
 	const marks = initialData.marks
-	const [message, setMessage] = useState<string | null>(null)
-	const [messageTone, setMessageTone] = useState<'info' | 'error'>('info')
+	const [feedback, setFeedback] = useState<UiFeedback | null>(() =>
+		createUiFeedback(null, 'info'),
+	)
+	const message = feedback?.message ?? null
+	const messageTone = feedback?.tone ?? 'info'
+
 	const [search, setSearch] = useState('')
 	const [selectedSlug, setSelectedSlug] = useState<string | null>(null)
 	const [creating, setCreating] = useState(false)
@@ -221,23 +226,24 @@ export function AdminProviderMarksRoute({
 		if (busy.current) return false
 		const isCurrent = captureSubmitter()
 		busy.current = true
-		setMessage(null)
+		setFeedback(createUiFeedback(null))
 
 		try {
 			await submit()
 			if (!mounted.current || !isCurrent()) return false
-			setMessage(successMessage)
-			setMessageTone('info')
+			setFeedback(createUiFeedback(successMessage, 'info'))
 			resetFormState()
 			return true
 		} catch (error) {
 			if (!mounted.current || !isCurrent()) return false
-			setMessage(
-				error instanceof Error
-					? error.message
-					: 'Unable to save provider mark.',
+			setFeedback(
+				createUiFeedback(
+					error instanceof Error
+						? error.message
+						: 'Unable to save provider mark.',
+					'error',
+				),
 			)
-			setMessageTone('error')
 			return false
 		} finally {
 			busy.current = false
@@ -252,8 +258,7 @@ export function AdminProviderMarksRoute({
 		const label = String(formData.get('label') ?? '').trim()
 		const aliases = splitAliasInput(String(formData.get('aliases') ?? ''))
 		if (!slug) {
-			setMessage('Slug is required.')
-			setMessageTone('error')
+			setFeedback(createUiFeedback('Slug is required.', 'error'))
 
 			return
 		}

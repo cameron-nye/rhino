@@ -136,6 +136,7 @@ export const featureCatalog: ReadonlyArray<Feature> = [
 			'/@{$orgSlug}/-/packages',
 			'/@{$orgSlug}/-/skills',
 			'/@{$orgSlug}/-/repositories',
+			'/@{$orgSlug}/-/apps',
 			'/@{$orgSlug}/-/approvals',
 		],
 	},
@@ -189,6 +190,21 @@ export const featureCatalog: ReadonlyArray<Feature> = [
 		prefixes: [
 			'/account/execution-contexts',
 			'/@{$orgSlug}/-/execution-contexts',
+		],
+	},
+	{
+		id: 'files',
+		title: 'Files',
+		file: 'files.md',
+		prefixes: [
+			'/@{$orgSlug}/-/files',
+			'/files/invites',
+			'/html-preview',
+			'/file-assets',
+			'/file-session',
+			'/shared-files',
+			'/shared-file-assets',
+			'/office-preview',
 		],
 	},
 	{
@@ -296,6 +312,7 @@ export const featureCatalog: ReadonlyArray<Feature> = [
 			'/discord',
 			'/docs',
 			'/docs.md',
+			'/download',
 			'/faq',
 			'/features',
 			'/for',

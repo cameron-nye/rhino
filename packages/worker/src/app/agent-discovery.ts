@@ -72,6 +72,9 @@ const robotsDisallowPaths = [
 	'/connect/secrets',
 	'/connect/secret-set',
 	'/connect/credential',
+	// Unlisted shareable desktop install shortcut; keep crawlers on the
+	// public marketing pages instead of the GitHub redirect.
+	'/download',
 ] as const
 
 export type AgentSkillDefinition = {
@@ -133,20 +136,20 @@ npx -y @kodycodes/cli@latest skill install
 \`\`\`
 
 Agents already on MCP (do this yourself; never ask a human for a token): call
-\`api\` with \`cliCredentialBootstrap\` and a required lifetime (single-task
-agents use \`short\`). It returns a one-shot bootstrap code and a
-\`cli_command\` that already includes lifetime flags. Run that command, then
-\`execute --local\`:
+\`api\` with \`cliCredentialBootstrap\`. It returns a one-shot bootstrap code
+and a \`cli_command\`. Running that command signs the CLI in with the same
+credential \`kody login\` gives (same scopes and lifetime, same saved slot).
+Then \`execute --local\`:
 
 \`\`\`json
 {
   "operationId": "cliCredentialBootstrap",
-  "params": { "lifetime": "short" }
+  "params": {}
 }
 \`\`\`
 
 \`\`\`bash
-npx -y @kodycodes/cli@latest auth bootstrap --code 'kody_bc_…' --lifetime short
+npx -y @kodycodes/cli@latest auth bootstrap --code 'kody_bc_…' --lifetime long
 npx -y @kodycodes/cli@latest execute --local --code 'import { kody } from "kody:runtime"; export default async function main() { return await kody.metaGetCurrentUser({}) }'
 \`\`\`
 
@@ -154,9 +157,11 @@ Interactive humans: \`npx -y @kodycodes/cli@latest login\` once. CI / headless
 without an MCP session: set \`KODY_API_TOKEN\` in the environment (never paste
 credentials into chat).
 
-Default bootstrap scopes include local-execute use scopes plus
-\`package:write\`, \`package:create\`, and \`token:delete\`. They do not include
-\`search:read\`. Prefer MCP \`search\` for discovery.
+No Kody account yet: the person can pick Try it out on the \`kody login\` sign-in screen and claim the account later by telling their agent (\`guestClaimStart\`).
+
+Omit \`scopes\` to get the same scopes as \`kody login\` (every org permission,
+capped by your session and org role). Pass \`scopes\` only to narrow. Prefer MCP
+\`search\` for discovery.
 
 ## Stay current
 
@@ -402,6 +407,7 @@ export function buildAuthMarkdown(origin: string): string {
 		`1. Point the host at \`${mcp}\`.`,
 		'2. Complete the OAuth flow the host opens. Sign in to Rhino if needed,',
 		'   then approve access.',
+		'   No account yet? The person can pick Try it out on the sign-in screen and claim the account later by telling their agent.',
 		'3. The account email must be verified before authorize can finish. If',
 		'   authorize asks to verify, keep that tab open, finish verification',
 		'   from the email link or `/pending-verification`, then continue.',

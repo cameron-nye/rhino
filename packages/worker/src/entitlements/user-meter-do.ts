@@ -1,7 +1,12 @@
 import * as Sentry from '@sentry/cloudflare'
 import { utcDayKey } from '@kody-internal/shared/date-keys.ts'
-import { BudgetLimitError, type BudgetLimitErrorDetails } from './errors.ts'
+import {
+	BudgetLimitError,
+	budgetLimitErrorCode,
+	type BudgetLimitErrorDetails,
+} from './errors.ts'
 import { DurableObject } from 'cloudflare:workers'
+import { writeLeaseTtlMs } from '#worker/account/write-lease-timing.ts'
 import {
 	type DurableObjectPitrRpc,
 	getRecoveryBookmark,
@@ -30,9 +35,16 @@ export const userMeterDailyCounterRetentionDays = 14
 
 const metaSchemaVersionKey = 'schema_version'
 /** Bump when initializeSchema DDL changes; warm objects skip DDL. */
-const userMeterSchemaVersion = 15
+const userMeterSchemaVersion = 16
 // How long a completed release is remembered for reset-retry idempotency.
 const writeLeaseReleaseMemoryMs = 60 * 60 * 1000
+/** Leases taken before expiry existed get this long to finish. */
+const legacyWriteLeaseGraceMs = 20 * 60 * 1000
+/** Lapsed rows this old belong to a writer that is gone; acquire drops them. */
+const writeLeaseAbandonedAfterMs = 10 * 60 * 1000
+/** How many blocking leases a deletion conflict names. */
+const maxReportedBlockingWriteLeases = 5
+
 /** Singleton row id for monthly org budget spend (schema v13). */
 const budgetSpendStateRowId = 1
 const utcMonthKeyPattern = /^\d{4}-\d{2}$/
@@ -164,6 +176,22 @@ export type UserMeterBudgetSpendState = {
 	automationMicroUsd: number
 }
 
+export type UserMeterBudgetCheckInput = {
+	month: string
+	actorUserId: string | null
+	automationSource: string | null
+	deltaMicroUsd: number
+	userBudgetMicroUsd: number | null
+	automationBudgetMicroUsd: number | null
+	actorUsername?: string | null
+	orgSlug?: string | null
+}
+
+/** Budget check outcome; denials return the BudgetLimitError details. */
+export type UserMeterBudgetCheckResult =
+	| { outcome: 'allowed'; state: UserMeterBudgetSpendState }
+	| { outcome: 'denied'; details: BudgetLimitErrorDetails }
+
 export type UserMeterDailyTrendResult = {
 	retentionDays: number
 	startDay: string
@@ -242,6 +270,8 @@ export type UserMeterMarkDeletingResult = {
 	created: boolean
 	/** Count of active write leases (DO-authority rows) at the time of marking. */
 	leaseCount: number
+	/** Oldest active leases, without tokens, so a refusal can name its blockers. */
+	blockingLeases: Array<{ holder: string; acquiredAt: string }>
 }
 
 export type UserMeterClearDeletingResult = {
@@ -250,6 +280,10 @@ export type UserMeterClearDeletingResult = {
 
 export type UserMeterAcquireWriteLeaseResult = {
 	acquired: boolean
+}
+
+export type UserMeterRenewWriteLeaseResult = {
+	renewed: boolean
 }
 
 export type UserMeterReleaseWriteLeaseResult = {
@@ -383,8 +417,13 @@ function assertUtcMonthKey(month: string): string {
 	return month
 }
 
-function throwBudgetLimit(details: Omit<BudgetLimitErrorDetails, 'code'>) {
-	throw new BudgetLimitError(details)
+function budgetDenied(
+	details: Omit<BudgetLimitErrorDetails, 'code'>,
+): UserMeterBudgetCheckResult {
+	return {
+		outcome: 'denied',
+		details: { code: budgetLimitErrorCode, ...details },
+	}
 }
 
 function assertInboundDeliveryId(deliveryId: string): string {
@@ -664,7 +703,8 @@ class UserMeterBase extends DurableObject<Env> {
 				token TEXT PRIMARY KEY NOT NULL,
 				holder TEXT NOT NULL,
 				acquired_at TEXT NOT NULL,
-				pending_repair_id TEXT
+				pending_repair_id TEXT,
+				expires_at TEXT
 			)
 		`)
 		this.ctx.storage.sql.exec(`
@@ -712,6 +752,21 @@ class UserMeterBase extends DurableObject<Env> {
 					RENAME TO account_write_leases`,
 				)
 			})
+		}
+		if (version != null && version < 16) {
+			// After the v7 rebuild, which recreates the table without this column.
+			try {
+				this.ctx.storage.sql.exec(
+					`ALTER TABLE account_write_leases ADD COLUMN expires_at TEXT`,
+				)
+			} catch {
+				// Column already present on a partially migrated object.
+			}
+			this.ctx.storage.sql.exec(
+				`UPDATE account_write_leases SET expires_at = ?
+				WHERE expires_at IS NULL`,
+				new Date(Date.now() + legacyWriteLeaseGraceMs).toISOString(),
+			)
 		}
 		this.ctx.storage.sql.exec(
 			`CREATE INDEX IF NOT EXISTS idx_account_write_leases_acquired_token
@@ -1730,13 +1785,35 @@ class UserMeterBase extends DurableObject<Env> {
 		return rows.map((row) => this.writeLeaseFromRow(row))
 	}
 
+	/** Active means not lapsed; a lapsed row stays until a deletion drops it. */
 	private countWriteLeases(): number {
 		const row = this.ctx.storage.sql
 			.exec<{
 				count: number
-			}>(`SELECT COUNT(*) AS count FROM account_write_leases`)
+			}>(
+				`SELECT COUNT(*) AS count FROM account_write_leases
+				WHERE expires_at IS NULL OR expires_at > ?`,
+				new Date().toISOString(),
+			)
 			.toArray()[0]
 		return Math.max(0, Number(row?.count ?? 0))
+	}
+
+	private deleteWriteLeasesExpiredBefore(cutoffMs: number) {
+		this.ctx.storage.sql.exec(
+			`DELETE FROM account_write_leases
+			WHERE expires_at IS NOT NULL AND expires_at <= ?`,
+			new Date(cutoffMs).toISOString(),
+		)
+	}
+
+	/**
+	 * Once a deletion is fencing, expiry wins: a lapsed lease is dropped, so
+	 * its writer can neither revive it nor release it as still held.
+	 */
+	private dropLapsedWriteLeasesWhileDeleting() {
+		if (this.readDeletingAt() == null) return
+		this.deleteWriteLeasesExpiredBefore(Date.now())
 	}
 
 	private insertOrPreserveDeletingAt(deletingAt: string): {
@@ -1828,11 +1905,18 @@ class UserMeterBase extends DurableObject<Env> {
 		const deletingAt = assertDeletionTimestamp('deletingAt', input.deletingAt)
 		return await this.ctx.blockConcurrencyWhile(async () => {
 			const marked = this.insertOrPreserveDeletingAt(deletingAt)
+			this.dropLapsedWriteLeasesWhileDeleting()
 			const leaseCount = this.countWriteLeases()
 			return {
 				deletingAt: marked.deletingAt,
 				created: marked.created,
 				leaseCount,
+				blockingLeases: this.listAllWriteLeaseRows()
+					.slice(0, maxReportedBlockingWriteLeases)
+					.map((lease) => ({
+						holder: lease.holder,
+						acquiredAt: lease.acquiredAt,
+					})),
 			}
 		})
 	}
@@ -1880,20 +1964,40 @@ class UserMeterBase extends DurableObject<Env> {
 			return { acquired: true }
 		}
 		if (this.readDeletingAt() != null) return { acquired: false }
+		const nowMs = Date.now()
+		this.deleteWriteLeasesExpiredBefore(nowMs - writeLeaseAbandonedAfterMs)
 		const cursor = this.ctx.storage.sql.exec(
 			`INSERT INTO account_write_leases (
-				token, holder, acquired_at, pending_repair_id
+				token, holder, acquired_at, pending_repair_id, expires_at
 			)
-			VALUES (?, ?, ?, NULL)
+			VALUES (?, ?, ?, NULL, ?)
 			ON CONFLICT(token) DO NOTHING`,
 			token,
 			holder,
 			acquiredAt,
+			new Date(nowMs + writeLeaseTtlMs).toISOString(),
 		)
 		const held = this.readWriteLease(token)
 		return {
 			acquired: cursor.rowsWritten > 0 || held != null,
 		}
+	}
+
+	/**
+	 * Heartbeat from a running writer. A lapsed row that no deletion has
+	 * claimed is still renewable; one a deletion dropped is gone for good.
+	 */
+	async renewWriteLease(input: {
+		token: string
+	}): Promise<UserMeterRenewWriteLeaseResult> {
+		const token = assertWriteLeaseToken(input.token)
+		this.dropLapsedWriteLeasesWhileDeleting()
+		const cursor = this.ctx.storage.sql.exec(
+			`UPDATE account_write_leases SET expires_at = ? WHERE token = ?`,
+			new Date(Date.now() + writeLeaseTtlMs).toISOString(),
+			token,
+		)
+		return { renewed: cursor.rowsWritten > 0 }
 	}
 
 	/**
@@ -1907,6 +2011,7 @@ class UserMeterBase extends DurableObject<Env> {
 	}): Promise<UserMeterReleaseWriteLeaseResult> {
 		const token = assertWriteLeaseToken(input.token)
 		const nowMs = Date.now()
+		this.dropLapsedWriteLeasesWhileDeleting()
 		this.ctx.storage.sql.exec(
 			`DELETE FROM account_write_lease_releases WHERE released_at < ?`,
 			new Date(nowMs - writeLeaseReleaseMemoryMs).toISOString(),
@@ -1939,6 +2044,7 @@ class UserMeterBase extends DurableObject<Env> {
 		token: string
 	}): Promise<UserMeterAssertWriteLeaseHeldResult> {
 		const token = assertWriteLeaseToken(input.token)
+		this.dropLapsedWriteLeasesWhileDeleting()
 		const lease = this.readWriteLease(token)
 		return { held: lease != null }
 	}
@@ -2195,16 +2301,15 @@ class UserMeterBase extends DurableObject<Env> {
 		return this.readBudgetSpendState(month)
 	}
 
-	async assertWithinBudgetAndRecord(input: {
-		month: string
-		actorUserId: string | null
-		automationSource: string | null
-		deltaMicroUsd: number
-		userBudgetMicroUsd: number | null
-		automationBudgetMicroUsd: number | null
-		actorUsername?: string | null
-		orgSlug?: string | null
-	}): Promise<UserMeterBudgetSpendState> {
+	/**
+	 * Check the org budget and record `deltaMicroUsd` only when allowed.
+	 * Returns denials instead of throwing: workerd logs every error thrown
+	 * from a DO method as uncaught, even when the caller handles it. Call it
+	 * only through `checkUserMeterBudgetAndRecord` (user-meter-client.ts).
+	 */
+	async checkBudgetAndRecord(
+		input: UserMeterBudgetCheckInput,
+	): Promise<UserMeterBudgetCheckResult> {
 		const month = assertUtcMonthKey(input.month)
 		const delta = Math.max(0, Math.floor(Number(input.deltaMicroUsd ?? 0)))
 		const orgSlug = input.orgSlug?.trim() || 'org'
@@ -2218,7 +2323,7 @@ class UserMeterBase extends DurableObject<Env> {
 				const next = current + delta
 				const overBudget = next > budget || (delta === 0 && current >= budget)
 				if (overBudget) {
-					throwBudgetLimit({
+					return budgetDenied({
 						kind: 'automation',
 						orgSlug,
 						spentMicroUsd: current,
@@ -2233,7 +2338,7 @@ class UserMeterBase extends DurableObject<Env> {
 				const next = current + delta
 				const overBudget = next > budget || (delta === 0 && current >= budget)
 				if (overBudget) {
-					throwBudgetLimit({
+					return budgetDenied({
 						kind: 'user',
 						orgSlug,
 						actorUsername: input.actorUsername?.trim() || undefined,
@@ -2244,7 +2349,7 @@ class UserMeterBase extends DurableObject<Env> {
 			}
 		}
 		if (delta === 0) {
-			return state
+			return { outcome: 'allowed', state }
 		}
 		const stored = this.storedBudgetMonth()
 		if (stored && month < stored) {
@@ -2252,7 +2357,7 @@ class UserMeterBase extends DurableObject<Env> {
 				month,
 				storedMonth: stored,
 			})
-			return state
+			return { outcome: 'allowed', state }
 		}
 		this.ctx.storage.transactionSync(() => {
 			this.ensureBudgetMonth(month)
@@ -2275,7 +2380,19 @@ class UserMeterBase extends DurableObject<Env> {
 				)
 			}
 		})
-		return this.readBudgetSpendState(month)
+		return { outcome: 'allowed', state: this.readBudgetSpendState(month) }
+	}
+
+	/**
+	 * @deprecated Throwing form kept only for workers deployed before
+	 * {@link checkBudgetAndRecord}. Remove once every caller script is on it.
+	 */
+	async assertWithinBudgetAndRecord(
+		input: UserMeterBudgetCheckInput,
+	): Promise<UserMeterBudgetSpendState> {
+		const result = await this.checkBudgetAndRecord(input)
+		if (result.outcome === 'denied') throw new BudgetLimitError(result.details)
+		return result.state
 	}
 
 	async recomputeBudgetSpend(input: {
@@ -2346,7 +2463,7 @@ class UserMeterBase extends DurableObject<Env> {
 		this.ensureBudgetMonth(month)
 		const automationTarget = Math.max(0, Math.floor(Number(input.automation)))
 		// Absolute ledger replace is source of truth and must overwrite
-		// provisional rows from assertWithinBudgetAndRecord(estimatedDelta).
+		// provisional rows from checkBudgetAndRecord(estimatedDelta).
 		// Do not gate on stored totals: estimates can exceed committed debit.
 		this.ctx.storage.transactionSync(() => {
 			this.ctx.storage.sql.exec(`DELETE FROM budget_spend_users`)
@@ -2613,6 +2730,10 @@ export type UserMeterRpc = DurableObjectPitrRpc & {
 		holder: string
 		acquiredAt: string
 	}) => Promise<UserMeterAcquireWriteLeaseResult>
+	/** Heartbeat that pushes a held lease's expiry out. */
+	renewWriteLease: (input: {
+		token: string
+	}) => Promise<UserMeterRenewWriteLeaseResult>
 	/** Authoritative lease release. */
 	releaseWriteLease: (input: {
 		token: string
@@ -2654,16 +2775,6 @@ export type UserMeterRpc = DurableObjectPitrRpc & {
 	purge: () => Promise<{ ok: true }>
 	getBudgetSpend: (input: {
 		month: string
-	}) => Promise<UserMeterBudgetSpendState>
-	assertWithinBudgetAndRecord: (input: {
-		month: string
-		actorUserId: string | null
-		automationSource: string | null
-		deltaMicroUsd: number
-		userBudgetMicroUsd: number | null
-		automationBudgetMicroUsd: number | null
-		actorUsername?: string | null
-		orgSlug?: string | null
 	}) => Promise<UserMeterBudgetSpendState>
 	recomputeBudgetSpend: (input: {
 		month: string

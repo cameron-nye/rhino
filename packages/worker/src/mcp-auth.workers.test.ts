@@ -1,9 +1,9 @@
 import { ownerIdFromStored } from '@kody-internal/shared/owner-person-ids.ts'
 import { env } from 'cloudflare:workers'
 import { expect, test } from 'vitest'
-import {
-	type OAuthHelpers,
-	type TokenSummary,
+import type {
+	OAuthHelpers,
+	TokenSummary,
 } from '@cloudflare/workers-oauth-provider'
 import {
 	buildProtectedResourceMetadata,
@@ -360,7 +360,7 @@ async function callMcp(
 function mcpToken({
 	userId = 'user',
 	email = 'user@example.com',
-	props = { userId, email },
+	props = { userId, email, orgId: userId },
 	clientId = 'client',
 	createdAt = 0,
 	expiresAt = 999_999,
@@ -602,7 +602,7 @@ test('mcp request enforces token audience and forwards caller props', async () =
 		'Failed to load MCP auth user context:',
 		expect.any(Error),
 	)
-}, 15_000)
+})
 
 test('mcp request returns library insufficient_scope step-up when required scopes are missing', async () => {
 	const narrow = mcpToken()
@@ -772,10 +772,13 @@ test('mcp request rejects unverified and unidentifiable accounts fail-closed', a
 	const fallbackUserSelects: Array<string> = []
 	const fallbackResponse = await callMcp(
 		request,
-		tokenEnv(mcpToken({ props: { userId: stableUserId } }), {
-			accountByStableId: accountRow(11, fallbackEmail, stableUserId),
-			userSelects: fallbackUserSelects,
-		}),
+		tokenEnv(
+			mcpToken({ props: { userId: stableUserId, orgId: stableUserId } }),
+			{
+				accountByStableId: accountRow(11, fallbackEmail, stableUserId),
+				userSelects: fallbackUserSelects,
+			},
+		),
 		transport.fetchMcp,
 	)
 	expect(fallbackResponse.status).toBe(200)

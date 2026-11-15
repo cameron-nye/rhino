@@ -1,16 +1,8 @@
 /** @jsxImportSource @emotion/react */
-import { useServerFn } from '@tanstack/react-start'
+import { uiState, uiContext, sendUiEvent } from '#client/ui-actor.ts'
 import { rhinoPersonalUse } from '../brand/rhino-personal.ts'
-import { handlePermanenceConfirmMessage } from '@kody-internal/shared/handle-permanence.ts'
-import { completeOauthPendingSignup } from '#start/server/auth-mutations'
-import { type CSSObject } from '@emotion/react'
-import { colors } from '#universal/styles/tokens.ts'
 import {
-	getPillButtonCss,
-	getSwapLabelCss,
-	hoverMq,
-} from '#universal/styles/style-primitives.ts'
-import {
+	useCallback,
 	useEffect,
 	useId,
 	useRef,
@@ -18,6 +10,21 @@ import {
 	type CSSProperties,
 	type FormEvent,
 } from 'react'
+import { useActor } from '@xstate/react'
+import {
+	usernameSignupState,
+	type UsernameSignupState,
+} from '#client/routes/username-signup-state.ts'
+import { useServerFn } from '@tanstack/react-start'
+import { handlePermanenceConfirmMessage } from '@kody-internal/shared/handle-permanence.ts'
+import { completeOauthPendingSignup } from '#start/server/auth-mutations'
+import type { CSSObject } from '@emotion/react'
+import { colors } from '#universal/styles/tokens.ts'
+import {
+	getPillButtonCss,
+	getSwapLabelCss,
+	hoverMq,
+} from '#universal/styles/style-primitives.ts'
 import { buildAuthLink } from '#client/auth-links.ts'
 import { normalizeRedirectTo } from '#universal/safe-redirect.ts'
 import { SiteLink } from '../components/site-link.tsx'
@@ -31,7 +38,6 @@ import {
 	renderLoginVisualPanel,
 	renderMobileBrand,
 } from './login-sections.tsx'
-
 export function SignupChooseUsernamePage(props: {
 	csrf: string
 	suggestedUsername: string
@@ -61,8 +67,19 @@ export function SignupChooseUsernamePage(props: {
 	const [confirmedUsername, setConfirmedUsername] = useState<string | null>(
 		null,
 	)
-	const [status, setStatus] = useState<'idle' | 'submitting' | 'error'>('idle')
-	const [message, setMessage] = useState<string | null>(null)
+	const [flowSnapshot, , flowActor] = useActor(usernameSignupState)
+	const flow = uiState<UsernameSignupState>(flowSnapshot)
+	const transition = useCallback(
+		(event: Parameters<typeof flowActor.send>[0]) =>
+			sendUiEvent(flowActor, event),
+		[flowActor],
+	)
+	const getFlow = useCallback(
+		() => uiState<UsernameSignupState>(flowActor.getSnapshot()),
+		[flowActor],
+	)
+	const status = flow.status === 'confirming' ? 'idle' : flow.status
+	const message = 'message' in flow ? flow.message : null
 
 	const confirming =
 		confirmedUsername !== null &&
@@ -78,10 +95,16 @@ export function SignupChooseUsernamePage(props: {
 
 	async function handleSubmit(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault()
+		if (getFlow().status === 'submitting') return
 		const nextUsername = username.trim().toLowerCase()
 		if (!nextUsername) {
-			setStatus('error')
-			setMessage('Username is required.')
+			transition({
+				type: flowActor.getSnapshot().matches('submitting')
+					? 'RESPONSE_ERROR'
+					: 'VALIDATION_ERROR',
+				data: uiContext({ status: 'error', message: 'Username is required.' })
+					.data,
+			} as Parameters<typeof flowActor.send>[0])
 			return
 		}
 		if (
@@ -89,24 +112,48 @@ export function SignupChooseUsernamePage(props: {
 			availability.status === 'reserved' ||
 			availability.status === 'invalid'
 		) {
-			setStatus('error')
-			setMessage(availability.reason ?? 'That username cannot be used.')
+			transition({
+				type: flowActor.getSnapshot().matches('submitting')
+					? 'RESPONSE_ERROR'
+					: 'VALIDATION_ERROR',
+				data: uiContext({
+					status: 'error',
+					message: availability.reason ?? 'That username cannot be used.',
+				}).data,
+			} as Parameters<typeof flowActor.send>[0])
 			return
 		}
 		if (confirmedUsername !== nextUsername) {
 			setConfirmedUsername(nextUsername)
-			setStatus('idle')
-			setMessage(handlePermanenceConfirmMessage(nextUsername))
+			transition({
+				type: 'CONFIRM_USERNAME',
+				data: uiContext({
+					status: 'confirming',
+					message: handlePermanenceConfirmMessage(nextUsername),
+				}).data,
+			} as Parameters<typeof flowActor.send>[0])
 			return
 		}
 		if (availability.status === 'checking') {
-			setStatus('error')
-			setMessage('Wait for the availability check to finish.')
+			transition({
+				type: flowActor.getSnapshot().matches('submitting')
+					? 'RESPONSE_ERROR'
+					: 'VALIDATION_ERROR',
+				data: uiContext({
+					status: 'error',
+					message: 'Wait for the availability check to finish.',
+				}).data,
+			} as Parameters<typeof flowActor.send>[0])
 			return
 		}
 
-		setStatus('submitting')
-		setMessage(null)
+		if (
+			!transition({
+				type: 'SUBMIT',
+				data: uiContext({ status: 'submitting' }).data,
+			} as Parameters<typeof flowActor.send>[0])
+		)
+			return
 		try {
 			const payload = await completeSignup({
 				signal: lifecycle.current?.signal,
@@ -117,12 +164,18 @@ export function SignupChooseUsernamePage(props: {
 			})
 			if (!payload) return
 			if (!payload.successful || payload.ok !== true) {
-				setStatus('error')
-				setMessage(
-					typeof payload.error === 'string'
-						? payload.error
-						: 'Unable to create your account.',
-				)
+				transition({
+					type: flowActor.getSnapshot().matches('submitting')
+						? 'RESPONSE_ERROR'
+						: 'VALIDATION_ERROR',
+					data: uiContext({
+						status: 'error',
+						message:
+							typeof payload.error === 'string'
+								? payload.error
+								: 'Unable to create your account.',
+					}).data,
+				} as Parameters<typeof flowActor.send>[0])
 				if (
 					payload.code === 'pending_expired' ||
 					payload.code === 'pending_csrf'
@@ -137,8 +190,15 @@ export function SignupChooseUsernamePage(props: {
 					: '/onboarding',
 			)
 		} catch {
-			setStatus('error')
-			setMessage('Network error. Please try again.')
+			transition({
+				type: flowActor.getSnapshot().matches('submitting')
+					? 'RESPONSE_ERROR'
+					: 'VALIDATION_ERROR',
+				data: uiContext({
+					status: 'error',
+					message: 'Network error. Please try again.',
+				}).data,
+			} as Parameters<typeof flowActor.send>[0])
 		}
 	}
 
@@ -165,6 +225,7 @@ export function SignupChooseUsernamePage(props: {
 					</header>
 
 					<form
+						aria-busy={isSubmitting}
 						data-rise
 						style={{ '--rise': '1' } as CSSProperties}
 						css={formCss}
@@ -179,8 +240,10 @@ export function SignupChooseUsernamePage(props: {
 								setConfirmedUsername(null)
 								// Clear confirm and error copy so the form never still
 								// claims the previous handle is about to be locked.
-								setStatus('idle')
-								setMessage(null)
+								transition({
+									type: 'RESET',
+									data: uiContext({ status: 'idle' }).data,
+								} as Parameters<typeof flowActor.send>[0])
 							}}
 							onAvailabilityChange={setAvailability}
 							seeds={{

@@ -65,6 +65,7 @@ export const docsNav: ReadonlyArray<DocsNavSection> = [
 			'Connect the agent you already use, make one useful thing, then reuse it from a second agent.',
 		items: [
 			{ slug: 'connect-your-agent', label: 'Connect your agent' },
+			{ slug: 'muse-chat', label: 'Connect Muse chat' },
 			{ slug: 'onboarding', label: 'First run (agent playbook)' },
 			{ slug: 'quick-example', label: 'First build (agent playbook)' },
 			{ slug: 'portability', label: 'Second agent (agent playbook)' },
@@ -122,6 +123,7 @@ export const docsNav: ReadonlyArray<DocsNavSection> = [
 				label: 'Lifecycle: reuse, execute, fork, create',
 			},
 			{ slug: 'package-authoring', label: 'Authoring' },
+			{ slug: 'package-export-jsdoc', label: 'Export JSDoc' },
 			{ slug: 'package-sharing', label: 'Sharing a package' },
 			{ slug: 'shared-packages', label: 'Shared packages for many accounts' },
 			{ slug: 'package-skills', label: 'Package skills' },
@@ -134,6 +136,7 @@ export const docsNav: ReadonlyArray<DocsNavSection> = [
 			{ slug: 'mcp-events', label: 'MCP Events' },
 			{ slug: 'wake-your-agent', label: 'Wake your agent' },
 			{ slug: 'heavy-work-offload', label: 'Offload heavy work' },
+			{ slug: 'publish-large-packages', label: 'Publish large packages' },
 		],
 	},
 	{

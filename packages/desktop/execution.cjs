@@ -1,10 +1,94 @@
 const { machineName } = require('./machine-name.cjs')
 const { registrationIdentity } = require('./registration-identity.cjs')
+const { loginAuthorizationUrl } = require('./in-app-approval.cjs')
+const { setup, types, createActor } = require('xstate')
 const {
 	existingRegistration,
 	runnerView,
 	shouldAdopt,
 } = require('./machine-runner.cjs')
+
+const clearOperation = () => ({ command: null, message: null, notice: null })
+/** @param {{event: {command: string}}} args */
+const startOperation = ({ event }) => ({
+	...clearOperation(),
+	command: event.command,
+})
+/** @param {{event: {message: string}}} args */
+const operationError = ({ event }) => ({ message: event.message })
+
+const executionOperationState = setup({
+	schemas: {
+		context:
+			/** @type {import('xstate').TypeSchema<{ command: string | null, message: string | null, notice: { tone: string, message: string } | null }>} */ (
+				types()
+			),
+		events: {
+			START_OPERATION:
+				/** @type {import('xstate').TypeSchema<{command: string}>} */ (types()),
+			SET_ERROR: /** @type {import('xstate').TypeSchema<{message: string}>} */ (
+				types()
+			),
+			CLEAR_ERROR: /** @type {import('xstate').TypeSchema<{}>} */ (types()),
+			SETTLED: /** @type {import('xstate').TypeSchema<{}>} */ (types()),
+		},
+	},
+	guards: {
+		hasNotice: (/** @type {{message: string} | null} */ notice) =>
+			notice?.message !== undefined,
+	},
+}).createMachine({
+	id: 'desktop.machine_operation',
+	description:
+		'Connection and daemon actions run exclusively; errors observed during an operation remain notices until settlement.',
+	initial: 'idle',
+	context: { command: null, message: null, notice: null },
+	states: {
+		idle: {
+			on: {
+				START_OPERATION: { target: 'running', context: startOperation },
+				SET_ERROR: { target: 'error', context: operationError },
+			},
+		},
+		running: {
+			on: {
+				SET_ERROR: {
+					context: ({ event }) => ({
+						notice: { tone: 'error', message: event.message },
+					}),
+				},
+				CLEAR_ERROR: { context: () => ({ notice: null }) },
+				SETTLED: ({ context, guards }) => {
+					if (guards.hasNotice(context.notice)) {
+						return {
+							target: 'error',
+							context: {
+								command: null,
+								message: context.notice?.message ?? null,
+								notice: null,
+							},
+						}
+					}
+					return {
+						target: 'idle',
+						context: clearOperation(),
+					}
+				},
+			},
+		},
+		error: {
+			on: {
+				START_OPERATION: { target: 'running', context: startOperation },
+				SET_ERROR: {
+					context: operationError,
+				},
+				CLEAR_ERROR: { target: 'idle', context: clearOperation },
+			},
+		},
+	},
+})
+
+const commandsStatusMaxAgeMs = 60_000
 
 // This controller exposes fixed machine actions, never arbitrary CLI commands.
 class DesktopExecution {
@@ -16,6 +100,7 @@ class DesktopExecution {
 		hostname,
 		platform = process.platform,
 		confirmCommands = async () => false,
+		approveSignIn,
 	}) {
 		Object.assign(this, {
 			runner,
@@ -24,14 +109,47 @@ class DesktopExecution {
 			viewer,
 			platform,
 			confirmCommands,
+			approveSignIn,
 		})
 		this.commandsEnabled = null
 		this.name = machineName(hostname)
-		this.busy = false
+		this.operationActor = createActor(executionOperationState).start()
 		this.authorized = null
-		this.error = null
 		this.machine = null
 		this.machineReadAt = 0
+		this.commandsReadAt = 0
+		this.commandsReadFor = null
+	}
+	get operation() {
+		const { value, context } = this.operationActor.getSnapshot()
+		if (value === 'running')
+			return {
+				status: value,
+				command: context.command,
+				...(context.notice ? { notice: context.notice } : {}),
+			}
+		if (value === 'error') return { status: value, message: context.message }
+		return { status: value }
+	}
+	get busy() {
+		return this.operation.status === 'running'
+	}
+	get error() {
+		return this.operation.status === 'error'
+			? this.operation.message
+			: this.operation.status === 'running'
+				? (this.operation.notice?.message ?? null)
+				: null
+	}
+	set error(message) {
+		this.operationActor.send(
+			message === null
+				? { type: 'CLEAR_ERROR' }
+				: { type: 'SET_ERROR', message },
+		)
+	}
+	finishOperation() {
+		this.operationActor.send({ type: 'SETTLED' })
 	}
 	// What the kody CLI knows about this machine: an installed service, the
 	// runner lock holder, stored registrations, and auto-update. The app and
@@ -115,6 +233,33 @@ class DesktopExecution {
 			)
 		return identity
 	}
+	// With `approveSignIn`, the shell approves the CLI's authorize URL itself
+	// (in the app window when its session can, else the system browser).
+	// Closing that approval cancels the CLI login.
+	async login(orgSlug) {
+		if (!this.approveSignIn)
+			return this.runner.command(['login', '--org', orgSlug])
+		const controller = new AbortController()
+		let approval
+		try {
+			await this.runner.command(['login', '--org', orgSlug, '--no-browser'], {
+				signal: controller.signal,
+				onOutput: (output) => {
+					if (approval) return
+					const url = loginAuthorizationUrl(output)
+					if (!url) return
+					approval = this.approveSignIn(url, controller.signal).catch(
+						(error) => {
+							if (!controller.signal.aborted) controller.abort(error)
+						},
+					)
+				},
+			})
+		} finally {
+			controller.abort(new Error('Sign-in finished.'))
+			await approval
+		}
+	}
 	// Matches the CLI's pinned workerd downloads.
 	get supported() {
 		return ['darwin', 'linux', 'win32'].includes(this.platform)
@@ -180,7 +325,7 @@ class DesktopExecution {
 			throw new Error('Sign in to Kody before setting up this machine.')
 		const state = this.read()
 		if (command === 'forget') {
-			this.busy = true
+			this.operationActor.send({ type: 'START_OPERATION', command })
 			try {
 				await this.runner.stop()
 				this.write({
@@ -195,7 +340,7 @@ class DesktopExecution {
 				this.authorized = null
 				this.error = null
 			} finally {
-				this.busy = false
+				this.finishOperation()
 			}
 			return this.snapshot(viewer)
 		}
@@ -231,7 +376,7 @@ class DesktopExecution {
 			throw new Error('Unknown machine action.')
 		if (!this.supported)
 			throw new Error('Local execution is not available on this platform.')
-		this.busy = true
+		this.operationActor.send({ type: 'START_OPERATION', command })
 		try {
 			if (command.startsWith('auto-update-')) {
 				await this.runner.command([
@@ -244,6 +389,17 @@ class DesktopExecution {
 			} else if (command.startsWith('commands-')) {
 				if (!state.ecid || !this.owns(state, viewer))
 					throw new Error('Set up this machine first.')
+				// The site polls status every 15s. Each read is a fresh CLI process that
+				// unlocks the context key, so reuse a recent read instead of asking the
+				// keychain on every poll. on/off always read fresh.
+				const readFor = `${state.ecid}:${viewer.username}:${viewer.orgSlug}`
+				if (
+					command === 'commands-status' &&
+					this.commandsReadFor === readFor &&
+					this.commandsReadAt > Date.now() - commandsStatusMaxAgeMs
+				)
+					return this.snapshot(viewer)
+				this.commandsReadFor = null
 				if (command === 'commands-on' && !(await this.confirmCommands()))
 					return this.snapshot(await this.viewer())
 				const current = await this.viewer()
@@ -274,8 +430,10 @@ class DesktopExecution {
 				this.commandsEnabled =
 					status.local?.enabled === true &&
 					status.contexts?.[0]?.commands?.enabled === true
+				this.commandsReadFor = readFor
+				this.commandsReadAt = Date.now()
 			} else if (command === 'sign-in') {
-				await this.runner.command(['login', '--org', viewer.orgSlug])
+				await this.login(viewer.orgSlug)
 				const current = await this.viewer()
 				if (
 					current?.username !== viewer.username ||
@@ -398,9 +556,9 @@ class DesktopExecution {
 				}
 			}
 		} finally {
-			this.busy = false
+			this.finishOperation()
 		}
 		return this.snapshot(await this.viewer())
 	}
 }
-module.exports = { DesktopExecution }
+module.exports = { DesktopExecution, executionOperationState }

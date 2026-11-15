@@ -1,7 +1,7 @@
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { config as loadDotEnv } from 'dotenv'
-import { type ViteUserConfig } from 'vitest/config'
+import type { ViteUserConfig } from 'vitest/config'
 import { markdownAsText } from './tools/vite-markdown-as-text.ts'
 import { suppressThirdPartySourcemapWarnings } from './tools/vite-suppress-sourcemap-warnings.ts'
 
@@ -74,6 +74,10 @@ export const sharedProjectConfig = {
 				rootDir,
 				'packages/worker/src/test-support/rhino-personal-plan-upstream.ts',
 			),
+			// Records evaluated modules for pre-push selection (tools/test-module-map.ts).
+			...(process.env.KODY_TEST_MODULE_MAP_OUT
+				? [resolve(rootDir, 'tools/vitest-module-map-setup.ts')]
+				: []),
 		],
 		// msw's cookie store probes `typeof localStorage`, which trips Node's
 		// experimental localStorage warning in every fork that loads it.

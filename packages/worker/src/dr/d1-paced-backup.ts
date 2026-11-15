@@ -81,18 +81,19 @@ export {
 export const d1PacedBackupRunTimeBudgetMs = 45_000
 
 /**
- * Flush a staging part when the in-tick TSV buffers reach this many UTF-8
- * bytes (data + index). Keeps peak heap well under the Workers isolate limit
- * even on full-base walks of APP/AUDIT.
+ * Flush a staging part when in-tick TSV buffers reach this many UTF-8 bytes
+ * at a page boundary (data + index). Not a hard heap bound: trailing deletes
+ * can accumulate until the next `onPage`.
  */
 export const d1PacedBackupPartMaxBytes = 4 * 1024 * 1024
 
 /**
- * Soft per-tick emitted-byte budget. Once flushed bytes for the tick hit this
- * cap, the walker stops between pages so the next tick resumes — even if wall
- * time remains.
+ * Soft per-table emitted-byte budget. Once flushed bytes for this table walk
+ * hit this cap, the walker stops between pages so the next tick resumes even
+ * if wall time remains. This is not a heap bound; parts flush at
+ * `d1PacedBackupPartMaxBytes` on page boundaries.
  */
-export const d1PacedBackupTickByteBudget = 8 * 1024 * 1024
+export const d1PacedBackupTickByteBudget = 32 * 1024 * 1024
 
 const utf8Encoder = new TextEncoder()
 
@@ -187,7 +188,7 @@ function pacedD1LaneProgressKey(day: string) {
 /**
  * Tick-local writer: only the current part's lines live in memory. Callers
  * flush to staging part objects whenever `bufferedBytes` crosses
- * `d1PacedBackupPartMaxBytes`, then `clear()` so heap stays bounded.
+ * `d1PacedBackupPartMaxBytes` at a page boundary, then `clear()`.
  *
  * `finalize()` hashes only the residual buffer (normally empty after a flush).
  * Full table digests come from `finalizeTableParts` over part objects.
@@ -1443,7 +1444,10 @@ export async function runD1PacedBackupTick(input: {
 		nightsSealed,
 		bindingsMissing,
 	}
-	console.info('dr_d1_paced_backup_tick', JSON.stringify(tickResult))
+	console.info(
+		'dr_d1_paced_backup_tick',
+		JSON.stringify({ ...tickResult, elapsedMs: Date.now() - startedAtMs }),
+	)
 	return tickResult
 }
 

@@ -1,6 +1,6 @@
 import { getSecretAuthorityScope } from '#mcp/secrets/secret-authority.ts'
 import * as Sentry from '@sentry/cloudflare'
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
 import { DurableObject } from 'cloudflare:workers'
 import { getRecoveryBookmark, restoreToBookmark } from '#worker/dr/do-pitr.ts'
 import { buildSentryOptions } from '#worker/sentry-options.ts'
@@ -8,6 +8,7 @@ import {
 	assertWithinStorageBytesEntitlement,
 	estimateEntitlementStorageEntryByteDelta,
 	estimateEntitlementStorageSqlWriteBytes,
+	readStorageBytesEntitlementLimit,
 	readStorageBytesFromUserMeter,
 } from '#worker/entitlements/service.ts'
 import { EntitlementLimitError } from '#worker/entitlements/errors.ts'
@@ -21,7 +22,11 @@ import {
 	type StorageBucketKind,
 	storageBucketKindFromStorageId,
 } from '#worker/storage-buckets/service.ts'
-import { createStorageEstimateReadError } from '#worker/storage-estimate-error.ts'
+import {
+	createStorageEstimateReadError,
+	isStorageEstimateReadError,
+} from '#worker/storage-estimate-error.ts'
+import { reportInfraHiccup } from '#worker/infra-hiccup-sentry.ts'
 import {
 	countStorageSqlRows,
 	readStorageSqlRowsPage,
@@ -42,7 +47,15 @@ import {
 	collectStorageSqlCursor,
 	settleStorageSqlRead,
 	type StorageSqlReadCollection,
-} from '#worker/storage-sql-read-policy.ts'
+	type StorageSqlReadResult,
+} from '@kody-internal/shared/storage-sql-read-policy.ts'
+import {
+	isStorageSqlReturningMutation,
+	isStorageSqlWrite,
+	maskSqlLiteralsAndComments,
+	maxStorageSqlQueryRows,
+	normalizeSqlParams,
+} from '@kody-internal/shared/storage-sql-statement.ts'
 import { recordDurableObjectRowsRead } from '#worker/usage/durable-object-rows.ts'
 import { createMeteredDurableObjectStub } from '#worker/usage/durable-object-usage.ts'
 import { repoSessionRpc } from '#worker/repo/repo-session-rpc.ts'
@@ -55,8 +68,6 @@ const maxStorageExportPageSize = 1_000
  * never materializes hundreds of large values at once (DR exporter OOMs).
  */
 const storageExportByteBoundedBatchSize = 8
-/** Cap for StorageRunner sqlQuery row materialization (matches export max). */
-export const maxStorageSqlQueryRows = maxStorageExportPageSize
 const maxConcurrentStorageEstimateReads = 16
 /**
  * Backoff pauses between estimate read attempts (attempts = length + 1).
@@ -65,17 +76,18 @@ const maxConcurrentStorageEstimateReads = 16
  * several attempts: production showed a single 150ms retry was not enough to
  * ride out transient per-bucket DO estimate-read *rejections*.
  *
- * A timeout does not start a second RPC to the same storageId. The underlying
- * stub call is not cancelled; a new call would queue behind it on the
- * single-threaded DO and turn a slow wake into four stacked timeouts.
- * Timed-out attempts keep waiting on the in-flight promise. Fast rejects
- * still open a new RPC after backoff.
+ * Timed-out attempts keep waiting on the in-flight promise (the stub call is
+ * not cancelled), and the first retry after a timeout also sends one hedged
+ * RPC on a fresh stub; whichever settles first wins. That keeps a lost RPC
+ * from failing every attempt while capping calls per bucket at two, so a slow
+ * wake never turns into four stacked queued calls. Fast rejects still open a
+ * new RPC after backoff.
  */
 export const storageEstimateReadRetryDelaysMs = [150, 600, 2400] as const
 /**
  * Bound each StorageRunner `getEstimatedBytes` wait so one hung DO cannot own
  * the whole sandbox deadline (~90s). Fail closed after this budget per
- * attempt; retries of a timed-out storageId reuse the same RPC.
+ * attempt; retries of a timed-out storageId reuse the same RPC plus one hedge.
  */
 export const storageEstimateReadTimeoutMs = 2_000
 /**
@@ -109,13 +121,106 @@ export type StorageBytesEntitlementRunCache = {
 		storageIds: ReadonlySet<string>
 	}> | null
 	reservedBytes: number
+	/** Usage outside storage buckets plus each bucket's stored estimate. */
+	usage: Promise<StorageEntitlementUsageSnapshot> | null
+	/** Bucket sizes measured by this run (in-write results or live probes). */
+	bucketBytes: Map<string, number>
+}
+
+type StorageEntitlementUsageSnapshot = {
+	meterBytes: number
+	buckets: ReadonlyMap<
+		string,
+		{ kind: StorageBucketKind; estimatedBytes: number | null }
+	>
 }
 
 export function createStorageBytesEntitlementRunCache(): StorageBytesEntitlementRunCache {
 	return {
 		baseline: null,
 		reservedBytes: 0,
+		usage: null,
+		bucketBytes: new Map(),
 	}
+}
+
+/**
+ * Result of a mutation that the StorageRunner ran inside a transaction and
+ * rolled back when the bucket's post-write size exceeded `maxDatabaseBytes`.
+ */
+export type StorageWriteWithinLimitResult<T> =
+	| {
+			withinLimit: true
+			result: T
+			databaseBytes: number
+			previousDatabaseBytes: number
+	  }
+	| {
+			withinLimit: false
+			databaseBytes: number
+			previousDatabaseBytes: number
+	  }
+
+class StorageWriteLimitExceeded extends Error {
+	readonly databaseBytes: number
+	constructor(databaseBytes: number) {
+		super('Storage write exceeds the bucket byte limit.')
+		this.databaseBytes = databaseBytes
+	}
+}
+
+function runWithinDatabaseLimit<T>(
+	storage: DurableObjectStorage,
+	maxDatabaseBytes: number,
+	write: () => T,
+): StorageWriteWithinLimitResult<T> {
+	const previousDatabaseBytes = storage.sql.databaseSize
+	try {
+		const result = storage.transactionSync(() => {
+			const value = write()
+			const databaseBytes = storage.sql.databaseSize
+			if (databaseBytes > maxDatabaseBytes) {
+				throw new StorageWriteLimitExceeded(databaseBytes)
+			}
+			return value
+		})
+		return {
+			withinLimit: true,
+			result,
+			databaseBytes: storage.sql.databaseSize,
+			previousDatabaseBytes,
+		}
+	} catch (error) {
+		if (!(error instanceof StorageWriteLimitExceeded)) throw error
+		return {
+			withinLimit: false,
+			databaseBytes: error.databaseBytes,
+			previousDatabaseBytes,
+		}
+	}
+}
+
+function execStorageSqlQuery(
+	storage: DurableObjectStorage,
+	input: {
+		query: string
+		params?: Array<unknown>
+		writable?: boolean
+	},
+): StorageSqlReadCollection {
+	const query = assertStorageSqlAllowed(input.query, input.writable)
+	const params = normalizeSqlParams(input.params)
+	const cursor = storage.sql.exec<Record<string, StorageSqlValue>>(
+		query,
+		...params,
+	)
+	const writable = Boolean(input.writable)
+	const drainOverflow = writable && isStorageSqlReturningMutation(query)
+	return collectStorageSqlCursor(cursor, {
+		drainOverflow,
+		writeFinished: writable && isStorageSqlWrite(query),
+		maxRows: maxStorageSqlQueryRows,
+	})
 }
 
 type StorageEntry = {
@@ -324,24 +429,6 @@ function normalizePageSize(pageSize: number | undefined) {
 	return Math.min(Math.max(requested, 1), maxStorageExportPageSize)
 }
 
-function normalizeSqlParams(params: Array<unknown> | undefined) {
-	return (params ?? []).map((value) => {
-		if (
-			value === null ||
-			typeof value === 'string' ||
-			typeof value === 'number'
-		) {
-			return value
-		}
-		if (typeof value === 'boolean') {
-			return value ? 1 : 0
-		}
-		throw new Error(
-			'storage.sql params only support strings, numbers, booleans, and null.',
-		)
-	})
-}
-
 function hasSqlContentAfterSemicolon(query: string, startIndex: number) {
 	let inLineComment = false
 	let inBlockComment = false
@@ -509,161 +596,31 @@ export function isReadOnlyStorageSqlQuery(query: string) {
 	)
 }
 
-const storageSqlReturningMutationVerbs = [
-	'insert',
-	'update',
-	'delete',
-	'replace',
-] as const
-
-const storageSqlWriteVerbs = [
-	...storageSqlReturningMutationVerbs,
-	'create',
-	'drop',
-	'alter',
-] as const
-
-const storageSqlReturningMutationVerbInWithPattern =
-	/(?:^|[^a-z0-9_])(?:insert|update|delete|replace)(?:[^a-z0-9_]|$)/
+const idempotentStorageSqlDdlPattern = /^create\s+table\s+if\s+not\s+exists\b/
 
 /**
- * Replace comments and quoted literals with spaces so verb checks cannot see
- * words inside strings, identifiers, or comments.
+ * True for a single `CREATE TABLE … IF NOT EXISTS` without a `SELECT` (so
+ * never `CREATE TABLE … AS SELECT`). Package apps run these on every new
+ * isolate; a new table starts empty and adds only schema bytes, so they skip
+ * the storage-byte entitlement baseline. Later writes are still metered.
+ * `CREATE INDEX` is excluded: on a populated table it materializes rows.
  */
-function maskSqlLiteralsAndComments(query: string) {
-	let masked = ''
-	let inSingleQuote = false
-	let inDoubleQuote = false
-	let inBacktickQuote = false
-	let inBracketQuote = false
-	let inLineComment = false
-	let inBlockComment = false
-
-	for (let index = 0; index < query.length; index += 1) {
-		const current = query.charAt(index)
-		const next = query.charAt(index + 1)
-
-		if (inLineComment) {
-			masked += current === '\n' ? '\n' : ' '
-			if (current === '\n') inLineComment = false
-			continue
-		}
-		if (inBlockComment) {
-			masked += ' '
-			if (current === '*' && next === '/') {
-				inBlockComment = false
-				masked += ' '
-				index += 1
-			}
-			continue
-		}
-		if (inSingleQuote) {
-			masked += ' '
-			if (current === "'" && next === "'") {
-				masked += ' '
-				index += 1
-				continue
-			}
-			if (current === "'") inSingleQuote = false
-			continue
-		}
-		if (inDoubleQuote) {
-			masked += ' '
-			if (current === '"' && next === '"') {
-				masked += ' '
-				index += 1
-				continue
-			}
-			if (current === '"') inDoubleQuote = false
-			continue
-		}
-		if (inBacktickQuote) {
-			masked += ' '
-			if (current === '`') inBacktickQuote = false
-			continue
-		}
-		if (inBracketQuote) {
-			masked += ' '
-			if (current === ']') inBracketQuote = false
-			continue
-		}
-		if (current === '-' && next === '-') {
-			inLineComment = true
-			masked += '  '
-			index += 1
-			continue
-		}
-		if (current === '/' && next === '*') {
-			inBlockComment = true
-			masked += '  '
-			index += 1
-			continue
-		}
-		if (current === "'") {
-			inSingleQuote = true
-			masked += ' '
-			continue
-		}
-		if (current === '"') {
-			inDoubleQuote = true
-			masked += ' '
-			continue
-		}
-		if (current === '`') {
-			inBacktickQuote = true
-			masked += ' '
-			continue
-		}
-		if (current === '[') {
-			inBracketQuote = true
-			masked += ' '
-			continue
-		}
-		masked += current
-	}
-
-	return masked
-}
-
-function sqlStartsWithVerb(normalized: string, verbs: ReadonlyArray<string>) {
-	for (const verb of verbs) {
-		if (normalized.startsWith(verb)) return true
-	}
-	return false
+export function isIdempotentStorageSqlDdl(query: string) {
+	const trimmed = query.trim()
+	if (!trimmed || hasMultipleSqlStatements(trimmed)) return false
+	const normalized = maskSqlLiteralsAndComments(trimmed).trim().toLowerCase()
+	return (
+		idempotentStorageSqlDdlPattern.test(normalized) &&
+		!/\bselect\b/.test(normalized)
+	)
 }
 
 /**
- * True when `query` can mutate while yielding rows (SQLite RETURNING on
- * INSERT / UPDATE / DELETE / REPLACE, including after a WITH clause).
- *
- * Used by {@link collectStorageSqlCursor} drainOverflow: only these statements must
- * keep stepping past the row cap so the write finishes. Pure reads — including
- * `WITH … SELECT` sent with `writable: true` from packageStorage — stop early.
- * Words inside strings, identifiers, and comments are ignored.
+ * True when a writable statement must pass the storage-byte entitlement
+ * check before it runs: not a pure read and not idempotent DDL.
  */
-export function isStorageSqlReturningMutation(query: string) {
-	const normalized = maskSqlLiteralsAndComments(query).trim().toLowerCase()
-	if (!normalized) return false
-	if (sqlStartsWithVerb(normalized, storageSqlReturningMutationVerbs)) {
-		return true
-	}
-	if (!normalized.startsWith('with')) return false
-	return storageSqlReturningMutationVerbInWithPattern.test(normalized)
-}
-
-/**
- * True when the statement can change the bucket, including DDL such as
- * `CREATE TABLE AS SELECT`. Unlike {@link isStorageSqlReturningMutation}, this
- * does not require a row-yielding DML verb. Quoted words do not count.
- * After `WITH`, only INSERT / UPDATE / DELETE / REPLACE count: SQLite does
- * not allow CREATE / DROP / ALTER there, so those tokens are identifiers.
- */
-export function isStorageSqlWrite(query: string) {
-	const normalized = maskSqlLiteralsAndComments(query).trim().toLowerCase()
-	if (!normalized) return false
-	if (sqlStartsWithVerb(normalized, storageSqlWriteVerbs)) return true
-	if (!normalized.startsWith('with')) return false
-	return storageSqlReturningMutationVerbInWithPattern.test(normalized)
+export function storageSqlNeedsWriteEntitlement(query: string) {
+	return !isReadOnlyStorageSqlQuery(query) && !isIdempotentStorageSqlDdl(query)
 }
 
 export const readOnlyStorageSqlDeniedMessage =
@@ -682,6 +639,22 @@ export function assertStorageSqlAllowed(
 		throw new Error(readOnlyStorageSqlDeniedMessage)
 	}
 	return trimmed
+}
+
+/**
+ * Resolves with whichever read fulfills first; rejects with the later
+ * failure only when both reject.
+ */
+function firstFulfilled<T>(first: Promise<T>, second: Promise<T>) {
+	return new Promise<T>((resolve, reject) => {
+		let rejections = 0
+		const onReject = (error: unknown) => {
+			rejections += 1
+			if (rejections === 2) reject(error)
+		}
+		first.then(resolve, onReject)
+		second.then(resolve, onReject)
+	})
 }
 
 async function withStorageEstimateReadTimeout<T>(
@@ -747,6 +720,23 @@ class StorageRunnerBase extends DurableObject<Env> {
 		assertCloneableStorageValue(input.value)
 		await this.ctx.storage.put(key, input.value)
 		return { ok: true, key }
+	}
+
+	async setValueWithinLimit(input: {
+		key: string
+		value: unknown
+		maxDatabaseBytes: number
+	}): Promise<StorageWriteWithinLimitResult<StorageSetResult>> {
+		const key = normalizeStorageKey(input.key)
+		assertCloneableStorageValue(input.value)
+		return runWithinDatabaseLimit(
+			this.ctx.storage,
+			input.maxDatabaseBytes,
+			() => {
+				this.ctx.storage.kv.put(key, input.value)
+				return { ok: true as const, key }
+			},
+		)
 	}
 
 	async deleteValue(input: { key: string }): Promise<StorageDeleteResult> {
@@ -935,19 +925,24 @@ class StorageRunnerBase extends DurableObject<Env> {
 		params?: Array<unknown>
 		writable?: boolean
 	}): Promise<StorageSqlReadCollection> {
-		const query = assertStorageSqlAllowed(input.query, input.writable)
-		const params = normalizeSqlParams(input.params)
-		const cursor = this.ctx.storage.sql.exec<Record<string, StorageSqlValue>>(
-			query,
-			...params,
+		return execStorageSqlQuery(this.ctx.storage, input)
+	}
+
+	async sqlQueryWithinLimit(input: {
+		query: string
+		params?: Array<unknown>
+		maxDatabaseBytes: number
+	}): Promise<StorageWriteWithinLimitResult<StorageSqlReadCollection>> {
+		return runWithinDatabaseLimit(
+			this.ctx.storage,
+			input.maxDatabaseBytes,
+			() =>
+				execStorageSqlQuery(this.ctx.storage, {
+					query: input.query,
+					params: input.params,
+					writable: true,
+				}),
 		)
-		const writable = Boolean(input.writable)
-		const drainOverflow = writable && isStorageSqlReturningMutation(query)
-		return collectStorageSqlCursor(cursor, {
-			drainOverflow,
-			writeFinished: writable && isStorageSqlWrite(query),
-			maxRows: maxStorageSqlQueryRows,
-		})
 	}
 }
 
@@ -1036,6 +1031,11 @@ export function storageRunnerRpc(input: {
 				key: string
 				value: unknown
 			}) => Promise<StorageSetResult>
+			setValueWithinLimit: (payload: {
+				key: string
+				value: unknown
+				maxDatabaseBytes: number
+			}) => Promise<StorageWriteWithinLimitResult<StorageSetResult>>
 			deleteValue: (payload: { key: string }) => Promise<StorageDeleteResult>
 			clearStorage: () => Promise<StorageClearResult>
 			getEstimatedBytes: () => Promise<StorageEstimateResult>
@@ -1059,6 +1059,11 @@ export function storageRunnerRpc(input: {
 				params?: Array<unknown>
 				writable?: boolean
 			}) => Promise<StorageSqlReadCollection>
+			sqlQueryWithinLimit: (payload: {
+				query: string
+				params?: Array<unknown>
+				maxDatabaseBytes: number
+			}) => Promise<StorageWriteWithinLimitResult<StorageSqlReadCollection>>
 		},
 	})
 
@@ -1095,6 +1100,17 @@ export function storageRunnerRpc(input: {
 						input.storageId,
 					)
 				).estimatedBytes,
+		})
+	}
+
+	// In-write results already carry the bucket's size, so the throttled
+	// refresh persists it without an estimate RPC.
+	const recordMeasuredBucketEstimate = (estimatedBytes: number) => {
+		maybeRefreshStorageBucketEstimate({
+			env: input.env,
+			userId: input.userId,
+			storageId: input.storageId,
+			readEstimatedBytes: async () => estimatedBytes,
 		})
 	}
 
@@ -1164,6 +1180,17 @@ export function storageRunnerRpc(input: {
 			refreshOwnedBucketEstimate()
 			return result
 		},
+		setValueWithinLimit: async (payload: {
+			key: string
+			value: unknown
+			maxDatabaseBytes: number
+		}) => {
+			assertCloneableStorageValue(payload.value)
+			registerOwnedBucket()
+			const result = await runner.setValueWithinLimit(payload)
+			if (result.withinLimit) recordMeasuredBucketEstimate(result.databaseBytes)
+			return result
+		},
 		deleteValue: async (payload: { key: string }) => {
 			registerOwnedBucket()
 			const result = await runner.deleteValue(payload)
@@ -1218,6 +1245,17 @@ export function storageRunnerRpc(input: {
 			}
 			return finishSqlQuery(result)
 		},
+		sqlQueryWithinLimit: async (payload: {
+			query: string
+			params?: Array<unknown>
+			maxDatabaseBytes: number
+		}): Promise<StorageWriteWithinLimitResult<StorageSqlReadResult>> => {
+			registerOwnedBucket()
+			const limited = await runner.sqlQueryWithinLimit(payload)
+			if (!limited.withinLimit) return limited
+			recordMeasuredBucketEstimate(limited.databaseBytes)
+			return { ...limited, result: finishSqlQuery(limited.result) }
+		},
 	}
 }
 
@@ -1227,43 +1265,77 @@ async function readStorageEstimateChunkWithRetry(input: {
 	buckets: Array<{ storageId: string; kind: StorageBucketKind }>
 	/** Backoff pauses between attempts; attempts = length + 1. */
 	retryDelaysMs?: ReadonlyArray<number>
+	/** When set, an exhausted read is reported to Sentry under this name. */
+	reportOperation?: string
 }): Promise<Array<StorageEstimateResult>> {
 	const retryDelaysMs = input.retryDelaysMs ?? storageEstimateReadRetryDelaysMs
 	const maxAttempts = retryDelaysMs.length + 1
 	const inflightReads = new Map<string, Promise<StorageEstimateResult>>()
+	const timedOutStorageIds = new Set<string>()
+	const hedgedStorageIds = new Set<string>()
+	const fulfilledStorageIds = new Set<string>()
+	const sendRpc = (bucket: {
+		storageId: string
+		kind: StorageBucketKind
+	}): Promise<StorageEstimateResult> => {
+		const rpc = sendRawRpc(bucket)
+		rpc.then(
+			() => fulfilledStorageIds.add(bucket.storageId),
+			() => undefined,
+		)
+		return rpc
+	}
+	const sendRawRpc = (bucket: {
+		storageId: string
+		kind: StorageBucketKind
+	}): Promise<StorageEstimateResult> => {
+		switch (bucket.kind) {
+			case 'repo_session':
+				return repoSessionRpc(
+					input.env,
+					repoSessionIdFromStorageBucketId(bucket.storageId),
+				).getEstimatedBytes()
+			case 'job':
+			case 'package':
+			case 'execute':
+			case 'unknown':
+				return storageRunnerRpc({
+					env: input.env,
+					userId: input.userId,
+					storageId: bucket.storageId,
+				}).getEstimatedBytes()
+			default: {
+				const exhaustive: never = bucket.kind
+				throw new Error(
+					`Unsupported storage bucket kind: ${String(exhaustive)}`,
+				)
+			}
+		}
+	}
 	const startOrReuseRead = (bucket: {
 		storageId: string
 		kind: StorageBucketKind
 	}) => {
 		const existing = inflightReads.get(bucket.storageId)
-		if (existing) return existing
-		const rpc = (() => {
-			switch (bucket.kind) {
-				case 'repo_session':
-					return repoSessionRpc(
-						input.env,
-						repoSessionIdFromStorageBucketId(bucket.storageId),
-					).getEstimatedBytes()
-				case 'job':
-				case 'package':
-				case 'execute':
-				case 'unknown':
-					return storageRunnerRpc({
-						env: input.env,
-						userId: input.userId,
-						storageId: bucket.storageId,
-					}).getEstimatedBytes()
-				default: {
-					const exhaustive: never = bucket.kind
-					throw new Error(
-						`Unsupported storage bucket kind: ${String(exhaustive)}`,
-					)
-				}
-			}
-		})()
+		let rpc: Promise<StorageEstimateResult>
+		if (!existing) {
+			rpc = sendRpc(bucket)
+		} else if (
+			timedOutStorageIds.has(bucket.storageId) &&
+			!hedgedStorageIds.has(bucket.storageId) &&
+			!fulfilledStorageIds.has(bucket.storageId)
+		) {
+			// One hedged resend per bucket on a fresh stub after a timeout, so
+			// a lost RPC cannot fail every attempt. Capped at two calls per
+			// bucket so a slow DO never sees a stacked queue of retries.
+			hedgedStorageIds.add(bucket.storageId)
+			rpc = firstFulfilled(existing, sendRpc(bucket))
+		} else {
+			return existing
+		}
 		// Keep a fulfilled read in the map until this baseline returns so a
-		// timeout-then-success during backoff is reused instead of opening a
-		// second stub call. Only rejected RPCs are dropped so the next
+		// timeout-then-success during backoff is reused instead of opening
+		// another stub call. Only rejected RPCs are dropped so the next
 		// attempt can start a new one.
 		inflightReads.set(bucket.storageId, rpc)
 		void rpc.catch(() => {
@@ -1306,6 +1378,11 @@ async function readStorageEstimateChunkWithRetry(input: {
 				values[index] = result.value
 				continue
 			}
+			const storageId = input.buckets[index]?.storageId
+			// readOne only produces a storage estimate error from its timer.
+			if (storageId && isStorageEstimateReadError(result.reason)) {
+				timedOutStorageIds.add(storageId)
+			}
 			if (failedIndexes.length === 0) {
 				firstFailureReason = result.reason
 			}
@@ -1313,10 +1390,22 @@ async function readStorageEstimateChunkWithRetry(input: {
 		}
 		if (failedIndexes.length === 0) break
 		if (attempt === maxAttempts) {
+			const failedBucket = input.buckets[failedIndexes[0] ?? -1]
+			if (input.reportOperation) {
+				void reportInfraHiccup({
+					kind: 'storage_estimate_unavailable',
+					operation: input.reportOperation,
+					attempts: maxAttempts,
+					errorClass: isStorageEstimateReadError(firstFailureReason)
+						? 'timeout'
+						: 'fast_failure',
+					storageId: failedBucket?.storageId,
+					bucketKind: failedBucket?.kind,
+				})
+			}
 			// An unreadable bucket cannot safely be treated as zero usage.
 			throw createStorageEstimateReadError({
-				storageId:
-					input.buckets[failedIndexes[0] ?? -1]?.storageId ?? 'unknown',
+				storageId: failedBucket?.storageId ?? 'unknown',
 				attempts: maxAttempts,
 				cause: firstFailureReason,
 			})
@@ -1461,6 +1550,7 @@ async function readStorageBytesEntitlementBaseline(input: {
 			env: input.env,
 			userId: input.userId,
 			buckets: chunk,
+			reportOperation: 'storage_entitlement_baseline',
 		})
 		for (const [index, estimate] of estimates.entries()) {
 			durableObjectBytes += estimate.estimatedBytes
@@ -1582,6 +1672,201 @@ export async function assertStorageRunnerWriteWithinEntitlement(input: {
 	})
 }
 
+async function readStorageEntitlementUsageSnapshot(input: {
+	env: Env
+	userId: OwnerId
+}): Promise<StorageEntitlementUsageSnapshot> {
+	const [meterBytes, bucketEstimates] = await Promise.all([
+		readStorageBytesFromUserMeter({
+			db: input.env.APP_DB,
+			env: input.env,
+			userId: input.userId,
+			now: new Date(),
+		}),
+		listUserStorageBucketEstimates({
+			env: input.env,
+			userId: input.userId,
+		}),
+	])
+	return {
+		meterBytes,
+		buckets: new Map(
+			bucketEstimates.map((bucket) => [
+				bucket.storageId,
+				{ kind: bucket.kind, estimatedBytes: bucket.estimatedBytes },
+			]),
+		),
+	}
+}
+
+/**
+ * Storage bytes the owner uses outside `storageId`: UserMeter usage plus
+ * every other bucket. Buckets this run already measured use that size;
+ * others use their stored estimate, and only buckets without one are
+ * probed live. Unreadable probes fail closed.
+ */
+async function readStorageBytesOutsideBucket(input: {
+	env: Env
+	userId: OwnerId
+	storageId: string
+	cache: StorageBytesEntitlementRunCache
+}): Promise<number> {
+	const cache = input.cache
+	if (!cache.usage) {
+		const pending = readStorageEntitlementUsageSnapshot(input).catch(
+			(error: unknown) => {
+				// Do not memoize a transient failure for the whole run.
+				if (cache.usage === pending) cache.usage = null
+				throw error
+			},
+		)
+		cache.usage = pending
+	}
+	const usage = await cache.usage
+	const bucketsToProbe: Array<{ storageId: string; kind: StorageBucketKind }> =
+		[]
+	for (const [storageId, bucket] of usage.buckets) {
+		if (storageId === input.storageId) continue
+		if (cache.bucketBytes.has(storageId)) continue
+		if (bucket.estimatedBytes === null) {
+			bucketsToProbe.push({ storageId, kind: bucket.kind })
+		}
+	}
+	for (
+		let offset = 0;
+		offset < bucketsToProbe.length;
+		offset += maxConcurrentStorageEstimateReads
+	) {
+		const chunk = bucketsToProbe.slice(
+			offset,
+			offset + maxConcurrentStorageEstimateReads,
+		)
+		const estimates = await readStorageEstimateChunkWithRetry({
+			env: input.env,
+			userId: input.userId,
+			buckets: chunk,
+			reportOperation: 'storage_entitlement_baseline',
+		})
+		for (const [index, estimate] of estimates.entries()) {
+			const storageId = chunk[index]?.storageId
+			if (!storageId) continue
+			cache.bucketBytes.set(storageId, estimate.estimatedBytes)
+			recordStorageBucketEstimate({
+				env: input.env,
+				userId: input.userId,
+				storageId,
+				estimatedBytes: estimate.estimatedBytes,
+			})
+		}
+	}
+	let bytes = usage.meterBytes
+	for (const [storageId, bucket] of usage.buckets) {
+		if (storageId === input.storageId) continue
+		bytes += cache.bucketBytes.get(storageId) ?? bucket.estimatedBytes ?? 0
+	}
+	for (const [storageId, measured] of cache.bucketBytes) {
+		if (storageId === input.storageId || usage.buckets.has(storageId)) continue
+		bytes += measured
+	}
+	// Bytes reserved by pre-write checks (older StorageRunner fallback) are
+	// counted on top, which can only over-count.
+	return bytes + cache.reservedBytes
+}
+
+/**
+ * True when the StorageRunner handling the call predates `method` (a
+ * rolling deploy can briefly route to the previous version). The call was
+ * rejected before the Durable Object ran anything.
+ */
+export function isMissingStorageRunnerMethodError(
+	error: unknown,
+	method: string,
+): boolean {
+	if (!(error instanceof Error)) return false
+	return (
+		error.message.includes('RPC receiver does not implement') &&
+		error.message.includes(`"${method}"`)
+	)
+}
+
+/**
+ * Run a storage mutation that the StorageRunner checks against the storage
+ * byte entitlement inside its own transaction: the worker sends the bucket's
+ * remaining room (limit minus usage outside the bucket) and the Durable
+ * Object rolls the write back when its post-write size exceeds it. This
+ * replaces a separate live size read of the target bucket before the write.
+ *
+ * An older StorageRunner without the in-write method falls back to the
+ * pre-write check (`legacyRequested` then `legacyWrite`), which still fails
+ * closed.
+ */
+export async function writeStorageWithinEntitlement<T>(input: {
+	env: Env
+	userId: OwnerId
+	email: string | null | undefined
+	storageId: string
+	cache?: StorageBytesEntitlementRunCache | null
+	method: 'setValueWithinLimit' | 'sqlQueryWithinLimit'
+	write: (maxDatabaseBytes: number) => Promise<StorageWriteWithinLimitResult<T>>
+	legacyRequested: () => Promise<number> | number
+	legacyWrite: () => Promise<T>
+}): Promise<T> {
+	const cache = input.cache ?? createStorageBytesEntitlementRunCache()
+	const limit = await readStorageBytesEntitlementLimit({
+		db: input.env.APP_DB,
+		userId: input.userId,
+		email: input.email,
+	})
+	const outsideBytes = Number.isFinite(limit)
+		? await readStorageBytesOutsideBucket({
+				env: input.env,
+				userId: input.userId,
+				storageId: input.storageId,
+				cache,
+			})
+		: 0
+	const maxDatabaseBytes = Number.isFinite(limit)
+		? limit - outsideBytes
+		: Number.MAX_SAFE_INTEGER
+	let limited: StorageWriteWithinLimitResult<T>
+	try {
+		limited = await input.write(maxDatabaseBytes)
+	} catch (error) {
+		if (!isMissingStorageRunnerMethodError(error, input.method)) throw error
+		await assertStorageRunnerWriteWithinEntitlement({
+			env: input.env,
+			userId: input.userId,
+			email: input.email,
+			storageId: input.storageId,
+			requested: await input.legacyRequested(),
+			cache,
+		})
+		return await input.legacyWrite()
+	}
+	if (limited.withinLimit) {
+		cache.bucketBytes.set(input.storageId, limited.databaseBytes)
+		return limited.result
+	}
+	cache.bucketBytes.set(input.storageId, limited.previousDatabaseBytes)
+	// Same error (and bucket summary) as the pre-write check: current is the
+	// usage before this write, requested is what the write would have added.
+	await assertStorageBytesWithKindSummary({
+		env: input.env,
+		userId: input.userId,
+		email: input.email,
+		requested: Math.max(
+			0,
+			limited.databaseBytes - limited.previousDatabaseBytes,
+		),
+		getCurrent: async () => outsideBytes + limited.previousDatabaseBytes,
+	})
+	// The limit was raised between the read above and this check; the write
+	// was still rolled back, so ask the caller to retry rather than succeed.
+	throw new Error(
+		'Storage write was rolled back because it exceeded the storage byte limit. Retry the write.',
+	)
+}
+
 export function createStorageKodyTools(input: {
 	env: Env
 	userId: OwnerId
@@ -1599,16 +1884,20 @@ export function createStorageKodyTools(input: {
 		userId: input.userId,
 		storageId: input.storageId,
 	})
-	const assertWriteWithinEntitlement = async (requested?: number) => {
-		await assertStorageRunnerWriteWithinEntitlement({
+	const writeWithinEntitlement = <T>(
+		write: Pick<
+			Parameters<typeof writeStorageWithinEntitlement<T>>[0],
+			'method' | 'write' | 'legacyRequested' | 'legacyWrite'
+		>,
+	) =>
+		writeStorageWithinEntitlement<T>({
 			env: input.env,
 			userId: input.userId,
 			email: input.email,
 			storageId: input.storageId,
-			requested,
 			cache: input.entitlementCache,
+			...write,
 		})
-	}
 	return {
 		storageGet: async (args: unknown) => {
 			const key =
@@ -1658,13 +1947,15 @@ export function createStorageKodyTools(input: {
 			// packageStorage()/writable helpers always pass writable:true so
 			// CREATE/INSERT are allowed, but pure reads must not pay the
 			// all-bucket entitlement fan-out.
-			if (writable && !isReadOnlyStorageSqlQuery(query)) {
-				await assertWriteWithinEntitlement(
-					estimateEntitlementStorageSqlWriteBytes({
-						query,
-						params,
-					}),
-				)
+			if (writable && storageSqlNeedsWriteEntitlement(query)) {
+				return await writeWithinEntitlement({
+					method: 'sqlQueryWithinLimit',
+					write: (maxDatabaseBytes) =>
+						runner.sqlQueryWithinLimit({ query, params, maxDatabaseBytes }),
+					legacyRequested: () =>
+						estimateEntitlementStorageSqlWriteBytes({ query, params }),
+					legacyWrite: () => runner.sqlQuery({ query, params, writable }),
+				})
 			}
 			return await runner.sqlQuery({
 				query,
@@ -1680,25 +1971,25 @@ export function createStorageKodyTools(input: {
 								? (args as { key?: unknown; value?: unknown })
 								: {}
 						const key = typeof payload.key === 'string' ? payload.key : ''
-						const existing = await runner.getValue({ key })
-						await assertWriteWithinEntitlement(
-							estimateEntitlementStorageEntryByteDelta({
-								next: {
+						return await writeWithinEntitlement({
+							method: 'setValueWithinLimit',
+							write: (maxDatabaseBytes) =>
+								runner.setValueWithinLimit({
 									key,
 									value: payload.value,
-								},
-								existing:
-									existing.value === null
-										? null
-										: {
-												key,
-												value: existing.value,
-											},
-							}),
-						)
-						return await runner.setValue({
-							key,
-							value: payload.value,
+									maxDatabaseBytes,
+								}),
+							legacyRequested: async () => {
+								const existing = await runner.getValue({ key })
+								return estimateEntitlementStorageEntryByteDelta({
+									next: { key, value: payload.value },
+									existing:
+										existing.value === null
+											? null
+											: { key, value: existing.value },
+								})
+							},
+							legacyWrite: () => runner.setValue({ key, value: payload.value }),
 						})
 					},
 					storageDelete: async (args: unknown) => {

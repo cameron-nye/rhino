@@ -11,7 +11,7 @@ import { runBundledModuleWithRegistry } from '#mcp/run-kody-registry.ts'
 import { buildKodyModuleBundle } from '#worker/package-runtime/module-graph.ts'
 import { consoleWarn } from '#worker/test-support/console-spies.ts'
 import { silenceIncidentalRuntimeWarnings } from '#worker/test-support/incidental-runtime-warnings.ts'
-import { RunLog } from './run-log-do.ts'
+import { RunLog, type RunLogRowInput } from './run-log-do.ts'
 import { seedRunLogMeta } from './run-log-meta-test-seed.ts'
 import {
 	abandonRunRecord,
@@ -19,6 +19,8 @@ import {
 	claimPackageInvocationRecord,
 	bulkUpdateRunErrorTriage,
 	claimRunRecord,
+	closeStoppedWorkflowAttemptRuns,
+	ensureRunRecordStarted,
 	finishPackageInvocationRecord,
 	finishRunRecord,
 	getRunRecord,
@@ -115,6 +117,49 @@ function finishOk(
 
 const getRun = (userId: string, runId: string) =>
 	getRunRecord({ env, userId: ownerIdFromStored(userId), runId })
+
+test('non-scheduled replace upserts preserve every accepted status and finish-without-begin', async () => {
+	const userId = uniqueUserId('replace-statuses')
+	const stub = runLogStub(userId)
+	const now = new Date().toISOString()
+	for (const from of ['running', 'success', 'error'] as const) {
+		for (const to of ['running', 'success', 'error'] as const) {
+			const run: RunLogRowInput = {
+				id: `${from}-${to}`,
+				surface: 'execute',
+				status: from,
+				name: null,
+				packageId: null,
+				kodyId: null,
+				sourceId: null,
+				publishedCommit: null,
+				storageId: null,
+				jobId: null,
+				workflowId: null,
+				invocationId: null,
+				sessionId: null,
+				idempotencyKey: null,
+				parentRunId: null,
+				startedAt: now,
+				finishedAt: null,
+				durationMs: null,
+				errorName: null,
+				errorMessage: null,
+				startedBy: null,
+				metadataJson: '{}',
+				createdAt: now,
+				updatedAt: now,
+			}
+			expect(await stub.finishRun({ run, logs: [] })).toMatchObject({
+				wrote: true,
+			})
+			expect(
+				await stub.finishRun({ run: { ...run, status: to }, logs: [] }),
+			).toMatchObject({ wrote: true })
+			expect((await getRun(userId, run.id))?.run.status).toBe(to)
+		}
+	}
+})
 
 const listRuns = (userId: string, filter?: RunRecordFilter, limit?: number) =>
 	listRunRecords({ env, userId: ownerIdFromStored(userId), filter, limit })
@@ -1782,11 +1827,35 @@ test('dashboard aggregates complete owner history and excludes exports, child ru
 	expect(charts.countsSince).toBeNull()
 })
 
+test('a finish that moves startedAt to another UTC day moves its day count too', async () => {
+	const userId = uniqueUserId('dashboard-moved-day')
+	const now = new Date()
+	const today = Date.parse(now.toISOString().slice(0, 10) + 'T00:00:00.000Z')
+	const id = crypto.randomUUID()
+	const context = { surface: 'webhook' as const, name: 'github' }
+	expect(
+		await ensureRunRecordStarted({
+			env,
+			handle: handleFor(userId, id, context, today - 60_000),
+		}),
+	).toBe(true)
+	await finishRunRecord({
+		env,
+		handle: handleFor(userId, id, context, today + 60_000),
+		status: 'success',
+	})
+	const charts = await loadWorkspaceRunCharts({ env, userId, now })
+	expect(charts.days.at(-2)).toMatchObject({ success: 0, error: 0, running: 0 })
+	expect(charts.days.at(-1)).toMatchObject({ success: 1, error: 0, running: 0 })
+})
+
 test('dashboard day counts survive the 2000-run cap across several UTC days', async () => {
 	const userId = uniqueUserId('dashboard-cap')
-	const now = new Date('2026-10-22T18:00:00.000Z')
-	const windowStart = new Date('2026-10-16T00:00:00.000Z')
+	// Relative to the real clock: retention deletes runs older than 30 real days.
 	const dayCount = 7
+	const todayStart = Math.floor(Date.now() / dayMs) * dayMs
+	const now = new Date(todayStart + 18 * 60 * 60 * 1000)
+	const windowStart = new Date(todayStart - (dayCount - 1) * dayMs)
 	const perDay = Math.floor(runRecordMaxRunsPerUser / dayCount) + 1
 	const totalCounted = perDay * dayCount
 	expect(totalCounted).toBeGreaterThan(runRecordMaxRunsPerUser)
@@ -1941,4 +2010,55 @@ test('started_by persists on begin/finish and filters runList', async () => {
 	})
 	expect(filtered.runs.map((run) => run.name)).toEqual(['alice-run'])
 	expect(filtered.runs[0]?.startedBy?.username).toBe('alice')
+})
+
+test("closeStoppedWorkflowAttemptRuns closes only that workflow instance's running rows", async () => {
+	const userId = uniqueUserId('workflow-attempts')
+	const start = async (workflowId: string) => {
+		const handle = beginRunRecord({
+			env,
+			userId,
+			context: { surface: 'workflow', name: 'publish', workflowId },
+		})
+		await ensureRunRecordStarted({ env, handle })
+		return handle!.id
+	}
+	const killed = await start('wf-1')
+	const other = await start('wf-2')
+	expect(
+		await closeStoppedWorkflowAttemptRuns({
+			env,
+			userId,
+			workflowId: 'wf-1',
+			outcome: 'retried',
+		}),
+	).toEqual([killed])
+	expect((await getRun(userId, killed))?.run).toMatchObject({
+		status: 'error',
+		errorName: 'workflow_attempt_stopped',
+		errorTriage: 'ignored',
+		triagedBy: 'system:workflow-retry',
+	})
+	expect((await getRun(userId, other))?.run.status).toBe('running')
+	expect(
+		await closeStoppedWorkflowAttemptRuns({
+			env,
+			userId,
+			workflowId: 'wf-1',
+			outcome: 'succeeded',
+		}),
+	).toEqual([])
+
+	const finalKilled = await start('wf-3')
+	await closeStoppedWorkflowAttemptRuns({
+		env,
+		userId,
+		workflowId: 'wf-3',
+		outcome: 'failed',
+	})
+	expect((await getRun(userId, finalKilled))?.run).toMatchObject({
+		status: 'error',
+		errorName: 'workflow_attempt_stopped',
+		errorTriage: null,
+	})
 })

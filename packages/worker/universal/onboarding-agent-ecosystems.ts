@@ -11,7 +11,7 @@
  * marks Grok Bot connected, because Grok Bot uses that connection.
  */
 
-import { type McpClientKind } from '#universal/onboarding-mcp-clients.ts'
+import type { McpClientKind } from '#universal/onboarding-mcp-clients.ts'
 
 const onboardingAgentEcosystems = {
 	openai: ['chatgpt', 'codex', 'dots'],
@@ -34,6 +34,7 @@ const onboardingAgentEcosystems = {
 	wajo: ['wajo'],
 	cue: ['cue'],
 	openmuse: ['openmuse'],
+	instinct: ['instinct'],
 	other: ['other'],
 } as const satisfies Record<string, ReadonlyArray<McpClientKind>>
 
@@ -137,6 +138,11 @@ export const onboardingStep3EcosystemGroups = [
 		id: 'openmuse',
 		label: 'OpenMuse',
 		agents: ['openmuse'],
+	},
+	{
+		id: 'instinct',
+		label: 'Instinct',
+		agents: ['instinct'],
 	},
 ] as const satisfies ReadonlyArray<OnboardingStep3EcosystemGroup>
 

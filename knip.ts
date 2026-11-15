@@ -3,13 +3,13 @@ import { toolCliEntryFiles } from './tools/knip-tool-entries.ts'
 
 export default defineConfig({
 	include: ['files', 'exports', 'types'],
-	ignore: ['packages/cli/**'],
 	workspaces: {
 		'.': {
 			entry: [
 				...toolCliEntryFiles(process.cwd()),
-				// Wrangler loads this default export through the generated remote probe config.
-				'tools/ci/start-opt-in-probe-worker.ts',
+				'tools/files-spike/browser.ts',
+				'tools/files-spike/worker.ts',
+				'tools/files-spike/vitest.config.ts',
 				// Preview workflow github-script steps require this CommonJS helper.
 				'tools/ci/github-api-retry.cjs',
 				'tools/execution-context-e2e/daemon-host.cjs',
@@ -19,6 +19,17 @@ export default defineConfig({
 				'vitest*.ts',
 			],
 			project: ['tools/**/*.{ts,js,mjs,cjs}', '*.ts', 'e2e/**/*.ts'],
+		},
+		'packages/cli': {
+			entry: [
+				'src/bin.ts',
+				'src/cli.ts',
+				'src/skill-refresh.ts',
+				'scripts/build.mjs',
+				'scripts/bench.mjs',
+				'test/**/*.ts',
+			],
+			project: ['src/**/*.ts', 'scripts/**/*.mjs', 'test/**/*.ts'],
 		},
 		'packages/desktop': {
 			entry: [
@@ -40,6 +51,8 @@ export default defineConfig({
 				'start/router.tsx',
 				'start/routeTree.gen.ts',
 				'start/routes/**/*.{ts,tsx}',
+				// Vite builds these independent sandbox scripts by filename.
+				'start/pages/file-viewers/hosts/{docx,xlsx,pptx}.ts',
 				'src/mcp/capabilities/**/*.ts',
 				'src/mcp/instructions/**/*.ts',
 			],
@@ -54,6 +67,9 @@ export default defineConfig({
 			project: ['src/**/*.ts'],
 		},
 		'packages/highlight-worker': {
+			project: ['src/**/*.ts'],
+		},
+		'packages/push-queue-worker': {
 			project: ['src/**/*.ts'],
 		},
 		'packages/api-worker': {
@@ -77,6 +93,9 @@ export default defineConfig({
 			project: ['src/**/*.ts'],
 		},
 		'packages/mock-servers/cloudflare': {
+			project: ['src/**/*.ts'],
+		},
+		'packages/mock-servers/oauth': {
 			project: ['src/**/*.ts'],
 		},
 	},

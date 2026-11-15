@@ -9,6 +9,14 @@ test('OAuth callback exchanges and persists a connection with its required hosts
 	seedE2eUser,
 	login,
 }) => {
+	const hydrationErrors: string[] = []
+	page.on('console', (message) => {
+		if (
+			message.type() === 'error' &&
+			/hydration.*mismatch/i.test(message.text())
+		)
+			hydrationErrors.push(message.text())
+	})
 	const id = crypto.randomUUID().slice(0, 8)
 	const user = await seedE2eUser({
 		email: `oauth-success-${id}@example.com`,
@@ -82,12 +90,7 @@ test('OAuth callback exchanges and persists a connection with its required hosts
 	await expect(
 		page.getByRole('heading', { name: provider, exact: true }),
 	).toBeVisible()
-	await expect(
-		page.getByText(
-			'An OAuth connection. Kody keeps its token fresh and places it on requests to the provider’s hosts.',
-			{ exact: true },
-		),
-	).toBeVisible()
+	expect(hydrationErrors).toEqual([])
 })
 
 test('connect page names the destination org and asks multi-org users to pick one', async ({
@@ -125,7 +128,7 @@ test('connect page names the destination org and asks multi-org users to pick on
 	await waitForClientHydration(page)
 	await expect(page.getByTestId('connect-oauth-org-picker')).toHaveCount(0)
 	await expect(page.getByTestId('connect-oauth-org-target')).toContainText(
-		'personal organization',
+		`@${user.username}`,
 	)
 	await expect(page.locator('input[name="oauthClientId"]')).toBeVisible()
 

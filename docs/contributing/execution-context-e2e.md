@@ -11,7 +11,10 @@ Each cell:
 1. Signs in as the public preview seed user and mints a short-lived CLI token
    with `mintCliToken` (`tools/preview-rehearsal/seed.ts`).
 2. Registers a throwaway context (`e2e-<os>-<arch>-<run>`) with a passphrase key
-   (`KODY_CONTEXT_KEY_PASSPHRASE`) in a temp home.
+   (`KODY_CONTEXT_KEY_PASSPHRASE`) in a temp home. A first-try `fetch failed`
+   (or other connect-phase miss) against the preview API retries
+   `context register` once. Other CLI hops (`context policy`,
+   `context commands on`, `execute`) are not retried.
 3. Allows a temp folder in the local policy and the server grant (rw), and turns
    host commands on locally (`kody context commands on`).
 4. Starts `kody daemon` as an IPC child (`daemon-host.cjs`, the same stop path
@@ -19,8 +22,11 @@ Each cell:
 5. Runs `kody execute --context <name>` with a module that reads and writes the
    folder by its native path (`C:\...` on Windows) and runs one
    `kody.command.run` (PowerShell on Windows, `$SHELL` elsewhere).
-6. Sends `stop`, then asserts no `workerd` (`workerd.exe`) process is left.
-7. Revokes and deletes the context.
+6. Saves a throwaway package and runs one of its exports as a `workflows.create`
+   step with `execution: { context }`, then polls `runList` until the step reads
+   the folder on the context.
+7. Sends `stop`, then asserts no `workerd` (`workerd.exe`) process is left.
+8. Revokes and deletes the context.
 
 ## Run it
 

@@ -11,9 +11,9 @@ and does not enqueue production Queue delivery.
 
 Package reuse is a static `import … from 'kody:@scope/pkg/export'` (declare
 `kody.dependencies`). When the name is data, use computed `import(specifier)`
-for a caller-owned or forked module. Exactly-once work uses
-[workflows](./workflows.md). External clients use
-[inbound webhooks](./webhooks.md). Another package's secret mounts and
+for a caller-owned or forked module from `execute` (saved package server code
+cannot). Exactly-once work uses [workflows](./workflows.md). External clients
+use [inbound webhooks](./webhooks.md). Another package's secret mounts and
 `packageContext` apply when that package is the run — its job, subscription,
 webhook, or app.
 
@@ -232,10 +232,10 @@ surface) for run records; the run record includes `synthetic: true` (and
   package; supply matching fields inside `params` when testing filter-dependent
   logic.
 - Admin-only delivery rules (for example `platform.feedback.submitted`,
-  `status.incident.opened`, `fleet.package_error_rate.elevated`,
-  `fleet.package_owner_error_spike`, `fleet.users_affected.elevated`,
-  `fleet.users_affected.resolved`, `fleet.entitlement.crossed`,
-  `auth.denial.burst`, `email.delivery.burst`, `user.created`, `user.deleted`,
+  `status.incident.opened`, `fleet.package_owner_error_spike`,
+  `fleet.users_affected.elevated`, `fleet.users_affected.resolved`,
+  `fleet.entitlement.crossed`, `auth.denial.burst`, `email.delivery.burst`,
+  `user.created`, `user.deleted`, `user.guest_claimed`,
   `user.email_verification.failed`, `user.email_verification.stalled`,
   `user.email_outbound.paused`, or `email.system-message.sent`) apply to
   **production** fan-out only; synthetic dispatch runs your handler directly for

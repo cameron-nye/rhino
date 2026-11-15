@@ -153,10 +153,11 @@ Requests are handled in this order:
   `/.well-known/agent-skills/index.json`, skill markdown under
   `/.well-known/agent-skills/:skillId/SKILL.md`, `/.well-known/security.txt`,
   and OpenAI Apps domain verification at `/.well-known/openai-apps-challenge`
-  (unauthenticated `text/plain` token). The homepage adds RFC 8288 `Link`
-  headers to those documents and serves markdown when `Accept` prefers
-  `text/markdown`. DNS-AID (`_mcp._agents.<apex>` SVCB/HTTPS) is zone DNS, not a
-  Worker route.
+  (unauthenticated `text/plain` token), and the desktop app's macOS universal
+  link allowlist at `/.well-known/apple-app-site-association`
+  (`desktop-app-links.ts`). The homepage adds RFC 8288 `Link` headers to those
+  documents and serves markdown when `Accept` prefers `text/markdown`. DNS-AID
+  (`_mcp._agents.<apex>` SVCB/HTTPS) is zone DNS, not a Worker route.
 
 ## Package-app realtime (WebSocket)
 
@@ -388,7 +389,9 @@ The runtime capability registry **merges** synthesized domains from enabled
 Shared options are built in `packages/worker/src/sentry-options.ts`: **release**
 comes from `APP_COMMIT_SHA` when set (deploy workflows pass it as a var), and
 **environment** defaults from `SENTRY_ENVIRONMENT` in
-`packages/worker/wrangler.jsonc` per deploy target.
+`packages/worker/wrangler.jsonc` per deploy target. `beforeSend`,
+`beforeSendTransaction`, and `beforeBreadcrumb` deep-redact credentials, auth
+schemes, sensitive field names, and secret query params before ingest.
 
 MCP tools emit structured `mcp-event` logs via
 `packages/worker/src/mcp/observability.ts`. On failures, the same module sends

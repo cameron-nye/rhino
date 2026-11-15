@@ -1,4 +1,5 @@
 /** @jsxImportSource @emotion/react */
+import { createUiFeedback, type UiFeedback } from '#client/ui-feedback.ts'
 import {
 	setAdminGlobalFeatureFlag,
 	setAdminFeatureFlagOverride,
@@ -11,10 +12,10 @@ import {
 	missingSuccessMetricNotice,
 	type FeatureFlagSuccessMetricMeasure,
 } from '#universal/feature-flags/registry.ts'
-import { type FeatureFlagMetricCohort } from '#universal/feature-flags/types.ts'
-import {
-	type AdminFeatureFlag,
-	type AdminFeatureFlagsLoaderData,
+import type { FeatureFlagMetricCohort } from '#universal/feature-flags/types.ts'
+import type {
+	AdminFeatureFlag,
+	AdminFeatureFlagsLoaderData,
 } from '#universal/loader-data.ts'
 import {
 	cardCss,
@@ -158,8 +159,12 @@ export function AdminFeatureFlagsPage({
 		onSettled: (_data, _error, _input, reconcile) => reconcile?.(),
 	})
 	const featureFlags = payload.featureFlags
-	const [message, setMessage] = useState<string | null>(null)
-	const [messageTone, setMessageTone] = useState<'info' | 'error'>('info')
+	const [feedback, setFeedback] = useState<UiFeedback | null>(() =>
+		createUiFeedback(null, 'info'),
+	)
+	const message = feedback?.message ?? null
+	const messageTone = feedback?.tone ?? 'info'
+
 	const actionState: ActionState = setGlobalMutation.isPending
 		? 'saving-global'
 		: setOverrideMutation.isPending
@@ -179,22 +184,22 @@ export function AdminFeatureFlagsPage({
 		successMessage: string,
 	): Promise<boolean> {
 		const isCurrent = captureSubmitter()
-		setMessage(null)
-		setMessageTone('info')
+		setFeedback(createUiFeedback(null, 'info'))
 		try {
 			await submit()
 			if (!isCurrent()) return false
-			setMessage(successMessage)
-			setMessageTone('info')
+			setFeedback(createUiFeedback(successMessage, 'info'))
 			return true
 		} catch (error) {
 			if (!isCurrent()) return false
-			setMessage(
-				error instanceof Error
-					? error.message
-					: 'Unable to update feature flags.',
+			setFeedback(
+				createUiFeedback(
+					error instanceof Error
+						? error.message
+						: 'Unable to update feature flags.',
+					'error',
+				),
 			)
-			setMessageTone('error')
 			return false
 		}
 	}

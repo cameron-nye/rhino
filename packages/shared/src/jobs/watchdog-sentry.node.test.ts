@@ -7,7 +7,7 @@ import {
 	summarizeWatchdogJobsForOps,
 	type WatchdogJobSample,
 } from './watchdog-sentry.ts'
-import { type JobRow } from './repo.ts'
+import type { JobRow } from './repo.ts'
 
 function fixtureJobRow(overrides: Partial<JobRow> = {}): JobRow {
 	return {

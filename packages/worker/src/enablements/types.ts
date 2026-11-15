@@ -1,7 +1,8 @@
-import { type OrgPermission } from '@kody-internal/shared/org-permissions.ts'
-import {
-	type OwnerId,
-	type PersonId,
+import type { EnablementState } from './enablement-state.ts'
+import type { OrgPermission } from '@kody-internal/shared/org-permissions.ts'
+import type {
+	OwnerId,
+	PersonId,
 } from '@kody-internal/shared/owner-person-ids.ts'
 
 /**
@@ -21,7 +22,7 @@ export const enablementTriggerKinds = [
 
 export type EnablementTriggerKind = (typeof enablementTriggerKinds)[number]
 
-export type EnablementState = 'on' | 'paused' | 'off'
+export type { EnablementState } from './enablement-state.ts'
 
 /**
  * Why an enablement paused. A paused enablement drops its events and resumes

@@ -1,4 +1,5 @@
 /** @jsxImportSource @emotion/react */
+import { LoadingIndicator } from '../components/loading-indicator.tsx'
 import { css } from '@emotion/react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { SiteLink } from '../components/site-link.tsx'
@@ -12,10 +13,10 @@ import {
 } from './account-management-components.tsx'
 import { RecordTable } from './record-table.tsx'
 import { formatEstimatedCreditMicroUsd } from '#universal/credits.ts'
-import {
-	type OrgCreditsBudget,
-	type OrgCreditsLedgerEntry,
-	type OrgCreditsLoaderData,
+import type {
+	OrgCreditsBudget,
+	OrgCreditsLedgerEntry,
+	OrgCreditsLoaderData,
 } from '#universal/loader-data.ts'
 import { colors, spacing } from '#universal/styles/tokens.ts'
 import {
@@ -254,7 +255,11 @@ export function OrgCreditsPage({
 								css={getGhostButtonCss({ size: 'sm' })}
 								onClick={() => void ledger.fetchNextPage()}
 							>
-								{ledger.isFetchingNextPage ? 'Loading…' : 'Load older'}
+								{ledger.isFetchingNextPage ? (
+									<LoadingIndicator inline label="Loading…" />
+								) : (
+									'Load older'
+								)}
 							</button>
 						) : null}
 						<SiteLink

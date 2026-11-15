@@ -1,8 +1,8 @@
 /** @jsxImportSource @emotion/react */
 import { minPasswordLength } from '@kody-internal/shared/password-policy.ts'
 import { PasswordRevealInput } from '../components/password-reveal-input.tsx'
-import { type CSSObject } from '@emotion/react'
-import { type CSSProperties, type FormEvent } from 'react'
+import type { CSSObject } from '@emotion/react'
+import type { CSSProperties, FormEvent } from 'react'
 import { rhinoWordmarkFontFamily } from '../brand/rhino-mark.ts'
 import { rhinoPersonalUse } from '../brand/rhino-personal.ts'
 import { KodyMark } from '../components/kody-mark.tsx'
@@ -32,7 +32,7 @@ import {
 	UsernameChoiceField,
 	type UsernameAvailabilityView,
 } from '../components/username-choice-field.tsx'
-import { type AuthStatus } from './login.tsx'
+import type { AuthStatus } from './login.tsx'
 
 const motionOk = '@media (prefers-reduced-motion: no-preference)'
 const mobileMq = '@media (max-width: 900px)'
@@ -159,6 +159,7 @@ export function AuthForm(
 	])
 	return (
 		<form
+			aria-busy={props.isSubmitting}
 			key="authentication"
 			data-public-auth-form
 			data-rise
@@ -279,7 +280,16 @@ export function AuthForm(
 					data-sitekey={props.turnstileSiteKey}
 				></div>
 			) : null}
-			{!props.isSignup ? (
+			{props.isSignup ? (
+				<label css={rememberCss}>
+					<input
+						type="checkbox"
+						name="whatsNewEmailOptIn"
+						css={rememberInputCss}
+					/>
+					<span>Send me What's New in Kody emails</span>
+				</label>
+			) : (
 				<label css={rememberCss}>
 					<input
 						type="checkbox"
@@ -289,7 +299,7 @@ export function AuthForm(
 					/>
 					<span>Remember me on this device</span>
 				</label>
-			) : null}
+			)}
 			{renderStatusMessage(props.handleId, props.status, props.message)}
 			{/*
 			 * Sign-in submit works before (or without) hydration: the form posts
@@ -349,8 +359,6 @@ const authVisualCss: CSSObject = {
 	justifyContent: 'space-between',
 	gap: '2rem',
 	padding: 'clamp(1.5rem, 3vw, 2.5rem)',
-	paddingTop:
-		'calc(clamp(1.5rem, 3vw, 2.5rem) + var(--desktop-corner-height, 0px))',
 	borderRight: `1px solid ${colors.border}`,
 	backgroundColor: colors.background,
 	overflow: 'hidden',
@@ -402,7 +410,6 @@ const authBrandMobileCss: CSSObject = {
 	[mobileMq]: {
 		display: 'inline-flex',
 		marginInline: 'auto',
-		marginTop: 'var(--desktop-corner-height, 0px)',
 	},
 }
 

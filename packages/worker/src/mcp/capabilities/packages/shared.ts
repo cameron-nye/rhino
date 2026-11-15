@@ -271,14 +271,16 @@ export const packageExportSurfaceSchema = z.object({
 		.array(
 			z.object({
 				name: z.string(),
-				kind: z.enum(['type', 'interface', 'enum']),
+				kind: z.enum(['type', 'interface', 'enum', 'const']),
 				definition: z
 					.string()
-					.describe('Source text of the referenced type, interface, or enum.'),
+					.describe(
+						'Source text of the referenced type, interface, or enum. For a `const` reached through `typeof`, the resolved schema input fields when the initializer is a schema builder, otherwise its declaration.',
+					),
 			}),
 		)
 		.describe(
-			"Type, interface, and enum definitions referenced by this export's callable functions.",
+			"Type, interface, enum, and `typeof` const definitions referenced by this export's callable functions.",
 		),
 })
 
@@ -354,6 +356,33 @@ export const packageCredentialNeedSchema = z.object({
 
 export const packageDetailSchema =
 	packageSummaryWithCommunityProvenanceSchema.extend({
+		build_origin: z
+			.object({
+				origin: z.enum(['cloud', 'cli', 'context']),
+				context_name: z.string().nullable(),
+			})
+			.optional()
+			.describe(
+				"Where the published version was built: Kody cloud, the publisher's CLI (--build local), or one of their execution contexts (--build context).",
+			),
+		provenance: z
+			.object({
+				commit: z.string(),
+				artifacts: z.array(
+					z.object({
+						kind: z.string(),
+						name: z.string().nullable(),
+						entry_point: z.string(),
+						built_in: z.enum(['cloud', 'cli', 'context']).nullable(),
+						context_name: z.string().nullable(),
+						bundle_sha256: z.string().nullable(),
+					}),
+				),
+			})
+			.optional()
+			.describe(
+				"Informational record of the stored artifacts of the published commit: where each was built (Kody cloud, the publisher's CLI, or one of their execution contexts) and a SHA-256 of its modules. Null fields mean the artifact was stored before this was recorded. Kody does not check that an uploaded build was compiled from the pushed source, and nothing uses this record to allow or refuse a publish or a listing.",
+			),
 		published_commit: z
 			.string()
 			.nullable()
@@ -369,6 +398,11 @@ export const packageDetailSchema =
 		credentials: z
 			.object({
 				needs: z.array(packageCredentialNeedSchema),
+				invalidSlots: z
+					.array(z.object({ key: z.string(), message: z.string() }))
+					.describe(
+						'Published `kody.credentials` slots that fail the current slot schema, with the validation message. They are left out of `needs`, so nothing fills them. Fix each slot in package.json and republish.',
+					),
 				suppliersEnabled: z
 					.boolean()
 					.describe(

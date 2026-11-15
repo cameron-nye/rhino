@@ -1,6 +1,7 @@
 /** @jsxImportSource @emotion/react */
+import { createUiFeedback, type UiFeedback } from '#client/ui-feedback.ts'
 import { listenForAvatarFileDrop } from '#client/listen-for-avatar-file-drop.ts'
-import { type AccountPagePayloads } from '#client/routes/account-page-data.ts'
+import type { AccountPagePayloads } from '#client/routes/account-page-data.ts'
 import {
 	interpretAccountProfileSave,
 	readProfileFormValues,
@@ -8,7 +9,7 @@ import {
 import { shouldShowOnboardingChecklist } from '#universal/onboarding-checklist.ts'
 import { toast } from '#client/toast.ts'
 import { saveProfile, updateAvatar } from '#start/server/account-mutations'
-import { type ProfileVisibility } from '#universal/loader-data.ts'
+import type { ProfileVisibility } from '#universal/loader-data.ts'
 import {
 	getGhostButtonCss,
 	mutedLinkCss,
@@ -56,6 +57,7 @@ import {
 } from './account-management-components.tsx'
 import { AccountPasswordPanel } from './account-password-panel.tsx'
 import { AccountProfilePanel } from './account-profile-panel.tsx'
+import { AccountWorkspaceNote } from './account-workspace-note.tsx'
 import {
 	renderEmailVerificationPrompt,
 	requestResendVerification,
@@ -120,8 +122,12 @@ export function AccountPage({
 			: avatarEditorStatus
 	const [editorFile, setEditorFile] = useState<File | null>(null)
 	const [avatarDropActive, setAvatarDropActive] = useState(false)
-	const [message, setMessage] = useState<string | null>(null)
-	const [messageTone, setMessageTone] = useState<'error' | 'info'>('info')
+	const [feedback, setFeedback] = useState<UiFeedback | null>(() =>
+		createUiFeedback(null, 'info'),
+	)
+	const message = feedback?.message ?? null
+	const messageTone = feedback?.tone ?? 'info'
+
 	const optimisticAvatar = useRef<string | null>(null)
 	const accountConnections = useAccountConnections(
 		payloads.accountConnections,
@@ -144,8 +150,7 @@ export function AccountPage({
 		if (avatarStatus !== 'idle' && avatarStatus !== 'editing') return
 		setEditorFile(file)
 		setAvatarStatus('editing')
-		setMessage(null)
-		setMessageTone('info')
+		setFeedback(createUiFeedback(null, 'info'))
 	}
 
 	const onDroppedFile = useEffectEvent((file: File) => openAvatarEditor(file))
@@ -312,8 +317,7 @@ export function AccountPage({
 			submitted.displayName !== savedDisplayName ||
 			submitted.bio !== savedBio ||
 			submitted.profileVisibility !== savedProfileVisibility
-		setMessage(null)
-		setMessageTone('info')
+		setFeedback(createUiFeedback(null, 'info'))
 		const isCurrent = captureProfileSubmitter()
 		profileMutation.mutate(
 			{ data: submitted },
@@ -333,18 +337,21 @@ export function AccountPage({
 						setDraftProfileVisibility((edit) =>
 							edit === submitted.profileVisibility ? undefined : edit,
 						)
-						setMessage(result.message)
+						setFeedback(createUiFeedback(result.message))
 					} else if (result.status === 'error') {
-						setMessage(result.message)
-						setMessageTone('error')
+						setFeedback(createUiFeedback(result.message, 'error'))
 					}
 				},
 				onError: (error) => {
 					if (!isCurrent()) return
-					setMessage(
-						error instanceof Error ? error.message : 'Unable to save profile.',
+					setFeedback(
+						createUiFeedback(
+							error instanceof Error
+								? error.message
+								: 'Unable to save profile.',
+							'error',
+						),
 					)
-					setMessageTone('error')
 				},
 			},
 		)
@@ -410,6 +417,7 @@ export function AccountPage({
 						shouldShowOnboardingChecklist(onboardingChecklist))
 						? renderOnboardingBanner({ checklist: onboardingChecklist })
 						: null}
+					<AccountWorkspaceNote username={username} />
 					<AccountProfilePanel
 						{...{
 							email,

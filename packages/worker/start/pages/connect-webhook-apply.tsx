@@ -1,17 +1,18 @@
 /** @jsxImportSource @emotion/react */
+import { LoadingIndicator } from '../components/loading-indicator.tsx'
 import { connectWebhookInput } from '../connect-input.ts'
 import { approveWebhookApply, rejectWebhookApply } from '#start/server/connect'
 import { useMatchedPageScope } from '../use-matched-page-scope.ts'
 import { ErrorAgentPromptButton } from '../components/error-agent-prompt-button.tsx'
 import { buildHumanApprovalErrorAgentPrompt } from '#universal/error-agent-prompt-presets.ts'
 import { usePageInvalidation } from '../page-invalidation.ts'
-import { type CSSObject } from '@emotion/react'
+import type { CSSObject } from '@emotion/react'
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useRouteContext } from '@tanstack/react-router'
 import { connectWebhookApplyQuery } from '../connect-approval-queries.ts'
 
-import { type ConnectWebhookApplyLoaderData } from '#universal/loader-data.ts'
+import type { ConnectWebhookApplyLoaderData } from '#universal/loader-data.ts'
 
 import { colors, spacing } from '#universal/styles/tokens.ts'
 import {
@@ -83,12 +84,11 @@ export function ConnectWebhookApplyRoute({
 			invalidate: typeof invalidatePages
 			queryKey: ReturnType<typeof connectWebhookApplyQuery>['queryKey']
 		}) => {
-			const search = new URL(href, 'https://kody.local').searchParams
+			const { orgSlug, handle, fingerprint } = connectWebhookInput(
+				new URL(href, 'https://kody.local').search,
+			)
 			return (action === 'approve' ? approveWebhookApply : rejectWebhookApply)({
-				data: {
-					handle: search.get('handle') ?? '',
-					fingerprint: search.get('fingerprint') ?? '',
-				},
+				data: { orgSlug, handle: handle ?? '', fingerprint: fingerprint ?? '' },
 			})
 		},
 		onSuccess: async (payload, input) => {
@@ -174,9 +174,7 @@ export function ConnectWebhookApplyRoute({
 			) : null}
 
 			{!payload ? (
-				<p css={{ color: colors.textMuted, textAlign: 'center' }}>
-					Loading approval…
-				</p>
+				<LoadingIndicator label="Loading approval…" />
 			) : !payload.ok ? (
 				<section css={cardCss} data-testid="connect-webhook-apply-error">
 					<p css={{ margin: 0 }}>{payload.error}</p>

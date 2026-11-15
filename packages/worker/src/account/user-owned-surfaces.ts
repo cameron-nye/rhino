@@ -10,6 +10,7 @@ export type UserOwnedDurableObjectSurface = {
 		| 'stripe_plan_refresh'
 		| 'mailbox'
 		| 'repo_session_index'
+		| 'file_store'
 		| 'mcp'
 		| 'execution_context_session'
 	binding: string
@@ -43,6 +44,7 @@ export type UserOwnedKvKeyScheme = {
 		| 'published_bundle_artifact_kv_key'
 		| 'source_snapshot'
 		| 'source_manifest_snapshot'
+		| 'linked_artifact'
 		| 'community_snapshot'
 		| 'community_icon_derived_cache'
 		| 'identity_icon_derived_cache'
@@ -63,6 +65,7 @@ export type UserOwnedKvKeyScheme = {
 
 export type UserOwnedR2Surface = {
 	id:
+		| 'file_revision'
 		| 'email_raw_mime'
 		| 'email_attachment_storage_key'
 		| 'community_icon'
@@ -74,7 +77,10 @@ export type UserOwnedR2Surface = {
 	keyTemplate?: string
 	notes?: string
 } & (
-	| { binding: 'EMAIL_BLOBS' | 'COMMUNITY_ASSETS'; export: 'chunked_bytes' }
+	| {
+			binding: 'EMAIL_BLOBS' | 'COMMUNITY_ASSETS' | 'FILE_BLOBS'
+			export: 'chunked_bytes'
+	  }
 	| { binding: 'OPERATOR_BACKUPS'; export: 'exclude'; excludeReason: string }
 )
 
@@ -138,7 +144,7 @@ export const accountUserOwnedDurableObjectSurfaces: ReadonlyArray<UserOwnedDurab
 			deletionResultKey: 'runLogs',
 			export: 'include',
 			notes:
-				'Per-user RunLog DO (RUN_LOG binding; idFromName(userId)). Sole runtime authority for pruned run history (runs + run_logs), the keyed package-invocation idempotency ledger, and dedicated state: workflow_projections (binding_name, typically DYNAMIC_CALLABLE_WORKFLOWS; terminal rows age-prune after 90 days), job_run_observability (terminal outcomes/counters; D1 jobs keeps schedule + last_run_at/last_run_status for retention only), package_run_successes, activation_milestones, and content-free skill_reads (retained until account deletion, exported after activation milestones). There are no D1 tables workflow_runs, user_package_run_successes, or user_activation_milestones (pre-drop Time Travel bookmark 0000116d-000000d2-000050bd-c7ecd5892a189df7cda145af746bc9c9 on database 8c1014d1-6b41-4695-a0a2-159071f0f919). Run history self-prunes (~30 days / 2,000 runs); job/activation dedicated tables are never pruned. Account deletion clearAll deletes every DO table and reinitializes schema. Account export pages all tables through the run_records section (runs first, then ledger, then dedicated phases).',
+				'Per-user RunLog DO (RUN_LOG binding; idFromName(userId)). Sole runtime authority for pruned run history (runs + run_logs), the keyed package-invocation idempotency ledger, and dedicated state: workflow_projections (binding_name, typically DYNAMIC_CALLABLE_WORKFLOWS; terminal rows age-prune after 90 days), job_run_observability (terminal outcomes/counters; D1 jobs keeps schedule + last_run_at/last_run_status for retention only), package_run_successes, activation_milestones, and content-free skill_reads (retained until account deletion, exported after activation milestones). package_app_cpu_samples holds sampled package-app CPU/wall time for Activity (7 days / newest 5,000 rows, not billed, not exported). There are no D1 tables workflow_runs, user_package_run_successes, or user_activation_milestones (pre-drop Time Travel bookmark 0000116d-000000d2-000050bd-c7ecd5892a189df7cda145af746bc9c9 on database 8c1014d1-6b41-4695-a0a2-159071f0f919). Run history self-prunes (~30 days / 2,000 runs); job/activation dedicated tables are never pruned. Account deletion clearAll deletes every DO table and reinitializes schema. Account export pages all tables through the run_records section (runs first, then ledger, then dedicated phases).',
 		},
 		{
 			id: 'user_meter',
@@ -165,6 +171,14 @@ export const accountUserOwnedDurableObjectSurfaces: ReadonlyArray<UserOwnedDurab
 			export: 'include',
 			notes:
 				'Per-user authoritative email metadata and R2-reference inventory (MAILBOX binding; idFromName(userId)). Account export pages the sole USER email graph through exportMailbox. Account deletion lists Mailbox blob references before deleting R2 objects and purging the DO; D1 retains only thin provider, due-work, alert, and configuration rows.',
+		},
+		{
+			id: 'file_store',
+			binding: 'FILE_STORE',
+			deletionResultKey: 'fileStores',
+			export: 'include',
+			notes:
+				'Org file catalog, immutable revision manifest and quota coordinator. File bytes live in FILE_BLOBS by default or a configured provider. Purge deletes bytes before catalog state.',
 		},
 		{
 			id: 'repo_session_index',
@@ -229,6 +243,13 @@ export const accountUserOwnedKvKeySchemes: ReadonlyArray<UserOwnedKvKeyScheme> =
 			id: 'source_manifest_snapshot',
 			binding: 'BUNDLE_ARTIFACTS_KV',
 			prefixTemplate: 'source-manifest-snapshot:v1:{sourceId}:',
+		},
+		{
+			id: 'linked_artifact',
+			binding: 'BUNDLE_ARTIFACTS_KV',
+			prefixTemplate: 'linked-artifact:v1:{sourceId}:',
+			notes:
+				"Linked dependency modules of an uploaded build, stored once per published commit and content hash and referenced by that commit's bundle artifacts. Deleted with the commit's artifacts.",
 		},
 		{
 			id: 'community_snapshot',
@@ -310,6 +331,13 @@ export const accountUserOwnedKvKeySchemes: ReadonlyArray<UserOwnedKvKeyScheme> =
 	] as const
 
 export const accountUserOwnedR2Surfaces: ReadonlyArray<UserOwnedR2Surface> = [
+	{
+		id: 'file_revision',
+		binding: 'FILE_BLOBS',
+		export: 'chunked_bytes',
+		sourceTable: 'FileStore',
+		keyTemplate: 'files:v1/{ownerId}/{fileId}/{revisionId}',
+	},
 	{
 		id: 'email_raw_mime',
 		binding: 'EMAIL_BLOBS',

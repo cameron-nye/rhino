@@ -11,12 +11,14 @@ import {
 } from '#worker/test-support/console-spies.ts'
 import { ComputeOverageLimitError } from '#worker/entitlements/errors.ts'
 import { CredentialClientError } from '#worker/credentials/credential-client.ts'
+import { PackageSourceNotPublishedError } from '#worker/repo/source-not-published-error.ts'
 import {
 	packageAppRuntimeErrorHeader,
 	packageAppRuntimeRunIdHeader,
 } from './package-app-diagnostics.ts'
 import {
 	parsePackageAppCustomHostnamePath,
+	parsePackageAppPath,
 	parsePackageAppSubdomainPath,
 	servePackageAppRequest,
 	createPackageCodeRequest,
@@ -52,6 +54,35 @@ test('subdomain paths parse the short /{name} form and the legacy /packages/{nam
 		restPath: '/report',
 		mount: 'user-subdomain',
 	})
+})
+
+test('package app paths forward a trailing slash so apps never redirect to themselves', () => {
+	expect(
+		parsePackageAppSubdomainPath({
+			pathname: '/newsletter/admin/',
+			username: 'kody',
+		}),
+	).toMatchObject({ kodyId: 'newsletter', restPath: '/admin/' })
+	expect(
+		parsePackageAppSubdomainPath({
+			pathname: '/newsletter/admin',
+			username: 'kody',
+		}),
+	).toMatchObject({ kodyId: 'newsletter', restPath: '/admin' })
+	expect(
+		parsePackageAppSubdomainPath({ pathname: '/newsletter/', username: 'kody' })
+			?.restPath,
+	).toBe('/')
+	expect(
+		parsePackageAppPath('/@kody/packages/newsletter/admin/')?.restPath,
+	).toBe('/admin/')
+	expect(
+		parsePackageAppCustomHostnamePath({
+			pathname: '/admin/',
+			username: 'kody',
+			kodyId: 'newsletter',
+		}).restPath,
+	).toBe('/admin/')
 })
 
 test('subdomain paths never parse reserved first segments or a bare /packages', () => {
@@ -124,6 +155,19 @@ const mockModule = vi.hoisted(() => ({
 	openCredentialClient: vi.fn(async (..._args: Array<unknown>) => ({
 		token: 'credential-handle',
 	})),
+	resolveCachedArtifactSourceHead: vi.fn(
+		async (
+			..._args: Array<unknown>
+		): Promise<{
+			branch: string
+			commit: string | null
+		}> => ({ branch: 'main', commit: 'commit-1' }),
+	),
+}))
+
+vi.mock('#worker/repo/artifact-head-cache.ts', () => ({
+	resolveCachedArtifactSourceHead: (...args: Array<unknown>) =>
+		mockModule.resolveCachedArtifactSourceHead(...args),
 }))
 
 const cookieWarningMock = vi.hoisted(() => ({
@@ -160,6 +204,8 @@ vi.mock('#worker/package-registry/source.ts', async () => {
 	return {
 		...actual,
 		loadPackageSourceBySourceId: (...args: Array<unknown>) =>
+			mockModule.loadPackageSourceBySourceId(...args),
+		loadServingPackageSourceBySourceId: (...args: Array<unknown>) =>
 			mockModule.loadPackageSourceBySourceId(...args),
 	}
 })
@@ -1083,6 +1129,7 @@ test('/_assets/ serves the fingerprinted client module with immutable caching an
 	})
 	expect(await response.text()).toBe('export const hello = "hi"')
 	expect(mockModule.buildPackageAppWorker).not.toHaveBeenCalled()
+	expect(response.headers.get('Server-Timing')).toMatch(/\bassets;dur=/)
 
 	const revalidated = await asset(clientModuleName, {
 		headers: { 'If-None-Match': `"${clientModuleName}"` },
@@ -1662,4 +1709,102 @@ test('VCS probe paths 404 before building the package-app worker', async () => {
 	})
 	expect(response.status).toBe(404)
 	expect(mockModule.buildPackageAppWorker).not.toHaveBeenCalled()
+})
+
+function seedAppResponse(response: () => Response) {
+	mockModule.buildPackageAppWorker.mockResolvedValueOnce({
+		entrypointName: 'PackageAppWorker',
+		visit: { ticket: null, nonce: null },
+		stub: { getEntrypoint: () => ({ fetch: async () => response() }) },
+	})
+}
+
+const htmlPage = { headers: { accept: 'text/html' } }
+const headCommit = 'f'.repeat(40)
+
+test('a never-published package returns 503 "not published yet" without a host-setup report', async () => {
+	consoleError.mockImplementation(() => {})
+	seedFixture({ kodyId: 'never-published-app' })
+	mockModule.loadPublishedEntityManifest.mockRejectedValueOnce(
+		new PackageSourceNotPublishedError('source-never-published-app'),
+	)
+
+	const page = await serveHelloWorld({
+		kodyId: 'never-published-app',
+		init: htmlPage,
+	})
+	expect(page.status).toBe(503)
+	const text = await page.text()
+	expect(text).toContain('Package app not published yet')
+	expect(text).toContain('kody package publish @demo-user/never-published-app')
+	expect(consoleError).not.toHaveBeenCalledWith(
+		'Package app handler failed:',
+		expect.anything(),
+	)
+
+	mockModule.loadPublishedEntityManifest.mockRejectedValueOnce(
+		new PackageSourceNotPublishedError('source-never-published-app'),
+	)
+	const json = await serveHelloWorld({
+		kodyId: 'never-published-app',
+		dispatch: { synthetic: true },
+	})
+	expect(json.status).toBe(503)
+	await expect(json.json()).resolves.toMatchObject({
+		error: 'Package app not published yet',
+	})
+})
+
+test('an app 5xx page tells the owner when newer pushes are unpublished', async () => {
+	consoleError.mockImplementation(() => {})
+	seedFixture({ kodyId: 'stale-app' })
+	mockModule.resolveCachedArtifactSourceHead.mockResolvedValueOnce({
+		branch: 'main',
+		commit: headCommit,
+	})
+	seedAppResponse(
+		() => new Response('<h1>Something went wrong</h1>', { status: 500 }),
+	)
+
+	const page = await serveHelloWorld({ kodyId: 'stale-app', init: htmlPage })
+	expect(page.status).toBe(500)
+	const text = await page.text()
+	expect(text).toContain('Package app has unpublished changes')
+	expect(text).toContain(
+		`/@demo-user/stale-app/approve-publish?commit=${headCommit}`,
+	)
+	expect(text).toContain('commit-')
+	expect(text).not.toContain('Something went wrong')
+	expect(mockModule.resolveCachedArtifactSourceHead).toHaveBeenCalledWith(
+		expect.anything(),
+		'repo-stale-app',
+		expect.anything(),
+	)
+})
+
+test('an app 5xx passes through when HEAD is published, for JSON callers, and for non-owners', async () => {
+	consoleError.mockImplementation(() => {})
+	seedFixture({ kodyId: 'stale-app' })
+	seedAppResponse(() => new Response('app error', { status: 502 }))
+	const published = await serveHelloWorld({
+		kodyId: 'stale-app',
+		init: htmlPage,
+	})
+	expect(published.status).toBe(502)
+	await expect(published.text()).resolves.toBe('app error')
+
+	mockModule.resolveCachedArtifactSourceHead.mockClear()
+	seedAppResponse(() => Response.json({ error: 'nope' }, { status: 500 }))
+	const api = await serveHelloWorld({
+		kodyId: 'stale-app',
+		init: { headers: { accept: 'application/json' } },
+	})
+	expect(api.status).toBe(500)
+	await expect(api.json()).resolves.toEqual({ error: 'nope' })
+	expect(mockModule.resolveCachedArtifactSourceHead).not.toHaveBeenCalled()
+
+	seedAppResponse(() => new Response('ok'))
+	const ok = await serveHelloWorld({ kodyId: 'stale-app', init: htmlPage })
+	expect(ok.status).toBe(200)
+	expect(mockModule.resolveCachedArtifactSourceHead).not.toHaveBeenCalled()
 })

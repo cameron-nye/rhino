@@ -18,6 +18,9 @@ export const platformOwnedClassNames = [
 	'StripePlanRefresh',
 ] as const
 
+/** Platform classes that ship in their own migration tags after the v1 transfer. */
+export const platformInPlaceClassNames = ['FileStore', 'FileRoom'] as const
+
 export const runtimeOwnedClassNames = [
 	'StorageRunner',
 	'RunLog',
@@ -487,7 +490,20 @@ export function stripOriginCrossScriptClassBindings(
 		const durableObjects = asRecord(target.durable_objects)
 		const bindings = durableObjects?.bindings
 		if (Array.isArray(bindings)) {
-			for (const entry of bindings) {
+			// Native destination classes have no origin namespace to transfer.
+			// Omit them until their owning script has been created.
+			const bootstrapBindings = bindings.filter((entry) => {
+				const binding = asRecord(entry)
+				return !(
+					typeof binding?.script_name === 'string' &&
+					scriptNames.has(binding.script_name) &&
+					typeof binding.class_name === 'string' &&
+					!transferredClassNames.some((name) => name === binding.class_name)
+				)
+			})
+			if (durableObjects) durableObjects.bindings = bootstrapBindings
+
+			for (const entry of bootstrapBindings) {
 				const binding = asRecord(entry)
 				if (!binding) continue
 				if (

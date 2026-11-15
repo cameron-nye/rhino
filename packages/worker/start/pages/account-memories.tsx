@@ -1,11 +1,12 @@
 /** @jsxImportSource @emotion/react */
+import { createUiFeedback, type UiFeedback } from '#client/ui-feedback.ts'
 import { createListDetailLinks } from '#client/list-detail-route.ts'
 import { matchesSearchQuery } from '#client/search-filter.ts'
 import { toast } from '#client/toast.ts'
 import { deleteAccountMemory } from '#start/server/account-mutations'
-import {
-	type AccountMemoriesLoaderData,
-	type AccountMemoryListItem,
+import type {
+	AccountMemoriesLoaderData,
+	AccountMemoryListItem,
 } from '#universal/loader-data.ts'
 import { buildMemoriesExportFilename } from '#universal/memory-export.ts'
 import { relocateAccountHref } from '#universal/org-pages.ts'
@@ -122,8 +123,12 @@ export function AccountMemoriesPage({
 	const memories = payload.memories
 	const selectedMemory = payload.selectedMemory
 	const legacyReadOnly = payload.legacyReadOnly
-	const [message, setMessage] = useState<string | null>(null)
-	const [messageTone, setMessageTone] = useState<MessageTone>('info')
+	const [feedback, setFeedback] = useState<UiFeedback | null>(() =>
+		createUiFeedback(null, 'info'),
+	)
+	const message = feedback?.message ?? null
+	const messageTone = feedback?.tone ?? 'info'
+
 	const [deleteMode, setDeleteMode] = useState<DeleteMode>(null)
 	const invalidatePages = usePageInvalidation(mutationResources)
 	const captureSubmitter = useSubmitterScope()
@@ -197,8 +202,7 @@ export function AccountMemoriesPage({
 	}
 
 	function showMessage(nextMessage: string | null, tone: MessageTone = 'info') {
-		setMessage(nextMessage)
-		setMessageTone(tone)
+		setFeedback(createUiFeedback(nextMessage, tone))
 	}
 
 	function clearDeleteMode() {

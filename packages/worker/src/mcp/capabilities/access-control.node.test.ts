@@ -1,3 +1,4 @@
+import { filesDomain } from './files/domain.ts'
 import { personIdFromStored } from '@kody-internal/shared/owner-person-ids.ts'
 import { expect, test, vi } from 'vitest'
 import { createMcpCallerContext } from '#mcp/context.ts'
@@ -7,7 +8,7 @@ import {
 } from '#universal/feature-flags/registry.ts'
 import type * as FeatureFlagExposure from '#worker/feature-flags/exposure.ts'
 import type * as FeatureFlagService from '#worker/feature-flags/service.ts'
-import { type FeatureFlagEvaluation } from '#worker/feature-flags/service.ts'
+import type { FeatureFlagEvaluation } from '#worker/feature-flags/service.ts'
 import { testStableUserIdFromEmail } from '#worker/test-support/stable-user-id.ts'
 import {
 	assertCallerCanAccessCapability,
@@ -19,8 +20,8 @@ import {
 	resolveCallerFeatureFlags,
 	type CallerFeatureFlags,
 } from './access-control.ts'
-import { type BuiltCapabilityRegistry } from './build-capability-registry.ts'
-import { type Capability } from './types.ts'
+import type { BuiltCapabilityRegistry } from './build-capability-registry.ts'
+import type { Capability } from './types.ts'
 
 const flagMocks = vi.hoisted(() => ({
 	getFeatureFlagEvaluationsForUser:
@@ -52,6 +53,7 @@ vi.mock('#worker/feature-flags/exposure.ts', async (importOriginal) => {
 
 function createFlagMap(enabled: boolean): CallerFeatureFlags {
 	return {
+		'files-workspace': false,
 		'demo-indicator': enabled,
 		profiles: false,
 		'mcp-skills-extension': false,
@@ -59,6 +61,7 @@ function createFlagMap(enabled: boolean): CallerFeatureFlags {
 		'package-credential-suppliers': false,
 		'repo-push-queue': false,
 		'execution-contexts': false,
+		'publish-offload': false,
 		'credential-need-enforcement': false,
 		'credential-allowed-packages-safety-window': false,
 	}
@@ -550,4 +553,23 @@ test('an unresolved flag user is not cached across requests', async () => {
 	const present = await resolveCallerFeatureFlags(env, caller())
 	expect(present.profiles).toBe(true)
 	expect(flagMocks.getFeatureFlagEvaluationsForUser).toHaveBeenCalledTimes(1)
+})
+
+test('workspace file capabilities are hidden and denied when Files is off', async () => {
+	const disabledFlags = createFlagMap(false)
+	const registry = createRegistry([...filesDomain.capabilities, open])
+	const filtered = filterCapabilityRegistryForCaller(
+		registry,
+		callerContext,
+		disabledFlags,
+	)
+	for (const capability of filesDomain.capabilities) {
+		expect(filtered.capabilityMap[capability.name]).toBeUndefined()
+		await expect(
+			assertCallerCanAccessCapability(callerContext, capability, {
+				featureFlags: disabledFlags,
+			}),
+		).rejects.toThrow(/files-workspace/)
+	}
+	expect(filtered.capabilityMap.example_open).toBeTruthy()
 })

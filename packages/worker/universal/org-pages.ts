@@ -1,5 +1,5 @@
 import { dnsSafeUsernamePattern } from '@kody-internal/shared/public-urls.ts'
-import { type OrgRole } from '@kody-internal/shared/request-context.ts'
+import type { OrgRole } from '@kody-internal/shared/request-context.ts'
 
 /**
  * Account sections that own organization resources. Person pages (login,
@@ -10,9 +10,11 @@ import { type OrgRole } from '@kody-internal/shared/request-context.ts'
 const orgOwnedAccountSections = [
 	'activity',
 	'agents',
+	'apps',
 	'credentials',
 	'email',
 	'execution-contexts',
+	'files',
 	'follows',
 	'integrations',
 	'jobs',
@@ -37,6 +39,7 @@ const orgOwnedSectionSet: ReadonlySet<string> = new Set(orgOwnedAccountSections)
  * Other nested paths stay on other routes.
  */
 const exactOrgSections: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+	['apps', new Set<string>()],
 	['follows', new Set<string>()],
 	['repositories', new Set(['new'])],
 	['webhooks', new Set<string>()],
@@ -126,7 +129,9 @@ export function orgOwnedSectionForPath(
  * sections), so billing binds team organizations as well as the signup one.
  */
 export function parseOrgBillingPath(pathname: string): { slug: string } | null {
-	const match = /^\/@([^/]+)\/-\/billing(?:\/success)?\/?$/.exec(pathname)
+	const match = /^\/@([^/]+)\/-\/billing(?:\/success|\/move-plan)?\/?$/.exec(
+		pathname,
+	)
 	const slug = match?.[1] ?? ''
 	return isOrganizationSlug(slug) ? { slug } : null
 }
@@ -217,7 +222,7 @@ export function orgOverviewPath(slug: string) {
  * show; the billing routes authorize every request.
  */
 export function orgRoleManagesBilling(role: OrgRole | null) {
-	return role === 'owner' || role === 'billing'
+	return role === 'owner' || role === 'admin' || role === 'billing'
 }
 
 /** Slug of `/@slug` or `/@slug/...`, when the first segment is a handle. */
@@ -317,19 +322,20 @@ const orgManagementSectionSet: ReadonlySet<string> = new Set(
 )
 
 /**
- * `/@acme/-/settings`, members, teams, grants, and collaborators. Uses the same `/-/` separator as other
- * org pages so they cannot collide with `/@owner/<kody-id>`. Not an
- * `orgOwnedAccountSection`.
+ * `/@acme/-/settings`, members, teams, grants, and collaborators, including
+ * Access pages (`/grants/user/<id>`, `/grants/team/<id>`, `/grants/everyone`).
+ * Uses the same `/-/` separator as other org pages so they cannot collide
+ * with `/@owner/<kody-id>`. Not an `orgOwnedAccountSection`.
  */
 export function parseOrgManagementPath(
 	pathname: string,
 ): { slug: string; section: OrgManagementSection } | null {
 	const match = new RegExp(
-		`^/@([^/]+)/${orgPageSeparator}/(settings|members|teams|grants|collaborators)/?$`,
+		`^/@([^/]+)/${orgPageSeparator}/(settings|members|teams|collaborators|grants(?:/user/[^/.]+|/team/[^/.]+|/everyone)?)/?$`,
 	).exec(pathname)
 	if (!match) return null
 	const slug = match[1] ?? ''
-	const section = match[2]
+	const section = match[2]?.replace(/\/(?:user\/.*|team\/.*|everyone)$/, '')
 	if (
 		!isOrganizationSlug(slug) ||
 		!section ||
@@ -373,6 +379,21 @@ export function orgTeamsPath(slug: string) {
 
 export function orgGrantsPath(slug: string) {
 	return `/@${slug}/${orgPageSeparator}/grants`
+}
+
+/** Per-person Access: `/@slug/-/grants/user/<userId>`. */
+export function orgGrantAccessPath(slug: string, userId: string) {
+	return `/@${slug}/${orgPageSeparator}/grants/user/${encodeURIComponent(userId)}`
+}
+
+/** Per-team Access: `/@slug/-/grants/team/<teamId>`. */
+export function orgTeamGrantAccessPath(slug: string, teamId: string) {
+	return `/@${slug}/${orgPageSeparator}/grants/team/${encodeURIComponent(teamId)}`
+}
+
+/** Everyone-in-org Access: `/@slug/-/grants/everyone`. */
+export function orgEveryoneGrantAccessPath(slug: string) {
+	return `/@${slug}/${orgPageSeparator}/grants/everyone`
 }
 
 export function orgCollaboratorsPath(slug: string) {
@@ -434,6 +455,8 @@ export function orgRoleLabel(role: OrgRole | null) {
 	switch (role) {
 		case 'owner':
 			return 'Owner'
+		case 'admin':
+			return 'Admin'
 		case 'member':
 			return 'Member'
 		case 'billing':

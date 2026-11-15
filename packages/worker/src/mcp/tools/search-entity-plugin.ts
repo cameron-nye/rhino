@@ -1,18 +1,18 @@
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
-import { type getCapabilityRegistryForContext } from '#mcp/capabilities/registry.ts'
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import type { getCapabilityRegistryForContext } from '#mcp/capabilities/registry.ts'
 
-import {
-	type SearchEntityDetail,
-	type SearchEntityDetailStructured,
-	type SearchMatch,
-	type SlimSearchMatch,
+import type {
+	SearchEntityDetail,
+	SearchEntityDetailStructured,
+	SearchMatch,
+	SlimSearchMatch,
 } from './search-format-types.ts'
-import {
-	type OptionalSearchRowsResult,
-	type SearchCandidate,
-	type SearchPhaseTimings,
+import type {
+	OptionalSearchRowsResult,
+	SearchCandidate,
+	SearchPhaseTimings,
 } from './search-types.ts'
-import { type SearchableEntityDescriptor } from './understand-search-query.ts'
+import type { SearchableEntityDescriptor } from './understand-search-query.ts'
 
 export type SearchEntityCandidateInput = {
 	env: Env
@@ -61,6 +61,12 @@ export type SearchEntitySlimFormatInput<
 	username?: string | null
 }
 
+export type SearchEntityDetailFormatOptions = {
+	includeBoilerplate?: boolean
+	/** Batch entry whose shared metadata an earlier entry already showed. */
+	omitSharedMetadata?: boolean
+}
+
 export type SearchEntityDetailFormatResult = {
 	markdown: string
 	structured: SearchEntityDetailStructured
@@ -83,6 +89,6 @@ export type SearchEntityPlugin<Type extends SearchMatch['type']> = {
 	) => SlimSearchMatch
 	formatEntityDetail?: (
 		detail: Extract<SearchEntityDetail, { type: Type }>,
-		options?: { includeBoilerplate?: boolean },
+		options?: SearchEntityDetailFormatOptions,
 	) => SearchEntityDetailFormatResult
 }

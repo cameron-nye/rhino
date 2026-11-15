@@ -1,17 +1,31 @@
 import { resolveTransactionalSenderReplyTo } from '@kody-internal/shared/transactional-sender-reply-to.ts'
-import { sendCloudflareEmail } from '#app/email/cloudflare-email.ts'
+import {
+	cloudflareCustomHeaderProblem,
+	cloudflareRequestRejectionMessage,
+	sendCloudflareEmail,
+} from '#app/email/cloudflare-email.ts'
 import { McpCallerError } from '#mcp/caller-error.ts'
-import { normalizeEmailAddress } from './address.ts'
+import { normalizeAddrSpec, normalizeHeaderMailbox } from './address.ts'
+import {
+	loadRecipientSuppression,
+	recipientSuppressedMessage,
+} from './recipient-suppression.ts'
 import { getSystemEmailDomain } from './platform-address.ts'
 import {
 	consumeSystemEmailDailySend,
 	isSystemEmailLocal,
 	refundSystemEmailDailySend,
 	systemEmailLocals,
+	systemEmailLimits,
+	transactionalSystemEmailLocals,
 	type SystemEmailLocal,
 } from './system-email.ts'
 import { dispatchSystemEmailSentSubscriptionEvent } from './system-email-sent-package-subscriptions.ts'
 import { buildSystemEmailSentEvent } from './system-email-sent-subscription-event.ts'
+import {
+	recordSystemEmailSends,
+	systemEmailOperatorSendKind,
+} from './system-email-sends.ts'
 
 type SystemOutboundEnv = Pick<
 	Env,
@@ -65,7 +79,7 @@ function resolveRecipients(to: string | Array<string>): Array<string> {
 	const values = Array.isArray(to) ? to : [to]
 	const recipients: Array<string> = []
 	for (const value of values) {
-		const address = normalizeEmailAddress(value)
+		const address = normalizeHeaderMailbox(value)
 		if (!address) {
 			throw new McpCallerError(`Invalid recipient email address: ${value}`)
 		}
@@ -96,8 +110,13 @@ function resolveRecipients(to: string | Array<string>): Array<string> {
  * caller passes an explicit `replyTo`. Callers are responsible for the
  * authorization check — today only admin-gated, audit-logged capabilities
  * and internal platform alerts reach it.
+ *
+ * Every send is recorded in `system_email_sends` so delivery reports match
+ * it, and a recipient fully suppressed after repeated hard bounces is
+ * refused before the counter is consumed (`adminEmailSuppressionClear`
+ * lifts it).
  */
-export async function sendSystemEmail(input: {
+type SystemEmailInput = {
 	env: SystemOutboundEnv
 	/** Reserved system local part; defaults to the `kody` sender. */
 	localPart?: SystemEmailLocal
@@ -107,9 +126,50 @@ export async function sendSystemEmail(input: {
 	html?: string | null
 	replyTo?: string | null
 	headers?: Record<string, string>
+	/** Send kind recorded for delivery-report matching. */
+	kind?: string
 	now?: Date
 	waitUntil?: (promise: Promise<unknown>) => void
-}): Promise<SystemOutboundResult> {
+}
+
+export async function sendSystemEmail(
+	input: SystemEmailInput,
+): Promise<SystemOutboundResult> {
+	if (
+		!transactionalSystemEmailLocals.includes(
+			(input.localPart ??
+				'kody') as (typeof transactionalSystemEmailLocals)[number],
+		)
+	) {
+		throw new McpCallerError(
+			`Unknown system sender "${input.localPart}". This sender is not available for transactional system email.`,
+		)
+	}
+	return sendReservedEmail(input, false)
+}
+
+// Newsletter volume and complaints use a dedicated sender and quota, separate
+// from transactional correspondence.
+export async function sendNewsletterEmail(
+	input: Omit<SystemEmailInput, 'localPart' | 'replyTo' | 'kind' | 'to'> & {
+		to: string
+	},
+): Promise<SystemOutboundResult> {
+	if (typeof input.to !== 'string' || !normalizeAddrSpec(input.to)) {
+		throw new McpCallerError(
+			'One newsletter recipient email address is required.',
+		)
+	}
+	return sendReservedEmail(
+		{ ...input, localPart: 'news', kind: 'whats_new' },
+		true,
+	)
+}
+
+async function sendReservedEmail(
+	input: SystemEmailInput,
+	newsletter: boolean,
+): Promise<SystemOutboundResult> {
 	const localPart = input.localPart ?? 'kody'
 	if (!isSystemEmailLocal(localPart)) {
 		throw new McpCallerError(
@@ -131,27 +191,45 @@ export async function sendSystemEmail(input: {
 	if (!text && !html) {
 		throw new McpCallerError('Email text or HTML body is required.')
 	}
+	const headerProblem = cloudflareCustomHeaderProblem(input.headers)
+	if (headerProblem) throw new McpCallerError(headerProblem)
 	const explicitReplyTo = input.replyTo
-		? normalizeEmailAddress(input.replyTo)
+		? normalizeHeaderMailbox(input.replyTo)
 		: null
 	if (input.replyTo && !explicitReplyTo) {
 		throw new McpCallerError(`Invalid reply-to address: ${input.replyTo}`)
 	}
-	const replyTo =
-		resolveTransactionalSenderReplyTo({
-			from,
-			replyTo: explicitReplyTo,
-		}) ?? null
+	const replyTo = newsletter
+		? `kent@${domain}`
+		: (resolveTransactionalSenderReplyTo({
+				from,
+				replyTo: explicitReplyTo,
+			}) ?? null)
+
+	for (const recipient of to) {
+		const suppression = await loadRecipientSuppression({
+			db: input.env.APP_DB,
+			recipient,
+		})
+		if (suppression?.scope === 'all') {
+			throw new McpCallerError(`${recipient}: ${recipientSuppressedMessage}`)
+		}
+	}
 
 	const now = input.now ?? new Date()
 	const consumed = await consumeSystemEmailDailySend({
 		db: input.env.APP_DB,
 		localPart,
 		now,
+		limit: newsletter
+			? systemEmailLimits.maxNewsletterSendsPerDay
+			: systemEmailLimits.maxSendsPerDay,
 	})
 	if (consumed === null) {
 		throw new McpCallerError(
-			`Daily system email send limit reached for ${from}. Try again tomorrow.`,
+			newsletter
+				? `Daily newsletter send limit (${systemEmailLimits.maxNewsletterSendsPerDay}) reached for ${from}. Try again tomorrow.`
+				: `Daily system email send limit reached for ${from}. Try again tomorrow.`,
 		)
 	}
 
@@ -162,10 +240,12 @@ export async function sendSystemEmail(input: {
 				accountId: input.env.CLOUDFLARE_ACCOUNT_ID,
 				apiBaseUrl: input.env.CLOUDFLARE_API_BASE_URL,
 				apiToken: input.env.CLOUDFLARE_API_TOKEN,
+				retryTransportErrors: !newsletter,
 			},
 			{
 				to: to.length === 1 ? to[0]! : to,
 				from,
+				...(newsletter ? { fromName: 'Kent from Kody' } : {}),
 				subject,
 				html: html ?? htmlFromText(text ?? ''),
 				text: text ?? undefined,
@@ -187,6 +267,8 @@ export async function sendSystemEmail(input: {
 			localPart,
 			now,
 		})
+		const rejection = cloudflareRequestRejectionMessage(result)
+		if (rejection) throw new McpCallerError(rejection)
 		throw new Error(
 			result.skipped
 				? 'System email was skipped because no Cloudflare Email credentials are configured.'
@@ -194,6 +276,14 @@ export async function sendSystemEmail(input: {
 		)
 	}
 	const providerMessageId = result.messageId ?? null
+	await recordSystemEmailSends({
+		db: input.env.APP_DB,
+		providerMessageId,
+		recipients: to,
+		sender: from,
+		kind: input.kind ?? systemEmailOperatorSendKind,
+		now,
+	})
 	const resolvedHtml = html ?? htmlFromText(text ?? '')
 	try {
 		await dispatchSystemEmailSentSubscriptionEvent({

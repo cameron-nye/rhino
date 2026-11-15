@@ -1,4 +1,17 @@
 /** @jsxImportSource @emotion/react */
+import { uiState, sendUiEvent } from '#client/ui-actor.ts'
+import {
+	useCallback,
+	useEffect,
+	useId,
+	useRef,
+	useState,
+	type CSSProperties,
+	type FormEvent,
+} from 'react'
+import { useActor } from '@xstate/react'
+import { loginState, type AuthFormState } from '#client/routes/login-state.ts'
+import type { LifecycleStateOf } from '@kody-internal/shared/state-machine.ts'
 import { useServerFn } from '@tanstack/react-start'
 import {
 	getHandleFormatError,
@@ -36,23 +49,16 @@ import { packageAppDeviceSignInTarget } from '#universal/package-app-oauth-paths
 import { normalizeRedirectTo } from '#universal/safe-redirect.ts'
 import { getGhostButtonCss } from '#universal/styles/style-primitives.ts'
 import { colors } from '#universal/styles/tokens.ts'
-import { type CSSObject } from '@emotion/react'
+import type { CSSObject } from '@emotion/react'
 import { handlePermanenceConfirmMessage } from '@kody-internal/shared/handle-permanence.ts'
 import {
 	startAuthentication,
 	WebAuthnAbortService,
 } from '@simplewebauthn/browser'
-import {
-	useEffect,
-	useId,
-	useRef,
-	useState,
-	type CSSProperties,
-	type FormEvent,
-} from 'react'
 import { AuthFormFallback } from '../components/auth-form-fallback.tsx'
 import { AuthLayout } from '../components/auth-layout.tsx'
 import {
+	AccountDeviceSignInOption,
 	DeviceSignInOption,
 	HumanCheckHelp,
 } from '../components/device-sign-in-option.tsx'
@@ -61,13 +67,21 @@ import { ProviderIcon } from '../components/provider-icons.tsx'
 import { SiteLink } from '../components/site-link.tsx'
 import { useHydrated } from '../components/use-hydrated.ts'
 import { useSocialSignIn, type PublicAuthConfig } from '../social-sign-in.ts'
-import { type UsernameAvailabilityView } from '../components/username-choice-field.tsx'
+import type { UsernameAvailabilityView } from '../components/username-choice-field.tsx'
 import { AuthForm, formMessageCss } from './login-sections.tsx'
-
-export type AuthStatus = 'idle' | 'submitting' | 'success' | 'error'
+/**
+ * Display status for `/login` and `/signup`. `confirming` (username
+ * permanence) is a `login.form` machine state; the page shows it as idle plus
+ * a message from `CONFIRM_USERNAME`.
+ */
+export type AuthStatus = Exclude<
+	LifecycleStateOf<typeof loginState>,
+	'confirming'
+>
 function buildAuthPath(mode: 'login' | 'signup', redirectTo: string | null) {
 	return buildAuthLink(mode === 'signup' ? '/signup' : '/login', redirectTo)
 }
+/** Password, provider, and passkey sign-in/sign-up. Uses `login.form`. */
 export function LoginPage({
 	mode,
 	currentHref,
@@ -86,8 +100,19 @@ export function LoginPage({
 		webauthnAuthenticationVerifyFn,
 	)
 	const hydrated = useHydrated()
-	const [status, setStatus] = useState<AuthStatus>('idle')
-	const [message, setMessage] = useState<string | null>(null)
+	const [flowSnapshot, , flowActor] = useActor(loginState)
+	const flow = uiState<AuthFormState>(flowSnapshot)
+	const transition = useCallback(
+		(event: Parameters<typeof flowActor.send>[0]) =>
+			sendUiEvent(flowActor, event),
+		[flowActor],
+	)
+	const getFlow = useCallback(
+		() => uiState<AuthFormState>(flowActor.getSnapshot()),
+		[flowActor],
+	)
+	const status = flow.status === 'confirming' ? 'idle' : flow.status
+	const message = 'message' in flow ? flow.message : null
 	// The `formError` query from a plain HTML post stays until the next edit.
 	const [formErrorDismissed, setFormErrorDismissed] = useState(false)
 	const [signupUsername, setSignupUsername] = useState('')
@@ -119,31 +144,32 @@ export function LoginPage({
 			WebAuthnAbortService.cancelCeremony()
 		}
 	}, [mode, currentHref, turnstileSiteKey])
-	function setState(nextStatus: AuthStatus, nextMessage: string | null = null) {
-		if (lifecycle.current?.signal.aborted) return
-		setStatus(nextStatus)
-		setMessage(nextMessage)
+	function sendFormEvent(event: Parameters<typeof flowActor.send>[0]) {
+		if (lifecycle.current?.signal.aborted) return false
+		const accepted = transition(event)
+		return accepted
 	}
 
 	/**
 	 * Report a failure that came back from the server. The challenge token the
 	 * request carried is spent (Turnstile tokens are single-use), and the form
-	 * stays mounted for another try, so it needs a fresh one. Plain `setState`
+	 * stays mounted for another try, so it needs a fresh one. Validation feedback
 	 * still covers client-side validation, where nothing was sent and the
 	 * token the user already solved is still good.
 	 */
 	function setSubmitError(nextMessage: string) {
 		if (lifecycle.current?.signal.aborted) return
 		resetTurnstileWidgets()
-		setState('error', nextMessage)
+		sendFormEvent({ type: 'RESPONSE_ERROR', data: { message: nextMessage } })
 	}
 
 	function clearFieldError() {
-		if (status === 'error') setState('idle')
+		if (status === 'error') sendFormEvent({ type: 'RESET', data: {} })
 	}
 
 	async function handleSubmit(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault()
+		if (getFlow().status === 'submitting') return
 		setFormErrorDismissed(true)
 		if (!(event.currentTarget instanceof HTMLFormElement)) return
 		const form = event.currentTarget
@@ -154,6 +180,7 @@ export function LoginPage({
 		const username =
 			mode === 'signup' ? String(formData.get('username') ?? '').trim() : ''
 		const rememberMe = mode === 'login' && formData.get('rememberMe') === 'on'
+		const whatsNewEmailOptIn = formData.get('whatsNewEmailOptIn') === 'on'
 		const protection = readPublicFormProtection(formData, form)
 
 		const clientValidation = validateAuthFormFields({
@@ -164,7 +191,10 @@ export function LoginPage({
 		})
 		if (clientValidation) {
 			if (clientValidation.field === 'username') usernameTouched.current = true
-			setState('error', clientValidation.message)
+			sendFormEvent({
+				type: 'VALIDATION_ERROR',
+				data: { message: clientValidation.message },
+			})
 			return
 		}
 
@@ -174,25 +204,36 @@ export function LoginPage({
 				usernameAvailability.status === 'reserved' ||
 				usernameAvailability.status === 'invalid'
 			) {
-				setState(
-					'error',
-					usernameAvailability.reason ?? 'That username cannot be used.',
-				)
+				sendFormEvent({
+					type: 'VALIDATION_ERROR',
+					data: {
+						message:
+							usernameAvailability.reason ?? 'That username cannot be used.',
+					},
+				})
 				return
 			}
 			if (confirmedUsername !== username.toLowerCase()) {
 				setConfirmedUsername(username.toLowerCase())
 				setSignupUsername(username)
-				setState('idle', handlePermanenceConfirmMessage(username.toLowerCase()))
+				sendFormEvent({
+					type: 'CONFIRM_USERNAME',
+					data: {
+						message: handlePermanenceConfirmMessage(username.toLowerCase()),
+					},
+				})
 				return
 			}
 			if (usernameAvailability.status === 'checking') {
-				setState('error', 'Wait for the availability check to finish.')
+				sendFormEvent({
+					type: 'VALIDATION_ERROR',
+					data: { message: 'Wait for the availability check to finish.' },
+				})
 				return
 			}
 		}
 
-		setState('submitting')
+		if (!sendFormEvent({ type: 'SUBMIT', data: {} })) return
 
 		try {
 			const attribution =
@@ -208,6 +249,7 @@ export function LoginPage({
 					...(mode === 'signup'
 						? {
 								username,
+								whatsNewEmailOptIn,
 								redirectTo: redirectTo,
 								...serializeFirstTouchAttributionForTransport(attribution),
 							}
@@ -261,7 +303,7 @@ export function LoginPage({
 	}
 
 	async function handleProviderSignIn(providerId: string) {
-		setState('submitting')
+		if (!sendFormEvent({ type: 'SUBMIT', data: {} })) return
 		try {
 			const authForm = document.querySelector<HTMLFormElement>(
 				'form[data-public-auth-form]',
@@ -287,7 +329,7 @@ export function LoginPage({
 	}
 
 	async function handlePasskeySignIn() {
-		setState('submitting')
+		if (!sendFormEvent({ type: 'SUBMIT', data: {} })) return
 
 		try {
 			const optionsPayload = await webauthnAuthenticationOptions({ data: {} })
@@ -297,7 +339,10 @@ export function LoginPage({
 				optionsPayload?.ok !== true ||
 				!optionsPayload.options
 			) {
-				setState('error', 'Unable to start passkey sign-in.')
+				sendFormEvent({
+					type: 'RESPONSE_ERROR',
+					data: { message: 'Unable to start passkey sign-in.' },
+				})
 				return
 			}
 
@@ -307,7 +352,7 @@ export function LoginPage({
 					optionsJSON: optionsPayload.options,
 				})
 			} catch {
-				setState('idle')
+				sendFormEvent({ type: 'CANCEL', data: {} })
 				return
 			}
 
@@ -362,10 +407,14 @@ export function LoginPage({
 	const deviceSignInTarget = !isSignupMode(mode)
 		? packageAppDeviceSignInTarget(redirectTo)
 		: null
+	// Any other sign-in can approve this browser for the full Kody account
+	// from a device that is already signed in.
+	const accountDeviceSignIn = !isSignupMode(mode) && !deviceSignInTarget
+	const deviceSignIn = Boolean(deviceSignInTarget) || accountDeviceSignIn
 	const formErrorMessage =
 		!formErrorDismissed && !message && status === 'idle'
 			? authFormErrorMessage(searchParams.get('formError'), {
-					deviceSignIn: Boolean(deviceSignInTarget),
+					deviceSignIn,
 				})
 			: null
 	const isSignup = mode === 'signup'
@@ -432,7 +481,7 @@ export function LoginPage({
 					setConfirmedUsername(null)
 					// Format errors stay in UsernameChoiceField; keep the form
 					// message for submit / confirm copy only.
-					setState('idle')
+					sendFormEvent({ type: 'CANCEL', data: {} })
 				}}
 				onUsernameAvailabilityChange={setUsernameAvailability}
 				submitLabel={submitLabel}
@@ -446,12 +495,12 @@ export function LoginPage({
 				}}
 			/>
 
-			{turnstileSiteKey ? (
-				<HumanCheckHelp deviceSignIn={Boolean(deviceSignInTarget)} />
-			) : null}
+			{turnstileSiteKey ? <HumanCheckHelp deviceSignIn={deviceSignIn} /> : null}
 
 			{deviceSignInTarget ? (
 				<DeviceSignInOption target={deviceSignInTarget} rise={2} />
+			) : accountDeviceSignIn ? (
+				<AccountDeviceSignInOption redirectTo={redirectTo} rise={2} />
 			) : null}
 
 			{showSocial ? (
@@ -493,10 +542,10 @@ export function LoginPage({
 					isSignup
 						? 'JavaScript is off. Creating an account needs JavaScript. If you already have an account, sign in instead.'
 						: turnstileSiteKey
-							? deviceSignInTarget
+							? deviceSignIn
 								? 'JavaScript is off. Email and password sign-in needs a quick human check that uses JavaScript, so use Sign in on another device, or turn JavaScript on.'
 								: 'JavaScript is off. Email and password sign-in needs a quick human check that uses JavaScript, so turn JavaScript on to sign in.'
-							: deviceSignInTarget
+							: deviceSignIn
 								? 'JavaScript is off. Sign in with your email and password, or use Sign in on another device. Passkeys and social sign-in need JavaScript.'
 								: 'JavaScript is off. Sign in with your email and password. Passkeys and social sign-in need JavaScript.'
 				}

@@ -22,6 +22,9 @@ always there as the fallback.
 Use one when code needs something only a machine has: a folder on disk, a device
 on your local network, or a tool installed there.
 
+> [!WATCH] https://www.youtube.com/watch?v=i5qCOaIiYc8 Watch: Where Kody code
+> runs: the cloud, your laptop, or your own machine
+
 > [!NOTE] Execution contexts are an experiment, off until you turn them on at
 > [Experiments](https://kody.codes/account/experiments). An agent can turn them
 > on for you with `experimentSet` (see How to turn it on below).
@@ -35,9 +38,9 @@ The context's runtime allowlist, if you set one, narrows what runs on it may
 call. Three things are added, and only when you allow them:
 
 - **Host folders.** Folders you allow with `kody context policy allow` (and that
-  the context's grant includes) are mounted for the run.
-- **Local network.** With egress set to `public-and-lan`, the run can reach
-  devices on your network.
+  the context's server grant includes) are mounted for the run.
+- **Local network.** With the server grant's egress set to `public-and-lan`
+  (`kody context grant lan on`), the run can reach devices on your network.
 - **Host commands.** After you turn them on at the machine, runs with the
   command grant can run shell commands there (see
   [Run commands on the machine](#run-commands-on-the-machine)).
@@ -46,6 +49,20 @@ Credentials stay in Kody cloud and never reach the machine. When code on your
 machine calls a service with a credential, that request leaves from Kody cloud,
 which adds the credential on the way out. The machine sees the response, not the
 credential.
+
+### Storage on a machine
+
+A context has no scratch storage. Ad hoc `execute` there has no
+`packageStorage()`, the same as on Kody cloud: the call throws. A published
+package you import (`import x from 'kody:@scope/package/export'`) uses its real
+hosted bucket, the one its cloud runs read and write. Each storage call (`get`,
+`set`, `list`, `sql`, and the rest) is a separate network round trip from the
+machine to Kody cloud, so a loop of small calls is much slower than the same
+loop on Kody cloud; batch work into fewer `sql` calls. A test that runs an
+imported package on a context touches that package's real data. For scratch
+storage, run the package's own code from its checkout under `kody dev` or
+`execute --target mock` (see
+[Local testing with `kody dev`](./package-apps.md#local-testing-with-kody-dev)).
 
 ## Set up a machine
 
@@ -56,6 +73,11 @@ credential.
    npm install -g @kodycodes/cli
    kody login
    ```
+
+   From the **Kody desktop app**, while you are already signed in there, machine
+   setup can approve that login in a sandboxed app window (**Continue to
+   approve**). Closing the window cancels. Otherwise the CLI opens the system
+   browser, or use `kody login --device` / `--no-browser` on a remote machine.
 
 3. Register the machine, give it a name, and install the daemon as a background
    service so it keeps running after reboots and crashes:
@@ -68,11 +90,27 @@ credential.
    `--no-install` to skip the service and run `kody daemon` in a terminal
    instead, or `--yes` to accept the defaults without prompts.
 
-4. Optional: allow folders runs may use (read-only unless you pass `rw`):
+4. Optional: allow folders runs may use (read-only unless you pass `rw`). A
+   folder needs both layers, so run both commands:
 
    ```sh
    kody context policy allow ~/projects --mode rw
+   kody context grant allow ~/projects --mode rw
    ```
+
+   - **Local policy** (`kody context policy`) lives on this machine, and only
+     the machine owner changes it. It is the ceiling for what any run here may
+     touch.
+   - **Server grant** (`kody context grant`, or `executionContextUpdate`
+     `grant.fs` / `grant.egress`) lives in Kody, and anyone with Contribute or
+     Manage on the context can change it. It says what runs on this context may
+     ask for.
+
+   A run gets only what both allow; the narrower mode wins. `policy allow` never
+   changes the server grant. `kody context list`, `kody context policy show`,
+   and `kody context grant show` point out a folder that only one layer allows,
+   with the command that fixes it. The local network has only the server layer
+   (`kody context grant lan on|off`).
 
    On Windows use native paths, for example
    `kody context policy allow C:\Users\you\projects --mode rw`. Runs see the
@@ -110,6 +148,9 @@ the context, so the daemon starts at login or boot and restarts after a crash:
 | `kody daemon logs` (`--lines <n>`, `--follow`) | Shows the daemon log                                 |
 | `kody daemon restart`                          | Restarts after runs in flight finish                 |
 | `kody daemon start` / `stop`                   | Starts or stops the service (or the running daemon)  |
+| `kody daemon pause` / `resume` (`--context`)   | Server-side pause: chains skip it, from anywhere     |
+| `kody daemon update` (`--context`)             | Updates now (same as `kody update` on this machine)  |
+| `kody daemon config [show\|set ...]`           | Concurrency cap and auto-update, from anywhere       |
 | `kody daemon install`                          | Installs the service, or repairs it                  |
 | `kody daemon uninstall` (`--unregister`)       | Removes the service and offers to revoke the context |
 | `kody daemon auto-update on\|off\|status`      | Auto-update switch for every daemon on this machine  |
@@ -122,10 +163,24 @@ The service never runs as root and holds no API token or passphrase: it signs in
 with the machine key. A background service cannot answer a passphrase prompt, so
 when the key needs one, or Linux has no unlocked keyring, install offers a file
 key instead: a random key stored next to the encrypted machine key, readable
-only by you (`--key-storage file`). On Windows the OS keyring is Windows
-Credential Manager, which a logon task can use, so the keyring stays the
-default; the file key fallback is protected by your user profile's folder
-permissions (Windows ignores POSIX modes).
+only by you. On Windows the OS keyring is Windows Credential Manager, which a
+logon task can use, so the keyring stays the default; the file key fallback is
+protected by your user profile's folder permissions (Windows ignores POSIX
+modes).
+
+`--key-storage file` works on every OS, macOS included, for `kody connect` and
+`kody daemon install`. The default stays the OS keyring.
+
+On macOS the keyring is the login Keychain, and the first read can open a
+Keychain approval dialog (choose **Always Allow** so it does not ask again). If
+it takes more than a moment, the CLI prints
+`Waiting for macOS Keychain approval for kody.codes (...)`: look for the dialog,
+which can open behind other windows. After 2 minutes with no answer
+(`KODY_KEYCHAIN_TIMEOUT_MS` changes this) it stops waiting and exits with the
+fixes: approve the dialog and retry, move the key to a file with
+`kody daemon install --key-storage file`, or register again with
+`kody connect --name <name> --key-storage file`. Stopping the daemon (Ctrl-C or
+SIGTERM) while the dialog is open also stops the Keychain request.
 
 Daemons auto-update by default: on start and about every 4 hours each daemon
 (service, terminal, or desktop app) checks npm, installs the verified newer
@@ -145,6 +200,79 @@ app share one lock per context, so a second daemon refuses (a service waits)
 instead of replacing the first in a loop. The desktop app adopts an existing
 service and registration instead of starting or registering a second one; see
 [one runner per machine](../use/execution-contexts.md#one-runner-per-machine).
+
+### Stop, pause, and remote control
+
+`kody daemon stop` stops the service on this machine until `kody daemon start`
+or the next login or boot. It does not unregister: the context shows offline and
+chains skip it. systemd (`RestartPreventExitStatus`), launchd
+(`SuccessfulExit=false`) and the Windows task's launcher do not restart a daemon
+that exits after a stop. `kody daemon status` then says
+`stopped (kody daemon stop, <time>)` and exits 0; a service that crashed or
+failed to start says `not running (crashed or failed to start)` and exits 1.
+
+`kody daemon pause` is a server-side pause in Kody. It works from any machine
+and while the context's machine is offline, and it survives reboots. While
+paused, chains skip the context (`was paused`, never queued), queued runs fail,
+and host commands are refused. The daemon stays connected, so status, update and
+resume keep working. `kody daemon resume` (or **Resume** on the context page)
+turns routing back on. Pass `--reason` to show why, and `--cancel-runs` to also
+cancel runs in flight. The context's operator and people with Manage on it can
+pause and resume it; org owners can pause (not resume) any context attached to
+their org, as a kill switch.
+
+With `--remote`, or with `--context` naming a context that is not on this
+machine, `status`, `restart`, `update` and `logs` go through Kody to the
+connected daemon over its signed connection. They fail at once with
+`context_offline` when the daemon is not connected; a stopped daemon cannot be
+started remotely. Restart needs a background service (or the desktop app) to
+bring the daemon back, so a terminal daemon refuses it (`not_service_managed`).
+Remote logs are for the operator only, at most 500 lines. The same operations
+are capabilities (`executionContextPause`, `executionContextResume`,
+`executionContextDaemonStatus`, `executionContextDaemonRestart`,
+`executionContextDaemonUpdate`, `executionContextDaemonConfig`,
+`executionContextDaemonLogs`) and Open API routes under
+`/v1/execution-contexts/{id}/pause`, `/resume` and `/daemon`. The context page's
+**Daemon** card and **This machine** in the desktop app use them too.
+
+### Service environment: proxies and custom CAs
+
+The service file only carries what kody needs (`PATH`, the service marker and
+`XDG_CONFIG_HOME`). To give the daemon more variables, set them with kody so
+every manager (launchd, systemd, Task Scheduler) gets them and reinstalls and
+upgrades keep them:
+
+```sh
+kody daemon env set NODE_OPTIONS=--use-system-ca
+kody daemon env list
+kody daemon env unset NODE_OPTIONS
+kody daemon install --env NODE_EXTRA_CA_CERTS=/path/to/corp-ca.pem   # repeatable
+```
+
+They are stored in the CLI config (`execution-context-policy.json`), so every
+service kody writes on this machine gets them. `env set` and `env unset` also
+rewrite the installed service file and restart its daemon (pick one with
+`--context` when the machine has several). kody owns `PATH`,
+`KODY_DAEMON_SERVICE` and `XDG_CONFIG_HOME`, so they cannot be set. The values
+are written to the service file in plain text: do not put secrets there. Keep
+API keys and tokens in [Kody credentials](./credentials.md) instead.
+
+`kody daemon status` ignores these variables when it checks whether the service
+file is outdated. A variable added to the service file by hand is kept on every
+reinstall (never stripped) and `status` and `install` warn about it; move it to
+`kody daemon env set` so kody manages it.
+
+Behind a TLS-intercepting proxy, or a server with a private CA, HTTPS fetches
+from a run fail certificate checks. The run gets an error that names the problem
+(for example `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, `SELF_SIGNED_CERT_IN_CHAIN` or
+`CERT_HAS_EXPIRED`) and the fix, never the certificate itself. If the proxy's CA
+is in the OS trust store (Keychain on macOS, the Windows certificate store, or
+`/etc/ssl` on Linux), run `kody daemon env set NODE_OPTIONS=--use-system-ca`
+(Node 22.15+). Otherwise point `NODE_EXTRA_CA_CERTS` at a PEM file with the CA.
+The daemon trusts the same CAs as Node for both its own Kody connection and the
+fetches runs make. For `kody execute --local`, set the same variable in your
+shell. An expired or wrong-host certificate has to be fixed on the server or
+proxy.
 
 Revoking a context stops its daemon for good: it does not reconnect, and the
 service disables itself instead of restarting. Remove the leftover service with
@@ -186,6 +314,26 @@ When every slot is taken, the machine is busy, and busy works like offline: the
 run moves to the next chain entry or Kody cloud. A run that named one `context`
 without `fallback: "chain"` fails instead, with an error that says to retry when
 a run finishes or pass `fallback: "chain"`.
+
+## Time limits on a machine
+
+Every run on an execution context, whether `execute`, a job, a webhook, a
+subscription, or a package workflow step, stops at the context grant's
+`timeoutMs` instead of the Kody cloud budgets: 90 s by default, up to 15
+minutes. Change it with
+`executionContextUpdate({ id, grant: { limits: { timeoutMs } } })`.
+
+- **`execute`** waits for the result as long as its transport allows (about 45 s
+  over MCP, about 105 s for the CLI's `kody execute --context`), then returns
+  `inProgress: true` with the `runId`. The run keeps going on the machine.
+- **Jobs, webhooks, subscriptions and workflow steps** wait up to 5 minutes for
+  the run on the machine. A longer run is handed off: the automation's result
+  reads `status: "running_on_execution_context"` with the context run's `runId`.
+- **`runGet`** shows the run as `running` until it ends or its deadline passes.
+  Kody reconciles it to `platform_interrupted` (outcome unknown) only a few
+  minutes after that deadline, and only if the machine never reported an end. At
+  the deadline itself the run is stopped and ends with "The run was cancelled
+  (deadline).".
 
 ## Where a run ran: `ranOn`
 
@@ -319,17 +467,20 @@ recorded. See [Host commands](../use/execution-contexts.md#host-commands) for
 the security trade-off in plain words.
 
 On macOS, commands that control other apps (Messages via `osascript`) need
-Automation permission for the process running the daemon. Only the desktop app's
-own runner gets Kody's permission; a CLI service or terminal daemon does not,
-even when the desktop app adopts it. See
+Automation permission for the process running the daemon. Contacts lookups
+through the macOS Contacts framework need a separate Contacts prompt (desktop
+0.1.5 or later). Only the desktop app's own runner gets Kody's permission; a CLI
+service or terminal daemon does not, even when the desktop app adopts it. See
 [macOS app control](../use/execution-contexts.md#macos-app-control).
 
 ## Sharing a context
 
 You can share a context with people or teams in your org. Their runs use the
-grant you set (host folders, egress, limits). Someone you share with can use the
-context only after they opt in to it: the "Opt into <name>?" dialog on the
-context's page, `executionContextOptIn` (`executionContextOptOut` to leave), or
+grant you set (egress, limits), but never your host folders or host commands:
+those are only for your own runs, because they act as your machine. Someone you
+share with can use the context only after they opt in to it: the "Opt into
+<name>?" dialog on the context's page, `executionContextOptIn`
+(`executionContextOptOut` to leave), or
 `POST /v1/execution-contexts/{id}/opt-in` (from the CLI,
 `kody api executionContextOptIn`). Until then the context is skipped for their
 runs (`not_opted_in`) and the run moves down their chain; a run that names the
@@ -344,10 +495,49 @@ the credential values stay in Kody cloud and never reach the machine. Their runs
 cannot start workflows there, and Kody APIs kept for Kody cloud refuse them
 (`context_run_denied`). The context's runtime allowlist narrows their runs too.
 
-Shares never include host commands unless you say so: share with
-`commands: true` (`executionContextShareSet`) to give someone
-`execution_context:command`. The `use`, `contribute`, and `manage` presets and
-sharing with everyone in the org leave it out.
+Shares never include host commands or host folders. Granting `fs` paths still
+only mounts them for the operator's own runs: shared runs get `fs_operator_only`
+if they `requires: ["fs"]`, and the sharing UI labels those paths as
+operator-only. A share with `commands: true` fails with
+`commands_operator_only`, and legacy command shares stay listed but confer
+nothing. If you leave the org, your context stops taking other people's runs
+(`operator_left`).
+
+Host folders never expose credential stores, even inside a folder you allow: the
+Kody CLI config folder (your login and context keys), `~/.ssh`, `~/.gnupg`, git
+credential files, cloud CLI logins (`~/.aws`, `~/.azure`, gcloud, `gh`,
+`~/.kube`, Docker), package-manager tokens (`.npmrc`, `.pypirc`, Cargo), and OS
+keyring files.
+
+### Shared-box best practices
+
+Kody records who the machine is logged in as (a person or one of their agent
+profiles) and compares that login with the access of everyone the context is
+shared with. Runs still use only the requester's own access for Kody API calls,
+but anyone with host access on the machine acts with its login. When the login
+can do something a grantee can't do personally, Kody shows a notice:
+
+- the grantee sees their own on the context's page, in "what's waiting on me"
+  (`context-elevation`), and once in the `notices` field of execute (runs on
+  that context) and search results; only they can dismiss it
+  (`executionContextNoticeDismiss`, signed in as themselves), and it comes back
+  when the machine gains access they lack or its login changes;
+- the operator and Manage holders see every grantee in the access review, and
+  the share form warns before saving (`executionContextSharePreview`);
+- the operator sees misconfigurations, which can't be dismissed
+  (`context-misconfigured`): `operator_left`, `login_stale`, `profile_inactive`,
+  `team_deleted`, `personal_login_on_team_context`, and
+  `profile_not_assigned_to_team`.
+
+The daemon tells Kody which login it runs as when it starts and every 6 hours,
+so restart it (`kody daemon restart`, or let auto-update do it) after
+`kody login` switches the machine to another login. Set the team a machine is
+for with `executionContextUpdate({ team_slug })`, and the team an agent profile
+is for with `profileUpdate({ team_slug })`; neither grants anything.
+
+We recommend logging the machine in with an agent profile assigned to the team
+you share it with, and giving that team the same permissions as the profile.
+Nothing requires it: personal logins and shares outside the team keep working.
 
 ## Automations
 
@@ -388,3 +578,54 @@ Turn it off the same way. It is only for your account.
 - [Execution contexts field reference](../use/execution-contexts.md)
 - [Local CLI execute](./local-execute.md), which runs code on your machine for
   one call without a daemon
+
+## Try publishing from a context
+
+Publishing from a context is part of the Execution contexts experiment. The one
+switch at
+[kody.codes/account/experiments](https://kody.codes/account/experiments) turns
+on both execution contexts and publishing from them; turning it off turns both
+off.
+
+1. Turn on **Execution contexts** at
+   [Experiments](https://kody.codes/account/experiments).
+2. Run `kody connect` on the machine that should build your packages.
+3. Publish on it: `kody package publish @you/pkg --context my-box`. Use
+   `--context cloud` to build on Kody cloud instead. A named context never falls
+   back.
+4. Optional: bind a package to one machine in `package.json`:
+
+   ```json
+   { "kody": { "publish": { "execution": { "context": "my-box" } } } }
+   ```
+
+   A bound publish that names no context builds only there. When that machine is
+   offline, busy, or its build fails, the publish fails with an error that says
+   how to pass `--context` or change the binding. It never falls back to your
+   chain or Kody cloud.
+
+With no `--context` and no binding, a publish follows your chain like `execute`:
+the contexts you operate, in order, then Kody cloud unless your chain is strict.
+`kody package publish @you/pkg --build local` builds on the machine you run the
+CLI on instead, after pushing HEAD. With the experiment off, every publish
+builds on Kody cloud. More detail:
+[publish large packages](./publish-large-packages.md).
+
+## Publish builds
+
+With the `publish-offload` flag also on, a publish follows your chain the same
+as `execute`: the first context you operate that can take it builds the package,
+and Kody cloud is last unless your chain is strict. `--context <name>` (or
+`context` on `packagePublishExternalPush`) picks one for this publish and never
+falls back. A package can bind its publishes to one context with
+`kody.publish.execution.context` in `package.json`. A bound publish that names
+no context fails when that context is unavailable, instead of falling back. See
+[where a publish builds](./publish-large-packages.md#where-a-publish-builds).
+
+`kody package publish <package> --build context` asks a context you operate to
+bundle the package. The run carries no user code and no credentials: the daemon
+clones the pushed commit with a read-only, single-repo token that expires in
+about five minutes and uploads the build with a per-build ticket. Kody checks
+the upload and writes the registry itself. Every credential kind, not only CLI
+logins, needs `execution_context:execute` to route a run to a context. See
+[publish large packages](./publish-large-packages.md).

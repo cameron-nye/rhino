@@ -1,6 +1,6 @@
 import { renderTransactionalEmail } from '#app/email/template.ts'
 import { platformFeedbackAcknowledgementSubject } from '#worker/platform-feedback/email-threading.ts'
-import { type PlatformFeedbackOutcomeStatus } from '#worker/platform-feedback/types.ts'
+import type { PlatformFeedbackOutcomeStatus } from '#worker/platform-feedback/types.ts'
 import { ERROR_AGENT_PROMPT_ATTR } from '#universal/error-agent-prompt.ts'
 import { buildBillingFailureAgentPrompt } from '#universal/error-agent-prompt-presets.ts'
 import { formatCappedPercent } from '#universal/usage-presentation.ts'
@@ -152,6 +152,43 @@ export function buildEmailChangedSecurityEmail(input: {
 			`This wasn't you? Reset your password, review sign-in methods on your account, and email ${supportEmail}.`,
 		],
 		footnote: `We sent this to ${input.oldEmail} because it was the previous login address. Contact ${supportEmail} if you need help recovering access.`,
+	})
+}
+
+export function buildAccountDeviceSignInApprovedEmail(input: {
+	appBaseUrl: string
+	email: string
+	approvedAt: Date
+	requester: string
+	location: string | null
+	accountUrl: string
+	resetPasswordUrl: string
+	supportEmail?: string
+}) {
+	const supportEmail = input.supportEmail?.trim() || 'support@kody.codes'
+	const body = [
+		`You approved a sign-in on another device, so a browser is now signed in to your full Kody account (${input.email}).`,
+		`When: ${formatEmailChangeWhen(input.approvedAt)}.`,
+		`Browser: ${input.requester}.`,
+		`Approximate location: ${input.location ?? 'unknown'}.`,
+		'If this was you, no action is needed. If it was not, someone may have tricked you into approving a code: secure the account immediately.',
+	]
+	return renderTransactionalEmail({
+		appBaseUrl: input.appBaseUrl,
+		subject: 'A browser signed in to your Kody account',
+		preheader: `New sign-in from ${input.requester}.`,
+		heading: 'A browser signed in to your account',
+		body,
+		action: { label: 'Open account settings', url: input.accountUrl },
+		secondaryAction: {
+			label: 'Reset your password',
+			url: input.resetPasswordUrl,
+		},
+		afterAction: [
+			`This wasn't you? Reset your password (that signs every browser out) and email ${supportEmail}.`,
+		],
+		footnote:
+			'We send this every time a sign-in on another device is approved for your account.',
 	})
 }
 
@@ -329,6 +366,42 @@ function entitlementWarningCopy(kind: UserEntitlementWarningKind) {
 			throw new Error(`Unknown entitlement warning kind: ${String(exhaustive)}`)
 		}
 	}
+}
+
+export const founderWelcomeFromName = 'Kent C. Dodds (Kody)'
+export const founderWelcomeHeadshotPath = '/images/email/kent-c-dodds.png'
+
+/**
+ * One-time personal note from Kent on a new account's first verification.
+ * Essential mail: no tips unsubscribe. Replies go to `kent@` (see
+ * `sendFounderWelcomeEmail`).
+ */
+export function buildFounderWelcomeEmail(input: {
+	appBaseUrl: string
+	onboardingUrl: string
+}) {
+	return renderTransactionalEmail({
+		appBaseUrl: input.appBaseUrl,
+		subject: 'Thanks for trying Kody',
+		preheader:
+			'A quick note from Kent. Hit reply any time, it comes straight to me.',
+		heading: 'Thanks for trying Kody',
+		body: [
+			"Hi, I'm Kent C. Dodds. I built Kody, and I wanted to personally say thank you for signing up. It means a lot.",
+			{
+				text: 'If you do one thing next, connect the agent you already use (Cursor, Claude, ChatGPT, or any MCP client). It takes about a minute, and then your packages, memory, and secrets follow you everywhere.',
+				link: { label: 'Connect your agent', url: input.onboardingUrl },
+			},
+			'Replying to this email goes straight to me, the founder. Not a support queue and not a bot. I read every reply, so tell me what brought you here, what you hope Kody can do for you, or anything that felt confusing.',
+		],
+		signature: {
+			name: 'Kent C. Dodds',
+			title: 'Founder of Kody',
+			imagePath: founderWelcomeHeadshotPath,
+		},
+		footnote:
+			"You're receiving this one-time note because you just created a Kody account.",
+	})
 }
 
 type CampaignUnsubscribe = {
