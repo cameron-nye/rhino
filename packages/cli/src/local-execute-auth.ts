@@ -1,4 +1,4 @@
-import { type ensureFreshCredentials } from './auth.js'
+import type { ensureFreshCredentials } from './auth.js'
 import {
 	notAuthenticatedMessage,
 	expectedPairedApiOrigin,
@@ -8,9 +8,10 @@ import {
 import {
 	noteActiveLoginCredential,
 	resolveCliCredential,
+	SavedCredentialExpiredError,
 } from './cli-credential.js'
 import { defaultApiUrl, defaultMcpUrl } from './defaults.js'
-import { type SecretBackend } from './store.js'
+import type { SecretBackend } from './store.js'
 
 function urlOriginOrValue(value: string): string {
 	try {
@@ -62,7 +63,19 @@ export async function resolveLocalExecuteBearer(
 
 	const apiUrl = input.apiUrl ?? defaultApiUrl
 	const mcpUrl = input.mcpUrl ?? defaultMcpUrl
-	if (!isPairedApiUrl(apiUrl, mcpUrl)) {
+	const saved = credential?.login
+	const savedForThisApi =
+		saved?.apiUrl !== undefined && saved.apiUrl === urlOriginOrValue(apiUrl)
+	if (
+		saved &&
+		savedForThisApi &&
+		saved.accessToken.startsWith('kody_at_') &&
+		(saved.expiresAt === undefined ||
+			saved.expiresAt > (input.now ?? Date.now()) + 60_000)
+	) {
+		return saved.accessToken
+	}
+	if (!savedForThisApi && !isPairedApiUrl(apiUrl, mcpUrl)) {
 		const apiOrigin = urlOriginOrValue(apiUrl)
 		const mcpOrigin = urlOriginOrValue(mcpUrl)
 		throw new Error(
@@ -84,10 +97,11 @@ export async function resolveLocalExecuteBearer(
 		noteActiveLoginCredential({ login: credentials })
 		return credentials.accessToken
 	} catch (error) {
-		// Preserve org-specific guidance from ensureFreshCredentials.
+		// Preserve org-specific and expired-credential guidance.
 		if (
-			error instanceof Error &&
-			error.message.startsWith('No login stored for org "')
+			error instanceof SavedCredentialExpiredError ||
+			(error instanceof Error &&
+				error.message.startsWith('No login stored for org "'))
 		) {
 			throw error
 		}

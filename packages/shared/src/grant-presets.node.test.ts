@@ -2,6 +2,7 @@ import { expect, test } from 'vitest'
 import { orgPermissions } from './org-permissions.ts'
 import {
 	isGrantablePermission,
+	orgWideManagePermissions,
 	orgWideReadPermissions,
 	permissionsForGrantPreset,
 	resolveGrantPermissions,
@@ -44,7 +45,7 @@ test('resolveGrantPermissions rejects a non-grantable advanced list', () => {
 	).toThrow(/cannot be granted/)
 })
 
-test('org grants carry read-only resource permissions and nothing that writes', () => {
+test('org grants carry org-wide reads plus package and app manage, and nothing else that writes', () => {
 	for (const permission of orgWideReadPermissions) {
 		expect(permission.endsWith(':read')).toBe(true)
 		expect(isGrantablePermission('org', permission)).toBe(true)
@@ -54,29 +55,22 @@ test('org grants carry read-only resource permissions and nothing that writes', 
 	const grantableResourceActions = orgPermissions.filter(
 		(permission) =>
 			isGrantablePermission('org', permission) &&
-			/^(package|app|job|secret|integration|memory|email|execution_context):/.test(
+			/^(file|package|app|job|secret|integration|memory|email|execution_context):/.test(
 				permission,
 			) &&
 			!permission.endsWith(':create'),
 	)
 	expect([...grantableResourceActions].sort()).toEqual(
-		[...orgWideReadPermissions].sort(),
+		[...orgWideReadPermissions, ...orgWideManagePermissions].sort(),
 	)
-	for (const permission of [
-		'job:write',
-		'job:execute',
-		'job:delete',
-		'job:manage_access',
-		'package:write',
-		'package:publish',
-		'app:execute',
-		'secret:use',
-		'integration:use',
-		'email:send',
-		'execution_context:execute',
-	] as const) {
-		expect(isGrantablePermission('org', permission)).toBe(false)
-	}
+	expect([...orgWideManagePermissions].sort()).toEqual(
+		[
+			...permissionsForGrantPreset('package', 'manage'),
+			...permissionsForGrantPreset('app', 'manage'),
+		]
+			.filter((permission) => !permission.endsWith(':read'))
+			.sort(),
+	)
 })
 
 test('read is package-only and grants package:read alone', () => {

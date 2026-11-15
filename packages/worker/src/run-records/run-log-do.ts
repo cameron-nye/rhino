@@ -1,6 +1,15 @@
 import {
-	type SkillReadEvent,
-	type SkillReadSummary,
+	IllegalStateTransitionError,
+	isState,
+	nextState,
+} from '@kody-internal/shared/state-machine.ts'
+import {
+	packageInvocationState,
+	type PackageInvocationLedgerStatus,
+} from './package-invocation-state.ts'
+import type {
+	SkillReadEvent,
+	SkillReadSummary,
 } from '#universal/skill-metrics.ts'
 import {
 	initializeSkillReads,
@@ -8,7 +17,16 @@ import {
 	summarizeSkillReads,
 	exportSkillReads,
 } from './skill-reads.ts'
-import { type WorkspaceRunBucket } from '#universal/workspace-charts.ts'
+import {
+	initializePackageAppCpuSamples,
+	insertPackageAppCpuSample,
+	summarizePackageAppCpuSampleRows,
+} from './package-app-cpu-samples.ts'
+import type {
+	PackageAppCpuSample,
+	PackageAppCpuSummary,
+} from '#universal/package-app-cpu-samples.ts'
+import type { WorkspaceRunBucket } from '#universal/workspace-charts.ts'
 import * as Sentry from '@sentry/cloudflare'
 import { DurableObject } from 'cloudflare:workers'
 import {
@@ -26,7 +44,7 @@ import {
 	terminalWorkflowStatusValues,
 } from '#worker/package-runtime/workflow-statuses.ts'
 import { buildSentryOptions } from '#worker/sentry-options.ts'
-import { type RunLogAdminInsightsSnapshot } from './admin-insights-snapshot.ts'
+import type { RunLogAdminInsightsSnapshot } from './admin-insights-snapshot.ts'
 import {
 	emptyRunLogFailureCounts,
 	headerOnlyPlacementRefusalMarkers,
@@ -41,10 +59,10 @@ import {
 	type PackageRunSuccessRecord,
 	countsTowardPackageActivation,
 } from './package-activation-state.ts'
-import {
-	type JobRunObservabilityRecord,
-	type JobRunObservabilityStatus,
-	type JobRunObservabilityUpsertInput,
+import type {
+	JobRunObservabilityRecord,
+	JobRunObservabilityStatus,
+	JobRunObservabilityUpsertInput,
 } from './job-run-observability.ts'
 import {
 	type WorkflowProjectionRecord,
@@ -53,6 +71,7 @@ import {
 	type WorkflowProjectionUpsertInput,
 	creatingWorkflowProjectionStatus,
 	parseWorkflowProjectionSourceRevision,
+	publishProvenanceFromIdempotencyKey,
 	workflowProjectionActiveStatuses,
 	workflowProjectionCreatingTtlMs,
 	workflowProjectionReservationStatuses,
@@ -91,9 +110,11 @@ import {
 	workflowProjectionRetentionDays,
 } from './types.ts'
 import { normalizeRunStartedBy, type RunStartedBy } from './run-started-by.ts'
+import { runState } from './run-state.ts'
 import { recordDurableObjectPlatformRowsRead } from '#worker/usage/durable-object-rows.ts'
 
 const textEncoder = new TextEncoder()
+const interruptGuard = runState.sql(['running'])
 const maxAgeDeletesPerFinish = 100
 const maxExcessDeletesPerFinish = 100
 const maxStaleRunningReconcilesPerPass = 100
@@ -108,7 +129,7 @@ const metaSchemaVersionKey = 'schema_version'
 /** YYYYMMDD coverage floor for warm v12→v13 (no backfill). Fresh DOs omit this. */
 const metaRunDayCountsSinceKey = 'run_day_counts_since'
 /** Bump when initializeSchema's DDL set changes; warm objects skip DDL. */
-const runLogSchemaVersion = 18
+export const runLogSchemaVersion = 22
 
 function utcDayToMetaInt(day: string): number {
 	return Number(day.replaceAll('-', ''))
@@ -281,10 +302,7 @@ export type RunLogEntryInput = {
 	fieldsJson: string | null
 }
 
-export type PackageInvocationLedgerStatus =
-	| 'in_progress'
-	| 'completed'
-	| 'failed'
+export type { PackageInvocationLedgerStatus } from './package-invocation-state.ts'
 
 /**
  * One keyed package-invocation idempotency row. Same shape as the legacy D1
@@ -701,9 +719,7 @@ function mapInvocationLedgerRow(
 		source: row['source'] == null ? null : String(row['source']),
 		topic: row['topic'] == null ? null : String(row['topic']),
 		claimOwner: row['claim_owner'] == null ? null : String(row['claim_owner']),
-		status: (status === 'completed' || status === 'failed'
-			? status
-			: 'in_progress') as PackageInvocationLedgerStatus,
+		status: isState(packageInvocationState, status) ? status : 'in_progress',
 		responseJson:
 			row['response_json'] == null ? null : String(row['response_json']),
 		createdAt: String(row['created_at']),
@@ -854,6 +870,12 @@ class RunLogBase extends DurableObject<Env> {
 	}): Promise<SkillReadSummary> {
 		return summarizeSkillReads(this.ctx.storage.sql, input)
 	}
+	async recordPackageAppCpuSample(sample: PackageAppCpuSample): Promise<void> {
+		insertPackageAppCpuSample(this.ctx.storage.sql, sample)
+	}
+	async packageAppCpuSummary(): Promise<PackageAppCpuSummary> {
+		return summarizePackageAppCpuSampleRows(this.ctx.storage.sql)
+	}
 
 	private initializeSchema() {
 		// Schema rebuild (clearAll / DR restore / warm-migration tests) may
@@ -905,7 +927,8 @@ class RunLogBase extends DurableObject<Env> {
 				started_by_label TEXT,
 				started_by_profile_id TEXT,
 				started_by_profile_chain TEXT,
-				log_count INTEGER NOT NULL DEFAULT 0
+				log_count INTEGER NOT NULL DEFAULT 0,
+				stale_after TEXT
 			)
 		`)
 		if (installedVersion != null && installedVersion < 10) {
@@ -916,6 +939,9 @@ class RunLogBase extends DurableObject<Env> {
 		}
 		if (installedVersion != null && installedVersion < 18) {
 			this.migrateRunsStartedByProfileForV18()
+		}
+		if (installedVersion != null && installedVersion < 21) {
+			this.migrateRunsStaleAfterForV21()
 		}
 		this.ctx.storage.sql.exec(
 			`CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at DESC, id DESC)`,
@@ -1027,6 +1053,9 @@ class RunLogBase extends DurableObject<Env> {
 		if (installedVersion != null && installedVersion < 14) {
 			this.migrateWorkflowProjectionSourceRevisionForV14()
 		}
+		if (installedVersion != null && installedVersion < 19) {
+			this.backfillPublishWorkflowProvenanceForV19()
+		}
 		this.ctx.storage.sql.exec(
 			`CREATE INDEX IF NOT EXISTS idx_workflow_projections_created
 			ON workflow_projections(created_at DESC, id DESC)`,
@@ -1093,6 +1122,13 @@ class RunLogBase extends DurableObject<Env> {
 			`CREATE INDEX IF NOT EXISTS idx_run_day_counts_day
 			ON run_day_counts(day)`,
 		)
+		// One row per package event delivery in progress for this owner.
+		this.ctx.storage.sql.exec(`
+			CREATE TABLE IF NOT EXISTS package_event_slots (
+				id TEXT PRIMARY KEY NOT NULL,
+				expires_at TEXT NOT NULL
+			)
+		`)
 		if (installedVersion != null && installedVersion < 16) {
 			this.migrateRetrieverRunsForV16()
 		}
@@ -1107,6 +1143,7 @@ class RunLogBase extends DurableObject<Env> {
 			}
 		}
 		initializeSkillReads(this.ctx.storage.sql)
+		initializePackageAppCpuSamples(this.ctx.storage.sql)
 		this.setMeta(metaSchemaVersionKey, runLogSchemaVersion)
 	}
 
@@ -1184,6 +1221,19 @@ class RunLogBase extends DurableObject<Env> {
 		}
 	}
 
+	/**
+	 * `stale_after`: the time until which the row's owner holds a `running`
+	 * row, past the surface TTL (an execution context holds its runs until
+	 * their deadline). Existing rows keep NULL.
+	 */
+	private migrateRunsStaleAfterForV21() {
+		try {
+			this.ctx.storage.sql.exec(`ALTER TABLE runs ADD COLUMN stale_after TEXT`)
+		} catch {
+			// Column already present on a partially migrated object.
+		}
+	}
+
 	private migrateRunsStartedByForV15() {
 		for (const column of [
 			'started_by_user_id',
@@ -1249,6 +1299,36 @@ class RunLogBase extends DurableObject<Env> {
 			} catch {
 				// Column already present on a partially migrated object.
 			}
+		}
+	}
+
+	/**
+	 * Additive: durable publish rows queued before package_id/enqueued_commit
+	 * were recorded get them from their unreleased idempotency key. Only null
+	 * columns are filled; keys and timestamps are untouched.
+	 */
+	private backfillPublishWorkflowProvenanceForV19() {
+		const rows = this.ctx.storage.sql
+			.exec<{ id: string; idempotency_key: string }>(
+				`SELECT id, idempotency_key FROM workflow_projections
+				WHERE workflow_name = 'packagePublishExternalPush'
+					AND package_id IS NULL
+					AND idempotency_key NOT LIKE 'released:%'`,
+			)
+			.toArray()
+		for (const row of rows) {
+			const provenance = publishProvenanceFromIdempotencyKey(
+				String(row.idempotency_key),
+			)
+			if (!provenance) continue
+			this.ctx.storage.sql.exec(
+				`UPDATE workflow_projections
+				SET package_id = ?, enqueued_commit = COALESCE(enqueued_commit, ?)
+				WHERE id = ? AND package_id IS NULL`,
+				provenance.packageId,
+				provenance.commit,
+				String(row.id),
+			)
 		}
 	}
 
@@ -1587,11 +1667,19 @@ class RunLogBase extends DurableObject<Env> {
 
 	private applyRunDayCountTransition(input: {
 		previousStatus: RunStatus | null
+		/** Stored startedAt when a finish rewrites it (ack webhook consumers). */
+		previousStartedAt?: string | null
 		run: Pick<
 			RunLogRowInput,
 			'surface' | 'parentRunId' | 'startedAt' | 'status'
 		>
 	}) {
+		if (input.previousStatus != null)
+			runState.parse(
+				runState.is(input.previousStatus)
+					? input.run.status
+					: input.previousStatus,
+			)
 		if (!this.countsTowardDashboard(input.run)) return
 		// Clamp pre-migration startedAt days up to the warm coverage floor so
 		// MIN(day) cannot drift before the no-backfill boundary.
@@ -1602,9 +1690,12 @@ class RunLogBase extends DurableObject<Env> {
 			this.adjustRunDayCount({ day, surface, status: next, delta: 1 })
 			return
 		}
-		if (input.previousStatus === next) return
+		const previousDay = input.previousStartedAt
+			? this.runDayCountDayFromStartedAt(input.previousStartedAt)
+			: day
+		if (input.previousStatus === next && previousDay === day) return
 		this.adjustRunDayCount({
-			day,
+			day: previousDay,
 			surface,
 			status: input.previousStatus,
 			delta: -1,
@@ -1826,21 +1917,70 @@ class RunLogBase extends DurableObject<Env> {
 		if (ids.length > 0) this.invalidateReadMemos()
 	}
 
-	private isStaleRunning(input: {
+	/**
+	 * When a `running` row counts as stranded: its surface TTL after start, or
+	 * its `stale_after` when the row's owner holds it longer.
+	 */
+	private staleRunningDueAtMs(input: {
 		surface: string
 		startedAt: string
-		nowMs?: number
 		idempotencyKey?: string | null
-	}): boolean {
+		staleAfter: string | null
+	}): number | null {
 		const surface = isRunSurface(input.surface) ? input.surface : 'execute'
 		const startedMs = Date.parse(input.startedAt)
-		if (!Number.isFinite(startedMs)) return false
-		const nowMs = input.nowMs ?? Date.now()
+		if (!Number.isFinite(startedMs)) return null
 		const ttlMs =
 			surface === 'job' && isScheduledJobIdempotencyKey(input.idempotencyKey)
 				? runRecordStaleRunningTtlMsScheduledJob
 				: runRecordStaleRunningTtlMsForSurface(surface)
-		return nowMs - startedMs >= ttlMs
+		const heldUntilMs = input.staleAfter
+			? Date.parse(input.staleAfter)
+			: Number.NaN
+		return Number.isFinite(heldUntilMs)
+			? Math.max(startedMs + ttlMs, heldUntilMs)
+			: startedMs + ttlMs
+	}
+
+	/**
+	 * `staleAfter` omitted: read it for this row, only once the surface TTL
+	 * has passed (the common fresh row costs no read).
+	 */
+	private isStaleRunning(input: {
+		id: string
+		surface: string
+		startedAt: string
+		nowMs?: number
+		idempotencyKey?: string | null
+		staleAfter?: string | null
+	}): boolean {
+		const nowMs = input.nowMs ?? Date.now()
+		const ttlDueAtMs = this.staleRunningDueAtMs({ ...input, staleAfter: null })
+		if (ttlDueAtMs == null || nowMs < ttlDueAtMs) return false
+		const staleAfter =
+			input.staleAfter !== undefined
+				? input.staleAfter
+				: (this.ctx.storage.sql
+						.exec<{
+							stale_after: string | null
+						}>(`SELECT stale_after FROM runs WHERE id = ?`, input.id)
+						.toArray()[0]?.stale_after ?? null)
+		const dueAtMs = this.staleRunningDueAtMs({ ...input, staleAfter })
+		return dueAtMs != null && nowMs >= dueAtMs
+	}
+
+	/** Hold a still-`running` row until `staleAfter`; a finished row is left alone. */
+	private holdRunningUntil(runId: string, staleAfter: string) {
+		const held = this.ctx.storage.sql.exec(
+			`UPDATE runs SET stale_after = ? WHERE id = ? AND status = 'running'`,
+			staleAfter,
+			runId,
+		).rowsWritten
+		if (held > 0) {
+			// The stale due-time moved later; re-arm for it.
+			this.retentionIdleConfirmed = false
+			this.retentionAlarmArmed = false
+		}
 	}
 
 	private markRunningInterrupted(input: {
@@ -1850,6 +1990,14 @@ class RunLogBase extends DurableObject<Env> {
 		startedAt: string
 		parentRunId?: string | null
 		finishedAt?: string
+		/** Overrides for callers that know why the row stopped. */
+		reason?: {
+			errorName: string
+			errorMessage: string
+			errorTriage: RunErrorTriage | null
+			triageNote: string | null
+			triagedBy: string | null
+		}
 	}) {
 		const existing = this.ctx.storage.sql
 			.exec<{
@@ -1873,10 +2021,19 @@ class RunLogBase extends DurableObject<Env> {
 			Number.isFinite(startedMs) && Number.isFinite(finishedMs)
 				? Math.max(0, finishedMs - startedMs)
 				: null
-		const errorTriage = runErrorTriageForPlatformInterrupt({
-			surface: input.surface,
-			idempotencyKey: input.idempotencyKey,
-		})
+		const errorTriage =
+			input.reason !== undefined
+				? input.reason.errorTriage
+				: runErrorTriageForPlatformInterrupt({
+						surface: input.surface,
+						idempotencyKey: input.idempotencyKey,
+					})
+		const triageNote = errorTriage
+			? (input.reason?.triageNote ?? platformInterruptTriageNote)
+			: null
+		const triagedBy = errorTriage
+			? (input.reason?.triagedBy ?? platformInterruptTriagedBy)
+			: null
 		// Scheduled ticks must be able to claim the occurrence again after a
 		// stranded `running` row is interrupted. Clearing the key keeps the
 		// interrupted attempt as visible history without consuming the slot.
@@ -1896,15 +2053,15 @@ class RunLogBase extends DurableObject<Env> {
 				triaged_by = ?,
 				updated_at = ?,
 				idempotency_key = CASE WHEN ? THEN NULL ELSE idempotency_key END
-			WHERE id = ? AND status = 'running'`,
+			WHERE id = ? AND status IN ${interruptGuard}`,
 			finishedAt,
 			durationMs,
-			runRecordPlatformInterruptedErrorName,
-			runRecordPlatformInterruptedErrorMessage,
+			input.reason?.errorName ?? runRecordPlatformInterruptedErrorName,
+			input.reason?.errorMessage ?? runRecordPlatformInterruptedErrorMessage,
 			errorTriage,
-			errorTriage ? platformInterruptTriageNote : null,
+			triageNote,
 			errorTriage ? finishedAt : null,
-			errorTriage ? platformInterruptTriagedBy : null,
+			triagedBy,
 			finishedAt,
 			releaseScheduledJobKey ? 1 : 0,
 			input.id,
@@ -1983,9 +2140,10 @@ class RunLogBase extends DurableObject<Env> {
 			started_at: string
 			surface: RunSurface
 			idempotency_key: string | null
+			stale_after: string | null
 		}>(
 			'reconcileStaleRunning',
-			`SELECT id, started_at, surface, idempotency_key FROM runs
+			`SELECT id, started_at, surface, idempotency_key, stale_after FROM runs
 			WHERE status = 'running' AND (
 				(surface IN ('execute', 'export', 'subscription', 'app_fetch', 'app_realtime')
 					AND started_at < ?)
@@ -2001,6 +2159,7 @@ class RunLogBase extends DurableObject<Env> {
 				)
 				OR (surface = 'workflow' AND started_at < ?)
 			)
+			AND (stale_after IS NULL OR stale_after <= ?)
 			ORDER BY started_at ASC
 			LIMIT ?`,
 			shortLivedCutoff,
@@ -2008,16 +2167,19 @@ class RunLogBase extends DurableObject<Env> {
 			scheduledJobCutoff,
 			jobCutoff,
 			longLivedCutoff,
+			finishedAt,
 			maxStaleRunningReconcilesPerPass,
 		).toArray()
 		let reconciled = 0
 		for (const row of candidates) {
 			if (
 				!this.isStaleRunning({
+					id: row.id,
 					surface: row.surface,
 					startedAt: row.started_at,
 					nowMs,
 					idempotencyKey: row.idempotency_key,
+					staleAfter: row.stale_after,
 				})
 			) {
 				continue
@@ -2043,6 +2205,7 @@ class RunLogBase extends DurableObject<Env> {
 		if (run.status !== 'running') return run
 		if (
 			!this.isStaleRunning({
+				id: run.id,
 				surface: run.surface,
 				startedAt: run.startedAt,
 				idempotencyKey: run.idempotencyKey,
@@ -2207,7 +2370,7 @@ class RunLogBase extends DurableObject<Env> {
 		const oldestRunningPerSurface = this.ctx.storage.sql
 			.exec<{ surface: string; started_at: string }>(
 				`SELECT surface, MIN(started_at) AS started_at FROM runs
-				WHERE status = 'running'
+				WHERE status = 'running' AND stale_after IS NULL
 				GROUP BY surface`,
 			)
 			.toArray()
@@ -2226,6 +2389,7 @@ class RunLogBase extends DurableObject<Env> {
 			.exec<{ started_at: string }>(
 				`SELECT MIN(started_at) AS started_at FROM runs
 				WHERE status = 'running'
+					AND stale_after IS NULL
 					AND surface = 'job'
 					AND idempotency_key LIKE 'scheduled-job:%'`,
 			)
@@ -2235,6 +2399,28 @@ class RunLogBase extends DurableObject<Env> {
 				Date.parse(oldestScheduledJobRunning.started_at) +
 					runRecordStaleRunningTtlMsScheduledJob,
 			)
+		}
+
+		// Held rows (execution-context runs) are few: one per live run.
+		const heldRunning = this.ctx.storage.sql
+			.exec<{
+				surface: string
+				started_at: string
+				idempotency_key: string | null
+				stale_after: string
+			}>(
+				`SELECT surface, started_at, idempotency_key, stale_after FROM runs
+				WHERE status = 'running' AND stale_after IS NOT NULL`,
+			)
+			.toArray()
+		for (const row of heldRunning) {
+			const dueAtMs = this.staleRunningDueAtMs({
+				surface: row.surface,
+				startedAt: row.started_at,
+				idempotencyKey: row.idempotency_key,
+				staleAfter: row.stale_after,
+			})
+			if (dueAtMs != null) consider(dueAtMs)
 		}
 
 		return next
@@ -2469,10 +2655,126 @@ class RunLogBase extends DurableObject<Env> {
 		})
 	}
 
-	async startRun(input: { run: RunLogRowInput }): Promise<{ ok: true }> {
+	/**
+	 * `staleAfter` holds the running row past its surface TTL until then (an
+	 * execution context ends its runs by their deadline).
+	 */
+	async startRun(input: {
+		run: RunLogRowInput
+		staleAfter?: string | null
+	}): Promise<{ ok: true }> {
 		this.insertRunningRun(input.run)
+		if (input.staleAfter) this.holdRunningUntil(input.run.id, input.staleAfter)
 		await this.ensureRetentionAlarm()
 		return { ok: true }
+	}
+
+	/**
+	 * Take one of this owner's package event delivery slots unless `limit`
+	 * other deliveries hold one. A slot expires on its own, so a consumer that
+	 * was killed frees it without a release call. DO RPCs are serialized, so
+	 * count-then-insert is race-free.
+	 */
+	async claimPackageEventSlot(input: {
+		id: string
+		limit: number
+		expiresAt: string
+	}): Promise<{ claimed: boolean; inFlight: number }> {
+		const sql = this.ctx.storage.sql
+		sql.exec(
+			`DELETE FROM package_event_slots WHERE expires_at <= ?`,
+			new Date().toISOString(),
+		)
+		const inFlight =
+			Number(
+				sql
+					.exec<{ count: number }>(
+						`SELECT COUNT(*) AS count FROM package_event_slots WHERE id != ?`,
+						input.id,
+					)
+					.one().count,
+			) || 0
+		if (inFlight >= input.limit) return { claimed: false, inFlight }
+		sql.exec(
+			`INSERT INTO package_event_slots (id, expires_at) VALUES (?, ?)
+			ON CONFLICT(id) DO UPDATE SET expires_at = excluded.expires_at`,
+			input.id,
+			input.expiresAt,
+		)
+		return { claimed: true, inFlight }
+	}
+
+	async releasePackageEventSlot(input: { id: string }): Promise<void> {
+		this.ctx.storage.sql.exec(
+			`DELETE FROM package_event_slots WHERE id = ?`,
+			input.id,
+		)
+	}
+
+	/**
+	 * Start a webhook delivery attempt only while fewer than `limit` of this
+	 * owner's other deliveries are started. A started delivery is a `running`
+	 * webhook row whose metadata state is `started` and whose hold has not
+	 * lapsed, so a finished, requeued, or killed attempt frees its slot without
+	 * a release call. DO RPCs are serialized, so count-then-start is race-free.
+	 *
+	 * A delivery whose accepted or queued hold lapsed while it waited was
+	 * healed to interrupted; its attempt is real, so the row goes back to
+	 * `running` and takes a slot (the finish replaces it as usual). A row that
+	 * finished with a real outcome is left alone, so a redelivery after the
+	 * finish still finds that outcome.
+	 */
+	async startWebhookDeliveryAttempt(input: {
+		run: RunLogRowInput
+		staleAfter: string
+		limit: number
+	}): Promise<{ started: boolean; inFlight: number }> {
+		const inFlight =
+			Number(
+				this.ctx.storage.sql
+					.exec<{ count: number }>(
+						`SELECT COUNT(*) AS count FROM runs
+						WHERE status = 'running' AND surface = 'webhook' AND id != ?
+							AND stale_after > ?
+							AND json_extract(metadata_json, '$.state') = 'started'`,
+						input.run.id,
+						new Date().toISOString(),
+					)
+					.one().count,
+			) || 0
+		if (inFlight >= input.limit) return { started: false, inFlight }
+		const previous = this.getRunStatusAndStartedAt(input.run.id)
+		const healed =
+			previous?.status === 'error' &&
+			this.ctx.storage.sql
+				.exec<{ error_name: string | null }>(
+					`SELECT error_name FROM runs WHERE id = ? LIMIT 1`,
+					input.run.id,
+				)
+				.toArray()[0]?.error_name === runRecordPlatformInterruptedErrorName
+		if (previous && healed) {
+			this.transactionSyncWithMetaCache(() => {
+				this.upsertRun(input.run, 'replace')
+				this.applyRunDayCountTransition({
+					previousStatus: previous.status,
+					previousStartedAt: previous.startedAt,
+					run: input.run,
+				})
+			})
+			this.retentionIdleConfirmed = false
+			this.retentionAlarmArmed = false
+			this.invalidateReadMemos()
+			this.resetRetentionEmptyBackoff()
+		} else {
+			this.insertRunningRun(input.run)
+		}
+		this.holdRunningUntil(input.run.id, input.staleAfter)
+		await this.updateRunningMetadata({
+			runId: input.run.id,
+			metadataJson: input.run.metadataJson,
+		})
+		await this.ensureRetentionAlarm()
+		return { started: true, inFlight }
 	}
 
 	/**
@@ -2496,6 +2798,7 @@ class RunLogBase extends DurableObject<Env> {
 					existing.status === 'running' &&
 					isScheduledJobIdempotencyKey(existing.idempotencyKey) &&
 					this.isStaleRunning({
+						id: existing.id,
 						surface: existing.surface,
 						startedAt: existing.startedAt,
 						idempotencyKey: existing.idempotencyKey,
@@ -2630,6 +2933,22 @@ class RunLogBase extends DurableObject<Env> {
 		return { deleted: true }
 	}
 
+	private getRunStatusAndStartedAt(
+		runId: string,
+	): { status: RunStatus; startedAt: string } | null {
+		const row = this.ctx.storage.sql
+			.exec<{ status: string; started_at: string }>(
+				`SELECT status, started_at FROM runs WHERE id = ? LIMIT 1`,
+				runId,
+			)
+			.toArray()[0]
+		if (!row) return null
+		const status = String(row.status)
+		return runState.is(status)
+			? { status, startedAt: String(row.started_at) }
+			: null
+	}
+
 	private getRunStatus(runId: string): RunStatus | null {
 		const row = this.ctx.storage.sql
 			.exec<{ status: string }>(
@@ -2639,10 +2958,7 @@ class RunLogBase extends DurableObject<Env> {
 			.toArray()[0]
 		if (!row) return null
 		const status = String(row.status)
-		if (status === 'running' || status === 'success' || status === 'error') {
-			return status
-		}
-		return null
+		return runState.is(status) ? status : null
 	}
 
 	private hasActivationMilestone(milestone: ActivationMilestone): boolean {
@@ -2888,7 +3204,8 @@ class RunLogBase extends DurableObject<Env> {
 		run: RunLogRowInput
 		logs: Array<RunLogEntryInput>
 	}): Promise<{ ok: true; wrote: boolean }> {
-		const previousStatus = this.getRunStatus(input.run.id)
+		const previous = this.getRunStatusAndStartedAt(input.run.id)
+		const previousStatus = previous?.status ?? null
 		const existed = previousStatus != null
 		// Scheduled ticks release their idempotency key on platform interrupt so
 		// the occurrence can be claimed again. A late finish from the stranded
@@ -2913,6 +3230,7 @@ class RunLogBase extends DurableObject<Env> {
 			}
 			this.applyRunDayCountTransition({
 				previousStatus,
+				previousStartedAt: previous?.startedAt,
 				run: input.run,
 			})
 			this.recordTerminalRunSideEffects({
@@ -3013,6 +3331,7 @@ class RunLogBase extends DurableObject<Env> {
 			if (!reclaimable) {
 				return { outcome: 'existing', record: existing }
 			}
+			nextState(packageInvocationState, existing.status, { type: 'CLAIM' })
 			this.ctx.storage.sql.exec(
 				`UPDATE package_invocation_ledger
 				SET updated_at = ?, claim_owner = ?
@@ -3103,9 +3422,27 @@ class RunLogBase extends DurableObject<Env> {
 			current = this.getInvocationLedgerRowById(input.invocationId)
 			ledgerUpdated =
 				current != null &&
-				current.status === 'in_progress' &&
-				current.updatedAt === input.claimUpdatedAt
+				(current.status as string) === 'in_progress' &&
+				(current.updatedAt as string) === input.claimUpdatedAt
 			if (ledgerUpdated) {
+				nextState(packageInvocationState, 'in_progress', {
+					type: (() => {
+						switch (input.status as string) {
+							case 'in_progress':
+								return 'CLAIM' as const
+							case 'completed':
+								return 'COMPLETE' as const
+							case 'failed':
+								return 'FAIL' as const
+							default:
+								throw new IllegalStateTransitionError(
+									packageInvocationState.id,
+									'in_progress',
+									{ type: String(input.status) },
+								)
+						}
+					})(),
+				})
 				this.ctx.storage.sql.exec(
 					`UPDATE package_invocation_ledger
 					SET status = ?, response_json = ?, updated_at = ?
@@ -4005,6 +4342,72 @@ class RunLogBase extends DurableObject<Env> {
 			.map(mapActivationMilestoneRow)
 	}
 
+	/** Guest merge: page every run (with its log lines) out of this owner. */
+	async countRunHistory(): Promise<number> {
+		const row = this.ctx.storage.sql
+			.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM runs`)
+			.one()
+		return Number(row.n ?? 0) || 0
+	}
+
+	async exportRunHistoryPage(input: {
+		afterId: string | null
+		limit: number
+	}): Promise<RunHistoryTransferPage> {
+		const limit = Math.max(1, Math.min(Math.floor(input.limit), 50))
+		const runs = this.ctx.storage.sql
+			.exec(
+				`SELECT * FROM runs WHERE id > ? ORDER BY id LIMIT ?`,
+				input.afterId ?? '',
+				limit,
+			)
+			.toArray() as Array<RunHistoryTransferRow>
+		const ids = runs.map((row) => String(row.id))
+		const logs =
+			ids.length > 0
+				? (this.ctx.storage.sql
+						.exec(
+							`SELECT * FROM run_logs WHERE run_id IN (${ids.map(() => '?').join(', ')})`,
+							...ids,
+						)
+						.toArray() as Array<RunHistoryTransferRow>)
+				: []
+		return {
+			runs,
+			logs,
+			nextAfterId: runs.length === limit ? (ids.at(-1) ?? null) : null,
+		}
+	}
+
+	/** Guest merge: copy runs exported from another owner; existing ids win. */
+	async importRunHistory(input: {
+		runs: Array<RunHistoryTransferRow>
+		logs: Array<RunHistoryTransferRow>
+	}): Promise<{ imported: number }> {
+		let imported = 0
+		for (const [table, rows] of [
+			['runs', input.runs],
+			['run_logs', input.logs],
+		] as const) {
+			const known = new Set(
+				this.ctx.storage.sql
+					.exec(`PRAGMA table_info(${table})`)
+					.toArray()
+					.map((column) => String(column.name)),
+			)
+			for (const row of rows) {
+				const columns = Object.keys(row).filter((key) => known.has(key))
+				if (columns.length === 0) continue
+				const cursor = this.ctx.storage.sql.exec(
+					`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
+					...columns.map((key) => row[key] ?? null),
+				)
+				if (table === 'runs') imported += cursor.rowsWritten > 0 ? 1 : 0
+			}
+		}
+		return { imported }
+	}
+
 	async listRuns(input: ListRunsInput): Promise<RunRecordPage> {
 		const limit = normalizePageSize(input.limit, runRecordDefaultPageSize)
 		const clauses: Array<string> = ['1 = 1']
@@ -4129,6 +4532,67 @@ class RunLogBase extends DurableObject<Env> {
 		}
 	}
 
+	/**
+	 * Make every still-`running` row of one durable workflow instance terminal.
+	 * A step attempt whose isolate was killed (CPU or memory limit, eviction)
+	 * never reaches its finish write, so the next attempt, or the workflow's
+	 * own terminal transition, closes those rows here with the given reason.
+	 */
+	async interruptRunningWorkflowRuns(input: {
+		workflowId: string
+		excludeRunId?: string | null
+		errorName: string
+		errorMessage: string
+		errorTriage: RunErrorTriage | null
+		triageNote: string | null
+		triagedBy: string | null
+	}): Promise<Array<RunRecord>> {
+		const workflowId = input.workflowId.trim()
+		if (!workflowId) return []
+		const rows = this.execSqlTracked<{
+			id: string
+			started_at: string
+			idempotency_key: string | null
+		}>(
+			'healStaleRunning',
+			`SELECT id, started_at, idempotency_key FROM runs
+			WHERE workflow_id = ? AND surface = 'workflow' AND status = 'running'
+			LIMIT ?`,
+			workflowId,
+			maxStaleRunningReconcilesPerPass,
+		).toArray()
+		const finishedAt = new Date().toISOString()
+		const ids: Array<string> = []
+		for (const row of rows) {
+			if (input.excludeRunId && row.id === input.excludeRunId) continue
+			this.markRunningInterrupted({
+				id: row.id,
+				surface: 'workflow',
+				idempotencyKey: row.idempotency_key,
+				startedAt: row.started_at,
+				finishedAt,
+				reason: {
+					errorName: input.errorName,
+					errorMessage: input.errorMessage,
+					errorTriage: input.errorTriage,
+					triageNote: input.triageNote,
+					triagedBy: input.triagedBy,
+				},
+			})
+			ids.push(row.id)
+		}
+		if (ids.length === 0) return []
+		await this.ensureRetentionAlarm()
+		const placeholders = ids.map(() => '?').join(', ')
+		return this.execSqlTracked<Record<string, SqlStorageValue>>(
+			'healStaleRunning',
+			`SELECT r.* FROM runs r WHERE r.id IN (${placeholders})`,
+			...ids,
+		)
+			.toArray()
+			.map((row) => mapRunRow(row, Number(row['log_count'] ?? 0) || 0))
+	}
+
 	async dashboardBuckets(input: { since: string; until: string }): Promise<{
 		buckets: Array<WorkspaceRunBucket>
 		countsSince: string | null
@@ -4155,9 +4619,7 @@ class RunLogBase extends DurableObject<Env> {
 				surface: (isRunSurface(String(row.surface))
 					? String(row.surface)
 					: 'execute') as WorkspaceRunBucket['surface'],
-				status: (row.status === 'success' ||
-				row.status === 'error' ||
-				row.status === 'running'
+				status: (runState.is(row.status)
 					? row.status
 					: 'error') as WorkspaceRunBucket['status'],
 				count: Number(row.count ?? 0) || 0,
@@ -4956,13 +5418,35 @@ export const RunLog = Sentry.instrumentDurableObjectWithSentry(
 )
 export type RunLog = InstanceType<typeof RunLog>
 
+export type RunHistoryTransferRow = Record<string, SqlStorageValue>
+
+export type RunHistoryTransferPage = {
+	runs: Array<RunHistoryTransferRow>
+	logs: Array<RunHistoryTransferRow>
+	nextAfterId: string | null
+}
+
 export type RunLogRpc = DurableObjectPitrRpc & {
+	countRunHistory: () => Promise<number>
+	exportRunHistoryPage: (input: {
+		afterId: string | null
+		limit: number
+	}) => Promise<RunHistoryTransferPage>
+	importRunHistory: (input: {
+		runs: Array<RunHistoryTransferRow>
+		logs: Array<RunHistoryTransferRow>
+	}) => Promise<{ imported: number }>
 	recordSkillRead: (event: SkillReadEvent) => Promise<void>
 	skillReadSummary: (input: {
 		since: string
 		packageIds: Array<string>
 	}) => Promise<SkillReadSummary>
-	startRun: (input: { run: RunLogRowInput }) => Promise<{ ok: true }>
+	recordPackageAppCpuSample: (sample: PackageAppCpuSample) => Promise<void>
+	packageAppCpuSummary: () => Promise<PackageAppCpuSummary>
+	startRun: (input: {
+		run: RunLogRowInput
+		staleAfter?: string | null
+	}) => Promise<{ ok: true }>
 	claimRun: (input: { run: RunLogRowInput }) => Promise<{
 		claimed: boolean
 		run: RunRecord
@@ -4981,6 +5465,15 @@ export type RunLogRpc = DurableObjectPitrRpc & {
 	getRun: (input: {
 		runId: string
 	}) => Promise<{ run: RunRecord; logs: Array<RunRecordLog> } | null>
+	interruptRunningWorkflowRuns: (input: {
+		workflowId: string
+		excludeRunId?: string | null
+		errorName: string
+		errorMessage: string
+		errorTriage: RunErrorTriage | null
+		triageNote: string | null
+		triagedBy: string | null
+	}) => Promise<Array<RunRecord>>
 	getRunByIdempotencyKey: (input: {
 		idempotencyKey: string
 		surface?: RunSurface | null
@@ -4988,6 +5481,17 @@ export type RunLogRpc = DurableObjectPitrRpc & {
 	deleteRunIfRunning: (input: {
 		runId: string
 	}) => Promise<{ deleted: boolean }>
+	startWebhookDeliveryAttempt: (input: {
+		run: RunLogRowInput
+		staleAfter: string
+		limit: number
+	}) => Promise<{ started: boolean; inFlight: number }>
+	claimPackageEventSlot: (input: {
+		id: string
+		limit: number
+		expiresAt: string
+	}) => Promise<{ claimed: boolean; inFlight: number }>
+	releasePackageEventSlot: (input: { id: string }) => Promise<void>
 	updateRunningMetadata: (input: {
 		runId: string
 		metadataJson: string

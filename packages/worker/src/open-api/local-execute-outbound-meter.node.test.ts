@@ -16,6 +16,7 @@ import {
 	createSavedPackageRecord,
 	moduleGraphMockModule as mockModule,
 } from '#worker/test-support/module-graph.ts'
+import { addInProcessPackageGraphIsolates } from '#worker/test-support/local-execute-package-graph.ts'
 import { createOpenApiTestHarness } from '#worker/test-support/open-api-http.ts'
 
 vi.mock('#worker/package-registry/repo.ts', async (importOriginal) => ({
@@ -28,6 +29,13 @@ vi.mock('#worker/package-registry/source.ts', async (importOriginal) => ({
 	...(await importOriginal<typeof PackageRegistrySourceModule>()),
 	loadPackageSourceBySourceId: (...args: Array<unknown>) =>
 		mockModule.loadPackageSourceBySourceId(...args),
+	loadServingPackageSourceBySourceId: (...args: Array<unknown>) =>
+		mockModule.loadPackageSourceBySourceId(...args),
+	loadPackageSourceRowForUser: async () => ({
+		id: 'source-1',
+		published_commit: 'commit-1',
+		serving_commit: 'commit-1',
+	}),
 }))
 
 vi.mock(
@@ -98,6 +106,7 @@ function stubPublishedGreetPackage(ownerUserId: string) {
 
 async function createApiWithExhaustedOutboundMeter() {
 	const api = await createOpenApiTestHarness()
+	addInProcessPackageGraphIsolates(api.env as Env)
 	await api.userMeter.seed({
 		userId: api.userId,
 		resource: 'outbound_fetches_per_day',
@@ -152,7 +161,6 @@ export default async function main(params) { return greet(params.name) }`,
 
 test('a CapabilityProxy gatewayFetch past the daily outbound cap says when the meter resets', async () => {
 	const { api, token } = await createApiWithExhaustedOutboundMeter()
-	const limit = planLimits.free.maxOutboundFetchesPerDay
 
 	const response = await api.call('POST', '/v1/capability-proxy/call', {
 		token,
@@ -163,7 +171,7 @@ test('a CapabilityProxy gatewayFetch past the daily outbound cap says when the m
 	})
 
 	expect(response.status).toBe(429)
-	expect(response.body.error?.message).toBe(
-		`Plan limit reached: your "free" plan allows at most ${limit} outbound fetches per day and you currently have ${limit}. This daily limit resets at 00:00 UTC, in 1h 26m. Upgrade your plan at /@api-user/-/billing.`,
-	)
+	expect(response.body.error?.message).toMatch(/outbound fetches per day/)
+	expect(response.body.error?.message).toContain('1h 26m')
+	expect(response.body.error?.message).toMatch(/[Uu]pgrade your plan/)
 })

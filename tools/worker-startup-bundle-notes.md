@@ -480,3 +480,19 @@ raised again.
   Signup and email-change already await `assessAccountEmail`. CI dry-run after
   deferral: platform and runtime under the 6_965_000 / 5_495_000 ceilings (Rhino
   #34 / #35) without raising them.
+
+- Shrink and rebaseline platform and runtime (#3594, #3590). Main `6b3b4163d`
+  had grown to platform 6_967_027 and runtime 5_497_291 across many merges. This
+  change removes about 184 KB from platform and 355 KB from runtime: the
+  disposable email domain list (~163 KB) loads from the
+  `disposable-email-domains.mjs` additional module, and
+  `kody-custom/no-inline-type-only-import` rewrites `import { type X }` to
+  `import type`, which drops modules that were kept only as bare side-effect
+  imports. Local dry-run after: platform 6_782_846 and runtime 5_142_042. Origin
+  moves 769_682 → 802_810 because Rolldown regroups a few email and dead-letter
+  modules into the entry chunk. Largest remaining edges: `@babel/parser` (~296
+  KB, synchronous `parseModuleSource` with many callers), `mime-db` through the
+  agents MCP path (~137 KB, platform), and the `tldts` trie (~121 KB). Reviewed
+  ceilings platform 6_790_000 and runtime 5_150_000. This upstream merge rebases
+  those reviewed ceilings to platform 6_790_000 and runtime 5_150_000 on the
+  fork while keeping the Rhino ledger notes above.

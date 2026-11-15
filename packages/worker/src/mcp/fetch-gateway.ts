@@ -1,4 +1,4 @@
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
 import { bytesToBase64 } from '@kody-internal/shared/base64.ts'
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import {
@@ -32,6 +32,10 @@ import {
 import { EncodedPlaceholderError } from '#mcp/secrets/encoded-placeholder.ts'
 import { McpCallerError } from '#mcp/caller-error.ts'
 import {
+	gatewayErrorResponse,
+	withoutForgedGatewayErrorHeader,
+} from '#mcp/sandbox-rpc-outcome.ts'
+import {
 	createHostSecretAccessDeniedBatchMessage,
 	createMissingSecretMessage,
 	fetchSecretAuthRequiredMessage,
@@ -40,8 +44,8 @@ import {
 } from '#mcp/secrets/errors.ts'
 import { createUnresolvedSecretMessage } from '#mcp/secrets/unresolved-secret.ts'
 import { normalizeHost } from '#mcp/secrets/allowed-hosts.ts'
-import { type ResolvedSecret } from '#mcp/secrets/service.ts'
-import { type SecretScope } from '#mcp/secrets/types.ts'
+import type { ResolvedSecret } from '#mcp/secrets/service.ts'
+import type { SecretScope } from '#mcp/secrets/types.ts'
 import { secretPageOrgSlugFromCaller } from '#mcp/secrets/package-approval-url.ts'
 import { SecretProviderHostDeniedError } from '#mcp/secrets/secret-providers/errors.ts'
 import {
@@ -73,7 +77,7 @@ import {
 	credentialFetchPlacementKey,
 	type CredentialFetchPlacement,
 } from '#worker/credentials/credential-resolver.ts'
-import { type CredentialFillSite } from '#worker/credentials/fill-placement.ts'
+import type { CredentialFillSite } from '#worker/credentials/fill-placement.ts'
 import {
 	auditResolvedFetchPlacements,
 	resolveCredential,
@@ -84,8 +88,15 @@ import { credentialClientHeaderName } from '#worker/credentials/credential-clien
 import {
 	isSealedTokenName,
 	openSealedToken,
+	type SealedTokenMinter,
+	sealedTokenMinter,
+	sealedTokenMinterBucket,
 	sealTokenResponse,
 } from '#worker/credentials/sealed-token.ts'
+import {
+	type JwtSignAnyHostCaller,
+	recordJwtSignAnyHostDestination,
+} from '#worker/credentials/jwt-sign-any-host.ts'
 import {
 	pathSegmentEncodedCredentialNames,
 	withPathSegmentEncodingWarning,
@@ -101,7 +112,7 @@ import { CredentialClientError } from '#worker/credentials/credential-client.ts'
 import { CredentialLoginRetryLaterError } from '#worker/credentials/credential-request.ts'
 import { recordRetriedLoginSession } from '#worker/credentials/login-session-store.ts'
 import { IntegrationHostNotAllowedError } from './execute-modules/integration-host-allowlist.ts'
-import { type StorageContext } from '#mcp/storage.ts'
+import type { StorageContext } from '#mcp/storage.ts'
 import {
 	billedOrgIdOf,
 	type RequestContext,
@@ -127,6 +138,7 @@ import {
 	requestContextFromVisitClaims,
 	verifyPackageAppVisitTicket,
 } from '#worker/package-runtime/package-app-visit-ticket.ts'
+import { kodyDevOutboundFetch } from '#worker/package-runtime/kody-dev-simulation.ts'
 
 type FetchGatewayProps = {
 	baseUrl: string
@@ -213,6 +225,7 @@ export type FetchGatewayEnv = Pick<
 	Env,
 	'APP_DB' | 'SECRET_STORE_KEY' | 'USER_METER'
 > &
+	Partial<Pick<Env, 'KODY_DEV_MOCK_SECRETS' | 'KODY_DEV_OUTBOUND_URL'>> &
 	UsageEnv
 
 /**
@@ -316,14 +329,29 @@ async function applyPackageAppVisitTicketToGateway(input: {
 }
 
 export class KodyFetchGateway extends WorkerEntrypoint<Env, FetchGatewayProps> {
+	/** Refusals come back as a marked response; see `sandbox-rpc-outcome.ts`. */
 	async fetch(request: Request) {
-		return executeGatewayFetch({
-			env: this.env,
-			props: this.ctx.props,
-			request,
-			waitUntil: (promise) => this.ctx.waitUntil(promise),
-		})
+		try {
+			return withoutForgedGatewayErrorHeader(
+				await executeGatewayFetch({
+					env: this.env,
+					props: this.ctx.props,
+					request,
+					waitUntil: (promise) => this.ctx.waitUntil(promise),
+				}),
+			)
+		} catch (error) {
+			return gatewayErrorResponse(error)
+		}
 	}
+}
+
+export const gatewayWithoutRunContextMessage =
+	'Outbound fetch has no run context: fetch() was called outside the run that owns it (for example from a detached callback or inside AsyncLocalStorage.run(null)), so it was refused.'
+
+/** The executor's shared `globalOutbound` gateway is minted with empty props. */
+function hasRunContext(props: FetchGatewayProps | undefined) {
+	return typeof props?.baseUrl === 'string'
 }
 
 export async function executeGatewayFetch(input: {
@@ -337,6 +365,9 @@ export async function executeGatewayFetch(input: {
 	/** Override {@link outboundFetchIdleTimeoutMs}. Tests use short values. */
 	idleTimeoutMs?: number
 }): Promise<Response> {
+	if (!hasRunContext(input.props)) {
+		throw new Error(gatewayWithoutRunContextMessage)
+	}
 	return await runInFeatureFlagExecution(input.props.executionId, () =>
 		fetchThroughGateway(input),
 	)
@@ -346,7 +377,8 @@ async function fetchThroughGateway(
 	input: Parameters<typeof executeGatewayFetch>[0],
 ): Promise<Response> {
 	const resolved = await applyPackageAppVisitTicketToGateway(input)
-	const globalFetch = resolved.globalFetch ?? fetch
+	const globalFetch =
+		resolved.globalFetch ?? kodyDevOutboundFetch(resolved.env) ?? fetch
 	const startedAtMs = Date.now()
 	let response: Response | undefined
 	let deadline: OutboundFetchDeadline | undefined
@@ -518,7 +550,7 @@ async function fetchThroughGateway(
 					env: input.env,
 					response,
 					requestUrl: transformed.url,
-					approvedHosts: expanded.approvedHosts,
+					mintedWith: expanded.mintedWith,
 					filledValues: substitutedValues,
 					org: input.props.userId,
 					binding: input.props.credentialClientBinding ?? null,
@@ -535,7 +567,9 @@ async function fetchThroughGateway(
 			pathSegmentEncodedNames,
 		)
 		return credentialClient
-			? withCredentialClientHint(redacted, credentialClient.shape)
+			? withCredentialClientHint(redacted, credentialClient.shape, {
+					providerLabel: credentialClient.providerLabel,
+				})
 			: redacted
 	} catch (error) {
 		deadline?.fail()
@@ -660,6 +694,7 @@ export async function expandSecretPlaceholders(input: {
 	request: Request
 	props: FetchGatewayProps
 	env: Pick<Env, 'APP_DB' | 'SECRET_STORE_KEY'>
+	waitUntil?: (promise: Promise<unknown>) => void
 }): Promise<{
 	request: Request
 	substitutedValues: Array<string>
@@ -676,8 +711,11 @@ export async function expandSecretPlaceholders(input: {
 	 * Used to warn on a 4xx; never includes values.
 	 */
 	pathSegmentEncodedNames: Array<string>
-	/** Approved hosts of the stored secrets this request filled. */
-	approvedHosts: Array<string>
+	/**
+	 * Stored secrets this request filled, directly or through a sealed token
+	 * minted with them, and their approved hosts.
+	 */
+	mintedWith: Array<SealedTokenMinter>
 }> {
 	const headers = new Headers(input.request.headers)
 	// A client handle is for the gateway only; it never leaves.
@@ -724,7 +762,7 @@ export async function expandSecretPlaceholders(input: {
 			bodyFillDone: Promise.resolve(),
 			deferRedirectFollow: false,
 			pathSegmentEncodedNames: [],
-			approvedHosts: [],
+			mintedWith: [],
 		}
 	}
 
@@ -752,7 +790,7 @@ export async function expandSecretPlaceholders(input: {
 	const credentialNamesByPlaceholder = new Map<string, string>()
 	const encodedBasicCredentials: Array<string> = []
 	const substitutedValues: Array<string> = []
-	const approvedHosts: Array<string> = []
+	const mintedWith: Array<SealedTokenMinter> = []
 	let referencedAnyCredential = false
 
 	const requestHost = normalizeHost(requestUrl.hostname)
@@ -931,7 +969,8 @@ export async function expandSecretPlaceholders(input: {
 			) {
 				continue
 			}
-			const value = await openSealedToken({
+			const anyHostFill: { caller?: JwtSignAnyHostCaller } = {}
+			const opened = await openSealedToken({
 				env: input.env,
 				name,
 				org: requireFetchUserId(batchProps),
@@ -940,7 +979,34 @@ export async function expandSecretPlaceholders(input: {
 				parts: (fillSitesByPlaceholder.get(placeholder) ?? []).map(
 					(site) => site.part,
 				),
+				onAnyHostFill: (caller) => {
+					anyHostFill.caller = caller
+				},
+				// A package or session secret is approved in its own bucket, so
+				// only link when this run resolves the minter's bucket.
+				hostApprovalUrl: (minter) =>
+					minter.bucket ===
+					sealedTokenMinterBucket(minter.scope, storageContext)
+						? buildSecretHostApprovalUrl({
+								baseUrl: batchProps.baseUrl,
+								name: minter.secret,
+								scope: minter.scope,
+								requestedHost: requestHost,
+								storageContext,
+							})
+						: undefined,
 			})
+			const value = opened.value
+			mintedWith.push(...opened.mintedWith)
+			if (anyHostFill.caller) {
+				const recorded = recordJwtSignAnyHostDestination({
+					env: input.env,
+					caller: anyHostFill.caller,
+					host: requestHost,
+				})
+				if (input.waitUntil) input.waitUntil(recorded)
+				else await recorded
+			}
 			referencedAnyCredential = true
 			credentialNamesByPlaceholder.set(placeholder, 'sealed token')
 			replacements.set(placeholder, value)
@@ -1169,7 +1235,14 @@ export async function expandSecretPlaceholders(input: {
 			}),
 		)
 		for (const { referenced, resolved, value } of resolvedSecretResults) {
-			approvedHosts.push(...resolved.allowedHosts)
+			mintedWith.push(
+				sealedTokenMinter({
+					secret: referenced.name,
+					scope: resolved.scope ?? referenced.scope ?? 'user',
+					hosts: resolved.allowedHosts,
+					storageContext,
+				}),
+			)
 			const placeholder = buildSecretPlaceholder(referenced)
 			credentialNamesByPlaceholder.set(placeholder, referenced.name)
 			if (!replacements.has(placeholder)) {
@@ -1307,7 +1380,7 @@ export async function expandSecretPlaceholders(input: {
 		bodyFillDone,
 		deferRedirectFollow,
 		pathSegmentEncodedNames,
-		approvedHosts,
+		mintedWith,
 	}
 }
 

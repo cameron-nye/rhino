@@ -2,12 +2,9 @@
 id: package_authoring
 title: Package authoring
 summary:
-  START HERE when creating or materially changing a Kody package: package
-  shape, required README.md (human) and AGENTS.md (agent), README Intent
-  section, per-export JSDoc (search Purpose), strict runtime input
-  checking for agent-facing exports, personal-details hygiene before going
-  public, secret-using package approval checklist, and scope-update
-  guidance without adding new primitives.
+  START HERE when creating or materially changing a Kody package: shape,
+  required README.md and AGENTS.md, README Intent, per-export JSDoc, runtime
+  input checking, public-visibility hygiene, and secret-using approvals.
 category: platform
 ---
 
@@ -24,10 +21,12 @@ surface). Publish checks fail when either file is missing or empty.
 Already-published packages keep running as published; the next author-driven
 publish requires both files.
 
-Unique Dynamic Worker days and how the acting user plus a stable module graph
-reuse one isolate per UTC day are documented once in
-[Platform efficiency](./platform-efficiency.md) (`guide:platform_efficiency`).
-Package README and AGENTS.md files do not repeat that cost model.
+> [!WATCH] https://www.youtube.com/watch?v=6t1a5cdgzY4 Watch: Kody package
+> publishing: push to save, publish to ship
+
+The Dynamic Worker cost model is in
+[Platform efficiency](./platform-efficiency.md) (`guide:platform_efficiency`);
+package README and AGENTS.md files do not repeat it.
 
 ## Choose an authoring lane
 
@@ -46,9 +45,9 @@ local filesystem and git access:
   commit, push, then publish with `packagePublishExternalPush`. If that tool
   returns `locked`, open the returned `approval_url` so the owner can promote
   the named commit. Do not treat HEAD as live until `published_commit` moves.
-  When the OAuth token is coarser than the export (Gmail drafts without send),
-  lock after the first publish — see
-  [locked-gmail-drafts.md](./locked-gmail-drafts.md).
+  Isolate-limit bundling: `guide:publish_large_packages`. When the OAuth token
+  is coarser than the export (Gmail drafts without send), lock after the first
+  publish — see [locked-gmail-drafts.md](./locked-gmail-drafts.md).
 - **Tool-only lane.** Without local filesystem/git access (MCP-only agents such
   as ChatGPT / Claude / Grok mobile apps), create with `packageSave` (complete
   UTF-8 text file set; no binary files) and edit through repo sessions
@@ -148,69 +147,17 @@ On exposed exports that publish or send, reject unknown input keys; see
 
 ## Export JSDoc
 
-Search detail (`entity: "package:…"`) shows an Exports table whose **Purpose**
-column comes from each export's JSDoc. When JSDoc is missing, Purpose falls back
-to the generic string `Package export.` Agents skim that column first when
-choosing among sibling exports. Export-specific limits and call gotchas belong
-here, not in MCP server instructions or account memories
-([Where agent guidance lives](./agent-guidance.md)).
-
-TypeScript types and the export name give call shape when present. They do not
-say **when** or **why** to pick one export over another, and on exposed exports
-they do not protect callers who pass plain objects through `execute` (see
-[Runtime input checking](#runtime-input-checking)). README `## Intent` is
-package-scoped and often does not name every export. Neither replaces per-export
-JSDoc.
-
-Do not add a package manifest field, runtime object, saved value, or other Kody
-primitive solely to track export purpose. Put it in JSDoc on the exported
-function.
-
-When you create or materially change a public export:
-
-1. Write JSDoc immediately above the exported function (or above
-   `export default` for a local binding in the same file).
-2. Start with one line that states **what** the export does and **when** to call
-   it.
-3. Add `@param` for each input.
-4. Add `@returns`.
-5. Add `@example` that **imports** `kody:@scope/id/export` and **calls** it.
-
-If the export's `package.json` `exports` entry has a `types` condition, put the
-JSDoc on that types file — search reads the types module when it exists. JSDoc
-on an imported re-export (`export default foo` where `foo` is imported) is not
-attributed; implement the function in the export file (or a local binding in
-that file) so the comment sits on the exported symbol.
-
-```ts
-/**
- * Format a Discord moderation report for a channel.
- * Use when a human or job needs a readable summary of recent flags.
- *
- * @param input - Channel id and optional lookback window
- * @returns Markdown report body
- *
- * @example
- * import formatReport from 'kody:@scope/discord/format-report'
- *
- * const report = await formatReport({ channelId: '123' })
- */
-export default async function formatReport(input: {
-	channelId: string
-	lookbackHours?: number
-}): Promise<{ markdown: string }> {
-	return { markdown: '' }
-}
-```
-
-Treat missing or generic Purpose (`Package export.`) as unfinished work, the
-same as a missing README `## Intent` section.
+Every public export needs JSDoc: one line saying **what** it does and **when**
+to call it, then `@param`, `@returns`, and an `@example` that imports
+`kody:@scope/id/export` and calls it. Search's Exports **Purpose** column reads
+it; without it Purpose is the generic `Package export.`, which counts as
+unfinished work. Rules for types files, re-exports, and a full example:
+[Write export JSDoc](./package-export-jsdoc.md) (`guide:package_export_jsdoc`).
 
 ## Runtime input checking
 
-This rule applies to **exposed exports** — the package surface agents call
-through `execute` with plain objects. Internal helpers and modules can rely on
-TypeScript; do not prescribe Remix Schema or fail-on-unknown for internal code.
+This rule applies to **exposed exports** — the surface agents call through
+`execute` with plain objects. Internal code can rely on TypeScript alone.
 
 On those export boundaries, TypeScript types do not run at call time, so a
 guessed or mistyped key is easy to ship. For exports that publish, send, write
@@ -220,12 +167,13 @@ and prefer one clear contract.
 1. **Fail on unknown keys (strict).** At the export entrypoint, parse the call
    object with a schema that rejects unrecognized fields. Prefer
    [`remix/data-schema`](https://www.npmjs.com/package/@remix-run/data-schema)
-   over Zod when choosing a schema library for those boundaries (smaller and
-   faster in Worker isolates). Remix Schema's `object()` strips unknown keys by
-   default — pass `{ unknownKeys: 'error' }` for agent-facing export inputs:
+   over Zod (smaller and faster in Worker isolates). Remix Schema's `object()`
+   strips unknown keys by default — pass `{ unknownKeys: 'error' }` for
+   agent-facing export inputs:
 
    ```ts
    import { object, optional, parse, string } from 'remix/data-schema'
+   import type { InferInput } from 'remix/data-schema'
 
    const createPostInput = object(
    	{
@@ -237,7 +185,9 @@ and prefer one clear contract.
    	{ unknownKeys: 'error' },
    )
 
-   export default async function createPost(raw: unknown) {
+   export type CreatePostParams = InferInput<typeof createPostInput>
+
+   export default async function createPost(raw: CreatePostParams) {
    	const input = parse(createPostInput, raw)
    	// …
    }
@@ -279,21 +229,10 @@ Non-production runtimes may serve inline on the app origin at
 Every package app receives only `/<path>` after the host strips the mount.
 Root-relative links such as `/audio/123` therefore escape the mount. Import
 `packageContext` from `kody:runtime` and build every in-app link, redirect,
-share/email URL, and OAuth callback against its public base. A Remix recipe that
-prefixes its route contract remounts the Request in the entry; see
-[Package apps](./package-apps.md#remix-recipe).
-
-```ts
-import { packageContext } from 'kody:runtime'
-import { form, route } from 'remix/routes'
-
-export const routes = route(packageContext?.appBasePath ?? '', {
-	home: '/',
-	notes: form('notes'),
-})
-```
-
-A fetch handler builds those URLs itself:
+share/email URL, and OAuth callback against its public base. Remix apps prefix
+their route contract with `packageContext.appBasePath`; see
+[Package apps](./package-apps.md#remix-recipe). A fetch handler builds those
+URLs itself:
 
 ```ts
 import { packageContext } from 'kody:runtime'
@@ -382,7 +321,8 @@ works in ad hoc `execute`.
 
 Do not vendor the library, switch to a dynamic import, or skip checks. Keep the
 Kody package as a thin orchestrator and run the heavy work in a process the
-owner operates. Open `search({ entity: "guide:heavy_work_offload" })`.
+owner operates. Open `search({ entity: "guide:heavy_work_offload" })` or, when
+only publish bundling is too big, `guide:publish_large_packages`.
 
 ## Secret-using packages
 
@@ -423,11 +363,10 @@ require it.
 
 ## Cross-package composition
 
-Call another package export the same way search entity detail shows: import it,
-then call it.
+Import another package export, then call it, as search entity detail shows.
 
-- **Name known when you write the code** → static import, and list the package
-  in `package.json#kody.dependencies` when the call site is package source:
+- **Name known when you write the code** → static import, declared in
+  `package.json#kody.dependencies` in package source:
 
   ```ts
   import sendMail from 'kody:@scope/mailer/send'
@@ -435,7 +374,8 @@ then call it.
   ```
 
 - **Name is data** (route table, config string, runtime choice) → computed
-  dynamic import:
+  dynamic import,
+  [`execute` only](./package-lifecycle.md#saved-package-composition):
 
   ```ts
   const mod = await import(specifier) // "kody:@scope/package/export"
@@ -452,10 +392,9 @@ warn on gaps
 [details](./package-apps.md#who-the-app-runs-as)).
 
 README, `AGENTS.md`, and export `@example` blocks follow the same rules: import
-and call. Do not demo a `packages` helper. Package codemod
+and call; never demo a `packages` helper. Codemod
 `0008-packages-invoke-to-static-import` rewrites literal call sites and
-parseable Markdown examples; ambiguous or keyed sites need a manual edit as
-above.
+parseable Markdown examples; fix ambiguous or keyed sites by hand.
 
 ## Ship Agent Skills
 
@@ -478,10 +417,11 @@ irreversible-side-effect guard when a smoke test should stay safe.
    `kody:@scope/package/export` from `execute` against a read-only export or
    package-supported dry-run input that exercises approved secrets (see
    [Secret-using packages](#secret-using-packages) above).
-3. **Package apps** — `packageAppFetch` with `package_id` or leftover `kody_id`
-   (the scoped name), plus the path, method, and body your handler needs.
-   Confirm `{ status, headers, body, truncated }` and any `packageStorage()`
-   side effects. See [Package app fetch](../use/package-app-fetch.md) and the
+3. **Package apps** — `packageAppFetch` with the scoped name or `package_id`
+   when the name is not known, plus the path, method, and body your handler
+   needs. Confirm `{ status, headers, body, truncated }` and any
+   `packageStorage()` side effects. See
+   [Package app fetch](../use/package-app-fetch.md) and the
    [Package apps](./package-apps.md) playbook (`guide:package_apps`).
 4. **Subscriptions** — from interactive MCP, `packageSubscriptionDispatch` with
    the scoped name (or `package_id` when the name is not known), `topic`, and

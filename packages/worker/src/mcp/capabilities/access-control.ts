@@ -1,4 +1,5 @@
-import { type McpCallerContext } from '@kody-internal/shared/chat.ts'
+import { filesWorkspaceOverride } from '#worker/files/feature.ts'
+import type { McpCallerContext } from '@kody-internal/shared/chat.ts'
 import { auditDatabaseFromEnv } from '#worker/audit-log.ts'
 import {
 	nonInteractiveTriggerOf,
@@ -24,12 +25,12 @@ import {
 	type McpAuthDenialReason,
 	recordMcpAuthDenial,
 } from '#mcp/auth-audit.ts'
-import { type BuiltCapabilityRegistry } from './build-capability-registry.ts'
+import type { BuiltCapabilityRegistry } from './build-capability-registry.ts'
 import {
 	requiresSiteAccess,
 	type SiteAccessActorTrigger,
 } from './triggered-site-access.ts'
-import { type Capability, type CapabilitySpec } from './types.ts'
+import type { Capability, CapabilitySpec } from './types.ts'
 import { andLiveDeletedAtSql } from '#worker/soft-delete/live-sql.ts'
 
 type CapabilityAccessRequirement = Pick<
@@ -246,7 +247,13 @@ export async function resolveCallerFeatureFlags(
 	let promise = callerFeatureFlagMaps.get(callerContext)
 	if (!promise) {
 		promise = loadCallerFeatureFlagResolution(env, callerContext).then(
-			(resolution) => flagsFromResolution(resolution),
+			(resolution) => {
+				const flags = flagsFromResolution(resolution)
+				const override = filesWorkspaceOverride(env)
+				return override !== undefined && callerContext.user
+					? { ...flags, 'files-workspace': override }
+					: flags
+			},
 		)
 		callerFeatureFlagMaps.set(callerContext, promise)
 	}

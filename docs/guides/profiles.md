@@ -17,6 +17,9 @@ only when someone explicitly grants it something, such as sharing a package with
 it, or when it creates something and gets the creator grant on it. It never
 holds more than you and its parents hold.
 
+> [!WATCH] https://www.youtube.com/watch?v=fNMqSD2NB9w Watch: Kody agent
+> profiles: scoped access for every agent
+
 Profiles are an experiment. Turn them on at `/account/experiments` or with
 `experimentSet({ experiment: "profiles", enabled: true })`. You can create,
 list, shorten, and revoke profiles, share packages with them, and mint tokens
@@ -38,8 +41,15 @@ limits. A denial names the layer that blocked it:
 
 - `profile_grant`:
   `Profile "helper" was not granted package:execute on package @acme/tools` (or
-  `Parent profile "agent" does not hold ...`).
+  `Parent profile "agent" does not hold ...`). Credentials are named the same
+  way: `Profile "helper" was not granted secret:use on credential "notes-key"`.
 - `profile_inactive`: the profile or a parent was revoked or expired.
+
+Open API and the CLI report these as 403 `profile_grant` or `profile_inactive`,
+never `insufficient_scope`: a new token alone cannot fix them. Grant the profile
+access (the message also says when the token lacks the scope), or use an active
+profile. Sharing a package with a profile does not share the credentials its
+code uses; grant each credential to the profile too.
 
 ## Share a package with a profile
 

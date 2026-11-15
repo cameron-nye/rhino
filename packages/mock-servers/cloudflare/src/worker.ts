@@ -15,6 +15,11 @@ import { routeRehearsal } from './rehearsal-routes.ts'
 
 type MockCloudflareEnv = {
 	MOCK_API_TOKEN?: string
+	/**
+	 * Local dev only: git smart HTTP origin (`tools/mock-artifacts-git-server.ts`)
+	 * that backs repo remotes, so repo sessions can clone and push.
+	 */
+	MOCK_GIT_BACKEND_URL?: string
 	MOCK_CLOUDFLARE_ARTIFACTS_STATE: DurableObjectNamespace
 	MOCK_CLOUDFLARE_EMAIL_STATE: DurableObjectNamespace
 }
@@ -282,10 +287,11 @@ function buildMockArtifactsRemote(input: {
 	accountId: string
 	namespace: string
 	repoName: string
+	gitBackendUrl?: string
 }) {
 	const remote = new URL(
 		`/git/${encodeURIComponent(input.namespace)}/${encodeURIComponent(input.repoName)}.git`,
-		input.requestUrl,
+		input.gitBackendUrl?.trim() || input.requestUrl,
 	)
 	return remote.toString()
 }
@@ -539,6 +545,15 @@ async function handleDashboard(
 	})
 }
 
+/** REST accepts `from: { address, name }`; the shared schema stores the parts flat. */
+function flattenNamedFrom(body: unknown) {
+	if (typeof body !== 'object' || body === null) return body
+	const from = (body as { from?: unknown }).from
+	if (typeof from !== 'object' || from === null) return body
+	const named = from as { address?: unknown; name?: unknown }
+	return { ...body, from: named.address, fromName: named.name }
+}
+
 async function handleEmailSend(
 	request: Request,
 	env: MockCloudflareEnv,
@@ -548,7 +563,7 @@ async function handleEmailSend(
 	if (body === null) {
 		return errorEnvelope(400, 1001, 'invalid JSON body')
 	}
-	const parsed = parseSafe(outboundEmailSchema, body)
+	const parsed = parseSafe(outboundEmailSchema, flattenNamedFrom(body))
 	if (!parsed.success) {
 		return errorEnvelope(400, 'E_VALIDATION_ERROR', 'Invalid email payload.')
 	}
@@ -645,6 +660,7 @@ async function handleArtifactsRepos(
 			accountId: input.accountId,
 			namespace: input.namespace,
 			repoName,
+			gitBackendUrl: env.MOCK_GIT_BACKEND_URL,
 		}),
 	})
 	const token = await state.createToken({
@@ -764,6 +780,7 @@ async function handleArtifactsFork(
 			accountId: input.accountId,
 			namespace: input.namespace,
 			repoName: targetName,
+			gitBackendUrl: env.MOCK_GIT_BACKEND_URL,
 		}),
 	})
 	const token = await state.createToken({

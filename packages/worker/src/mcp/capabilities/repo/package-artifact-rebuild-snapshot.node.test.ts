@@ -1,7 +1,23 @@
 import { ownerIdFromStored } from '@kody-internal/shared/owner-person-ids.ts'
 import { beforeEach, expect, test, vi } from 'vitest'
+import type * as EntitySourcesModule from '#worker/repo/entity-sources.ts'
 import type * as PublishedBundleArtifactRepo from '#worker/repo/published-bundle-artifacts-repo.ts'
 import type * as PublishedRuntimeArtifacts from '#worker/package-runtime/published-runtime-artifacts.ts'
+
+import type { advanceServingCommit } from '#worker/package-capabilities/serving-commit-advance.ts'
+
+vi.mock('#worker/package-capabilities/serving-commit-advance.ts', async () => {
+	const { advanceEntitySourceServingCommit } =
+		await import('#worker/repo/entity-sources.ts')
+	return {
+		advanceServingCommit: (input: Parameters<typeof advanceServingCommit>[0]) =>
+			advanceEntitySourceServingCommit(input.env.APP_DB, {
+				id: input.sourceId,
+				userId: input.userId,
+				commit: input.commit,
+			}),
+	}
+})
 
 const mockModule = vi.hoisted(() => ({
 	listPublishedPackageArtifactTargets: vi.fn(),
@@ -46,6 +62,15 @@ const mockModule = vi.hoisted(() => ({
 	},
 	readPublishedBundleArtifact: vi.fn(),
 	readPublishedSourceSnapshot: vi.fn(),
+}))
+
+const advanceEntitySourceServingCommit = vi.hoisted(() =>
+	vi.fn(async () => true),
+)
+
+vi.mock('#worker/repo/entity-sources.ts', async (importOriginal) => ({
+	...(await importOriginal<typeof EntitySourcesModule>()),
+	advanceEntitySourceServingCommit,
 }))
 
 vi.mock('#worker/repo/repo-session-rpc.ts', () => ({

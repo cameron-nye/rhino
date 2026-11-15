@@ -21,7 +21,15 @@ import {
 	buildMuseSettingsJson,
 	buildVsCodeInstallUrl,
 	buildVsCodeMcpJson,
-	chatGptDeveloperModeGuideUrl,
+	chatGptCustomMcpGuideUrl,
+	chatGptDesktopMcpSteps,
+	chatGptDirectoryListingNote,
+	chatGptWebMcpAvailabilityNote,
+	chatGptWebMcpSteps,
+	codexIdeMcpSteps,
+	codexMcpLoginHint,
+	codexSharedConfigNote,
+	openAiMcpGuideUrl,
 	claudeDesktopToolHint,
 	cueSiteUrl,
 	dotsIntroUrl,
@@ -30,12 +38,13 @@ import {
 	hermesMcpGuideUrl,
 	hermesMcpLoginCommand,
 	hermesMcpTokensPath,
-	isDefaultKodyMcpUrl,
+	buildKodyCliLoginCommand,
+	instinctSiteUrl,
+	kodyCliGlobalInstallCommand,
 	kodyAppIconFilename,
 	kodyBotTemplateLabel,
 	kodyBotTemplateSummary,
 	kodyBotTemplateUrl,
-	kodyChatGptPluginUrl,
 	kodyCursorAddPluginCommand,
 	kodyCursorMarketplaceUrl,
 	type McpClientKind,
@@ -46,10 +55,10 @@ import {
 	openMuseGuideUrl,
 	wajoSiteUrl,
 } from '#client/routes/onboarding-mcp-clients.ts'
-import { type HighlightedCode } from '#universal/highlighted-code.ts'
+import type { HighlightedCode } from '#universal/highlighted-code.ts'
 import {
 	AppIconCard,
-	ChatGptDeveloperModeWarning,
+	McpSetupNote,
 	ClientWarning,
 	CopyCard,
 	CopyCardDetails,
@@ -57,6 +66,7 @@ import {
 	OnboardingManualDetails,
 	PluginPrimaryInstall,
 	PrimaryActionLink,
+	McpSetupSteps,
 } from './onboarding-mcp-client-cards.tsx'
 
 function ConnectCopyCard(props: {
@@ -105,13 +115,94 @@ function ConnectCopyCardDetails(props: {
 	)
 }
 
-function ChatGptPluginAction(_props: object) {
+/**
+ * Numbered custom MCP connection steps with the MCP URL copy card after the
+ * step that asks for it (always index 1). Numbering continues past the card.
+ */
+function McpServerSteps(props: {
+	steps: ReadonlyArray<string>
+	mcpServerUrl: string
+	highlights?: Record<string, HighlightedCode>
+}) {
+	const [first, second, ...rest] = props.steps
 	return (
-		<PrimaryActionLink
-			href={kodyChatGptPluginUrl}
-			label="Add ChatGPT plugin"
-			external
+		<>
+			<McpSetupSteps steps={[first ?? '', second ?? '']} />
+			<ConnectCopyCard
+				highlights={props.highlights}
+				label="MCP URL"
+				value={props.mcpServerUrl}
+				copyLabel="Copy MCP URL"
+			/>
+			{rest.length > 0 ? <McpSetupSteps steps={rest} start={3} /> : null}
+		</>
+	)
+}
+
+function OpenAiMcpNote(props: {
+	note: string
+	href: string
+	linkLabel: string
+}) {
+	return (
+		<McpSetupNote
+			availability={props.note}
+			href={props.href}
+			linkLabel={props.linkLabel}
+			directoryListing={chatGptDirectoryListingNote}
 		/>
+	)
+}
+
+/** ChatGPT.com: add a custom MCP server from Plugins (Business and up). */
+function ChatGptWebMcpServer(props: {
+	mcpServerUrl: string
+	highlights?: Record<string, HighlightedCode>
+}) {
+	return (
+		<>
+			<McpServerSteps
+				steps={chatGptWebMcpSteps}
+				mcpServerUrl={props.mcpServerUrl}
+				highlights={props.highlights}
+			/>
+			<AppIconCard
+				src={buildKodyAppIconUrl(props.mcpServerUrl)}
+				downloadName={kodyAppIconFilename}
+			/>
+			<p>
+				{chatGptWebMcpAvailabilityNote} See{' '}
+				<SiteLink
+					href={chatGptCustomMcpGuideUrl}
+					target="_blank"
+					rel="noreferrer noopener"
+				>
+					OpenAI's custom MCP help
+				</SiteLink>
+				.
+			</p>
+		</>
+	)
+}
+
+/** Codex CLI: one command, then sign in. */
+function CodexCliMcpServer(props: {
+	mcpServerUrl: string
+	highlights?: Record<string, HighlightedCode>
+}) {
+	return (
+		<>
+			<McpSetupSteps steps={['In your terminal, run:']} />
+			<ConnectCopyCard
+				highlights={props.highlights}
+				label="codex CLI"
+				value={buildCodexMcpAddCommand(props.mcpServerUrl)}
+				copyLabel="Copy command"
+				variant="pill"
+				lang="sh"
+			/>
+			<McpSetupSteps steps={[codexMcpLoginHint]} start={2} />
+		</>
 	)
 }
 
@@ -139,86 +230,75 @@ export function renderPanelContent(
 					alternativeCopyLabel="Copy /add-plugin kody"
 				/>
 			)
-		case 'chatgpt': {
-			const appIconUrl = buildKodyAppIconUrl(mcpServerUrl)
-			const developerApp = (
-				<>
-					<ConnectCopyCard
-						highlights={highlights}
-						label="MCP URL"
-						value={mcpServerUrl}
-						copyLabel="Copy MCP URL"
-					/>
-					<AppIconCard src={appIconUrl} downloadName={kodyAppIconFilename} />
-					<ChatGptDeveloperModeWarning
-						href={chatGptDeveloperModeGuideUrl}
-						linkLabel="developer mode help"
-					/>
-				</>
-			)
-			if (!isDefaultKodyMcpUrl(mcpServerUrl)) return developerApp
+		case 'chatgpt':
 			return (
 				<>
-					<ChatGptPluginAction />
-					<OnboardingManualDetails summaryLead="Or create a developer-mode app">
-						{developerApp}
+					<McpServerSteps
+						steps={chatGptDesktopMcpSteps}
+						mcpServerUrl={mcpServerUrl}
+						highlights={highlights}
+					/>
+					<OpenAiMcpNote
+						note={codexSharedConfigNote}
+						href={openAiMcpGuideUrl}
+						linkLabel="OpenAI's MCP docs"
+					/>
+					<OnboardingManualDetails summaryLead="On ChatGPT.com instead? Add a custom MCP server">
+						<ChatGptWebMcpServer
+							mcpServerUrl={mcpServerUrl}
+							highlights={highlights}
+						/>
 					</OnboardingManualDetails>
 				</>
 			)
-		}
 		case 'codex': {
-			const appIconUrl = buildKodyAppIconUrl(mcpServerUrl)
-			const codexDeepLink = buildCodexMcpDeepLink(mcpServerUrl)
-			const codexCommand = buildCodexMcpAddCommand(mcpServerUrl)
-			const codexToml = buildCodexMcpToml(mcpServerUrl)
+			const cli = (
+				<CodexCliMcpServer
+					mcpServerUrl={mcpServerUrl}
+					highlights={highlights}
+				/>
+			)
+			const note = (
+				<OpenAiMcpNote
+					note={codexSharedConfigNote}
+					href={openAiMcpGuideUrl}
+					linkLabel="OpenAI's MCP docs"
+				/>
+			)
 			if (surface === 'mobile') {
-				const mobileMcp = (
-					<>
-						<ConnectCopyCard
-							highlights={highlights}
-							label="MCP URL"
-							value={mcpServerUrl}
-							copyLabel="Copy MCP URL"
-						/>
-						<AppIconCard src={appIconUrl} downloadName={kodyAppIconFilename} />
-					</>
-				)
-				if (!isDefaultKodyMcpUrl(mcpServerUrl)) return mobileMcp
 				return (
 					<>
-						<ChatGptPluginAction />
-						<OnboardingManualDetails summaryLead="Or paste the MCP URL in the ChatGPT app">
-							{mobileMcp}
-						</OnboardingManualDetails>
+						{cli}
+						{note}
 					</>
 				)
 			}
-			const desktopMcp = (
-				<>
-					<PrimaryActionLink href={codexDeepLink} label="Open Codex" />
-					<ConnectCopyCard
-						highlights={highlights}
-						label="codex CLI"
-						value={codexCommand}
-						copyLabel="Copy command"
-						variant="pill"
-						lang="sh"
-					/>
-					<ConnectCopyCard
-						highlights={highlights}
-						label="~/.codex/config.toml"
-						value={codexToml}
-						copyLabel="Copy TOML"
-						lang="toml"
-					/>
-				</>
-			)
-			if (!isDefaultKodyMcpUrl(mcpServerUrl)) return desktopMcp
 			return (
 				<>
-					<ChatGptPluginAction />
-					<OnboardingManualDetails summaryLead="Or add Kody as a Codex MCP server">
-						{desktopMcp}
+					{cli}
+					{note}
+					<OnboardingManualDetails summaryLead="Or add Kody in the ChatGPT desktop app or Codex IDE extension">
+						<McpServerSteps
+							steps={chatGptDesktopMcpSteps}
+							mcpServerUrl={mcpServerUrl}
+							highlights={highlights}
+						/>
+						<McpServerSteps
+							steps={codexIdeMcpSteps}
+							mcpServerUrl={mcpServerUrl}
+							highlights={highlights}
+						/>
+						<PrimaryActionLink
+							href={buildCodexMcpDeepLink(mcpServerUrl)}
+							label="Open Codex"
+						/>
+						<ConnectCopyCard
+							highlights={highlights}
+							label="~/.codex/config.toml"
+							value={buildCodexMcpToml(mcpServerUrl)}
+							copyLabel="Copy TOML"
+							lang="toml"
+						/>
 					</OnboardingManualDetails>
 				</>
 			)
@@ -551,6 +631,35 @@ export function renderPanelContent(
 					/>
 				</>
 			)
+		case 'instinct':
+			return (
+				<>
+					<p>
+						Instinct is a personal assistant you text or call (
+						<SiteLink href={instinctSiteUrl} target="_blank" rel="noreferrer">
+							instinct.com
+						</SiteLink>
+						). It has no official MCP support, but it can use a computer the way
+						you do, so it connects through the Kody CLI. Ask Instinct to run
+						these commands on its computer (Node 22 or later). The login prints
+						a link and a short code: ask Instinct to send them to you, check
+						that the code matches, and approve.
+					</p>
+					<ConnectCopyCard
+						highlights={highlights}
+						label="Kody CLI"
+						value={`${kodyCliGlobalInstallCommand}\n${buildKodyCliLoginCommand(mcpServerUrl)}`}
+						copyLabel="Copy commands"
+						lang="sh"
+					/>
+					<p>
+						Then Instinct uses Kody from the CLI: <code>kody search</code> finds
+						what your account can do, and <code>kody execute --local</code> runs
+						it with your connected accounts. If Instinct adds remote MCP
+						support, it can connect to <code>{mcpServerUrl}</code> instead.
+					</p>
+				</>
+			)
 		case 'copilot': {
 			const vsCodeJson = buildVsCodeMcpJson(mcpServerUrl)
 			const installUrl = buildVsCodeInstallUrl(mcpServerUrl)
@@ -671,12 +780,6 @@ export function renderPanelWarning(
 					check cloud agents.
 				</ClientWarning>
 			) : null
-		case 'chatgpt':
-			return surface === 'mobile' ? null : (
-				<ClientWarning>
-					ChatGPT desktop is Codex. Change selection if you meant that instead.
-				</ClientWarning>
-			)
 		case 'codex':
 			return surface === 'mobile' ? (
 				<ClientWarning>
@@ -764,12 +867,14 @@ export function renderPanelWarning(
 					a mobile app, or run these steps later on a computer.
 				</ClientWarning>
 			) : null
+		case 'chatgpt':
 		case 'cursor-cloud':
 		case 'copilot':
 		case 'copilot-app':
 		case 'devin':
 		case 'gemini':
 		case 'grok-bot':
+		case 'instinct':
 		case 'other':
 			return null
 		default: {

@@ -1,4 +1,4 @@
-import { type AuthenticatedAppUser } from '#app/authenticated-user.ts'
+import type { AuthenticatedAppUser } from '#app/authenticated-user.ts'
 import { destroyAuthCookie, isSecureRequest } from '#app/auth-session.ts'
 import { isAccountDeletionConfirmation } from '#universal/account-deletion-confirmation.ts'
 import {
@@ -7,6 +7,7 @@ import {
 	logAuditEvent,
 } from '#worker/audit-log.ts'
 import { createDb, usersTable } from '#worker/db.ts'
+import { AccountDeletionWritersActiveError } from '#worker/account/deletion-state.ts'
 import { scheduleUserDeletedEvent } from '#worker/identity/schedule-user-lifecycle-event.ts'
 import { isUsablePasswordHash } from '#worker/identity/usable-password.ts'
 import {
@@ -128,6 +129,9 @@ export async function deleteAccount({
 					blockers: error.blockers,
 				},
 			}
+		}
+		if (error instanceof AccountDeletionWritersActiveError) {
+			return { status: 409, payload: { error: error.message } }
 		}
 		throw error
 	}

@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
-import { type AddressInfo } from 'node:net'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mock, test } from 'node:test'
 import { Entry } from '@napi-rs/keyring'
 import {
+	apiUrlFrom,
 	buildExecuteToolArgs,
 	executeSourcesConflict,
 	argvIncludesJsonFlag,
@@ -15,6 +16,7 @@ import {
 	packagePublishParams,
 	resolvePackagePublishTarget,
 	parseApiParamsJson,
+	positionalModuleFile,
 	resolveApiToken,
 	resolveCommand,
 	resolveLocalExecuteBearer,
@@ -22,7 +24,7 @@ import {
 } from '../src/cli.js'
 import { OpenApiError, clearOpenApiRouteCache } from '../src/open-api-client.js'
 import { isPairedApiUrl } from '../src/api-token.js'
-import { type StoredApiToken } from '../src/api-token-store.js'
+import type { StoredApiToken } from '../src/api-token-store.js'
 import { formatToolResult } from '../src/tool-result.js'
 import { redact } from '../src/redact.js'
 import {
@@ -41,12 +43,17 @@ async function withTempKodyHome<T>(run: () => Promise<T>): Promise<T> {
 	const previousHome = process.env.HOME
 	const previousXdg = process.env.XDG_CONFIG_HOME
 	const previousToken = process.env.KODY_API_TOKEN
+	const previousAppData = process.env.APPDATA
 	process.env.HOME = home
 	process.env.XDG_CONFIG_HOME = home
+	// Windows keeps CLI config under %APPDATA%.
+	process.env.APPDATA = home
 	delete process.env.KODY_API_TOKEN
 	try {
 		return await run()
 	} finally {
+		if (previousAppData === undefined) delete process.env.APPDATA
+		else process.env.APPDATA = previousAppData
 		if (previousHome === undefined) delete process.env.HOME
 		else process.env.HOME = previousHome
 		if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME
@@ -222,6 +229,24 @@ test('argvIncludesJsonFlag and formatCliErrorJson expose additive sent', () => {
 			error: true,
 			message: 'maybe',
 			sent: 'unknown',
+		},
+	)
+	assert.deepEqual(
+		formatCliErrorJson(
+			new OpenApiError('run may still be going', {
+				status: 503,
+				code: 'internal_error',
+				runId: 'run-1',
+				idempotencyKey: 'key-1',
+			}),
+		),
+		{
+			error: true,
+			message: 'run may still be going',
+			status: 503,
+			code: 'internal_error',
+			runId: 'run-1',
+			idempotencyKey: 'key-1',
 		},
 	)
 })
@@ -483,14 +508,17 @@ test('explicit and stored API tokens remain usable on mismatched origins', async
 		loadApiToken: (requestedApiUrl) => ({
 			version: 1,
 			apiUrl: requestedApiUrl ?? apiUrl,
-			token: 'stored-token',
+			token: 'kody_at_stored-token',
 			tokenId: 'stored-id',
 		}),
+		backend: createFileBackend(
+			join(mkdtempSync(join(tmpdir(), 'kody-cli-mismatch-')), 'login.json'),
+		),
 		ensureCredentials: async () => {
 			throw new Error('login OAuth must not be consulted')
 		},
 	})
-	assert.equal(storedToken, 'stored-token')
+	assert.equal(storedToken, 'kody_at_stored-token')
 })
 
 test('paired preview and loopback API origins allow login OAuth', async () => {
@@ -645,39 +673,53 @@ test('api command refuses bootstrap redeem and documents auth bootstrap', async 
 })
 
 test('--org selects an org for org-scoped commands and rejects a blank slug', async () => {
-	await withTempKodyHome(async () => {
-		let stderr = ''
-		const missing = await runCli(['search', '--org', 'acme'], {
-			stderr: (text) => {
-				stderr += text
-			},
-		})
-		assert.equal(missing, 1)
-		assert.match(stderr, /No login stored for org "acme"|Not logged in/)
+	// The OS keyring is per user, not per HOME: use an origin no other test
+	// (or a real `kody login`) saves to.
+	const previousMcpUrl = process.env.KODY_MCP_URL
+	process.env.KODY_MCP_URL = 'http://127.0.0.1:9/org-flag-unreachable-mcp'
+	try {
+		await withTempKodyHome(async () => {
+			let stderr = ''
+			const missing = await runCli(['search', '--org', 'acme'], {
+				stderr: (text) => {
+					stderr += text
+				},
+			})
+			assert.equal(missing, 1)
+			assert.match(stderr, /No login stored for org "acme"|Not logged in/)
 
-		stderr = ''
-		const blank = await runCli(['login', '--org', '   '], {
-			stderr: (text) => {
-				stderr += text
-			},
-		})
-		assert.equal(blank, 1)
-		assert.match(stderr, /kody login --org acme/)
+			stderr = ''
+			const blank = await runCli(['login', '--org', '   '], {
+				stderr: (text) => {
+					stderr += text
+				},
+			})
+			assert.equal(blank, 1)
+			assert.match(stderr, /kody login --org acme/)
 
-		stderr = ''
-		const wrongCommand = await runCli(['install', '--org', 'acme'], {
-			stderr: (text) => {
-				stderr += text
-			},
+			stderr = ''
+			const wrongCommand = await runCli(['install', '--org', 'acme'], {
+				stderr: (text) => {
+					stderr += text
+				},
+			})
+			assert.equal(wrongCommand, 1)
+			assert.match(stderr, /`--org` is not used with `kody install`/)
 		})
-		assert.equal(wrongCommand, 1)
-		assert.match(stderr, /`--org` is not used with `kody install`/)
-	})
+	} finally {
+		if (previousMcpUrl === undefined) delete process.env.KODY_MCP_URL
+		else process.env.KODY_MCP_URL = previousMcpUrl
+	}
 })
 
 type ApiStub = {
 	apiUrl: string
-	requests: Array<{ method: string; url: string; authorization: string | null }>
+	requests: Array<{
+		method: string
+		url: string
+		authorization: string | null
+		body: string
+	}>
 	close: () => Promise<void>
 }
 
@@ -689,12 +731,14 @@ async function startApiStub(
 	},
 ): Promise<ApiStub> {
 	const requests: ApiStub['requests'] = []
-	const server = createServer((request, response) => {
-		request.resume()
+	const server = createServer(async (request, response) => {
+		const chunks: Array<Buffer> = []
+		for await (const chunk of request) chunks.push(Buffer.from(chunk))
 		const entry = {
 			method: request.method ?? '',
 			url: request.url ?? '',
 			authorization: request.headers.authorization ?? null,
+			body: Buffer.concat(chunks).toString('utf8'),
 		}
 		requests.push(entry)
 		const { status, body } = respond(entry)
@@ -750,6 +794,88 @@ test('execute with --token (no --local) posts /v1/execute and never requires log
 		['POST /v1/execute'],
 	)
 	assert.equal(api.requests[0]?.authorization, 'Bearer tok')
+})
+
+test('execute treats a lone positional module path like --file', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'kody-positional-file-'))
+	const modulePath = join(dir, 'tick.ts')
+	const source = 'export default async () => ({ fromFile: true })\n'
+	await writeFile(modulePath, source)
+	const api = await startApiStub(() => ({
+		status: 200,
+		body: { ok: true, result: { fromFile: true }, logs: [] },
+	}))
+	let stderr = ''
+	try {
+		const code = await runCli(
+			['execute', '--token', 'tok', '--api-url', api.apiUrl, modulePath],
+			{ stdout: () => {}, stderr: (text) => (stderr += text) },
+		)
+		assert.equal(code, 0, stderr)
+	} finally {
+		await api.close()
+		await rm(dir, { recursive: true, force: true })
+	}
+	const body = JSON.parse(api.requests[0]?.body ?? '{}') as { code?: string }
+	assert.equal(body.code, source)
+})
+
+test('execute rejects a positional module path that does not exist', async () => {
+	let stderr = ''
+	const code = await runCli(
+		['execute', '--token', 'tok', '/nonexistent/kody-missing-module.ts'],
+		{ stdout: () => {}, stderr: (text) => (stderr += text) },
+	)
+	assert.equal(code, 1)
+	assert.match(
+		stderr,
+		/No module file at "\/nonexistent\/kody-missing-module\.ts"/,
+	)
+	assert.match(stderr, /--file <path>/)
+	assert.doesNotMatch(stderr, /Invalid regular expression/)
+})
+
+test('apiUrlFrom pairs a preview --mcp-url with its -api host', () => {
+	const preview = 'https://kody-pr-7.example.workers.dev/mcp'
+	assert.equal(
+		apiUrlFrom({}, {}, preview),
+		'https://kody-pr-7-api.example.workers.dev',
+	)
+	assert.equal(
+		apiUrlFrom(
+			{ apiUrl: 'https://flag.test' },
+			{ KODY_API_URL: 'https://env.test' },
+			preview,
+		),
+		'https://flag.test',
+	)
+	assert.equal(
+		apiUrlFrom({}, { KODY_API_URL: 'https://env.test' }, preview),
+		'https://env.test',
+	)
+	assert.equal(
+		apiUrlFrom({}, {}, 'https://kody.codes/mcp'),
+		'https://api.kody.codes',
+	)
+	assert.equal(
+		apiUrlFrom({}, {}, 'http://localhost:3742/mcp'),
+		'https://api.kody.codes',
+	)
+	assert.equal(apiUrlFrom({}, {}), 'https://api.kody.codes')
+})
+
+test('positionalModuleFile keeps module source text as code', () => {
+	const exists = (path: string) => path === 'mod.js'
+	assert.equal(positionalModuleFile('mod.js', exists), 'mod.js')
+	assert.equal(
+		positionalModuleFile('export default () => 1', exists),
+		undefined,
+	)
+	assert.equal(positionalModuleFile('', exists), undefined)
+	assert.throws(
+		() => positionalModuleFile('missing.mts', exists),
+		/No module file/,
+	)
 })
 
 test('execute without token or login prompts clearly', async () => {
@@ -1162,6 +1288,30 @@ test('version checks never open stored keychain credentials', async () => {
 			assert.ok(output.length > 0)
 		}
 		assert.equal(password.mock.callCount(), 0)
+	} finally {
+		password.mock.restore()
+	}
+})
+
+test('local daemon status never opens stored keychain credentials', async () => {
+	const password = mock.method(Entry.prototype, 'getPassword', () => {
+		throw new Error('daemon status must not read credentials')
+	})
+	try {
+		let stdout = ''
+		let stderr = ''
+		const code = await runCli(['daemon', 'status', '--json'], {
+			stdout: (text) => {
+				stdout += text
+			},
+			stderr: (text) => {
+				stderr += text
+			},
+		})
+		assert.ok(code === 0 || code === 1, stderr)
+		assert.ok(stdout.length > 0 || stderr.length > 0)
+		assert.equal(password.mock.callCount(), 0)
+		assert.doesNotMatch(stderr, /daemon status must not read credentials/)
 	} finally {
 		password.mock.restore()
 	}

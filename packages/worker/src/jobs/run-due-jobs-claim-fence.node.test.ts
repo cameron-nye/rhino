@@ -2,11 +2,11 @@ import {
 	ownerIdFromStored,
 	personIdFromStored,
 } from '@kody-internal/shared/owner-person-ids.ts'
-import { type EnablementSkip } from '#worker/enablements/run-gate.ts'
-import { type EnablementRun } from '#worker/request-context/request-context.ts'
+import type { EnablementSkip } from '#worker/enablements/run-gate.ts'
+import type { EnablementRun } from '#worker/request-context/request-context.ts'
 import { expect, test, vi } from 'vitest'
 import { consoleInfo, consoleWarn } from '#worker/test-support/console-spies.ts'
-import { type JobRecord } from './types.ts'
+import type { JobRecord } from './types.ts'
 import { TransientJobExecutionError } from './execution-safety.ts'
 import type * as JobsRepo from '@kody-internal/shared/jobs/repo.ts'
 import type * as RunRecordsServiceModule from '#worker/run-records/service.ts'
@@ -63,6 +63,12 @@ vi.mock('#worker/enablements/run-gate.ts', () => ({
 }))
 
 vi.mock('#worker/account/deletion-state.ts', () => ({
+	AccountDeletionInProgressError: class AccountDeletionInProgressError extends Error {
+		constructor() {
+			super('Account deletion is in progress; user-owned writes are disabled.')
+			this.name = 'AccountDeletionInProgressError'
+		}
+	},
 	withAccountWriteLease: (...args: Array<unknown>) =>
 		withAccountWriteLease(...(args as [never])),
 }))
@@ -260,6 +266,33 @@ const fencedOutcome = {
 	errorCount: 0,
 	jobOutcomes: [],
 }
+
+test('runDueJobsForUser skips without throwing when the owner account is deleted', async () => {
+	const { AccountDeletionInProgressError } =
+		await import('#worker/account/deletion-state.ts')
+	withAccountWriteLease.mockRejectedValueOnce(
+		new AccountDeletionInProgressError(),
+	)
+	consoleInfo.mockClear()
+
+	await expect(runDue('user-deleted')).resolves.toEqual({
+		dueJobCount: 0,
+		successCount: 0,
+		errorCount: 0,
+		jobOutcomes: [],
+		skippedReason: 'account_deleted',
+	})
+	expect(listDueJobRows).not.toHaveBeenCalled()
+	expect(consoleInfo).toHaveBeenCalledWith(
+		'job-scheduler',
+		expect.stringContaining('"event":"run_due_jobs_skipped"'),
+	)
+})
+
+test('runDueJobsForUser still rethrows other lease failures', async () => {
+	withAccountWriteLease.mockRejectedValueOnce(new Error('lease exploded'))
+	await expect(runDue('user-other')).rejects.toThrow('lease exploded')
+})
 
 test('runDueJobsForUser treats superseded finalization and retry claims as expected fencing', async () => {
 	const finalizeRecord = createJobRecord()

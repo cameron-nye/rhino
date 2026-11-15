@@ -2,12 +2,12 @@ import {
 	parsePackageJobSchedule,
 	type PackageJobSchedule as SharedPackageJobSchedule,
 } from '@kody-internal/shared/jobs/package-job-schedule.ts'
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
 import { mcpServerNamePattern } from '@kody-internal/shared/mcp-servers.ts'
 import { z } from 'zod'
 import { automationExecutionSchema } from '#worker/execution-contexts/automation-execution-schema.ts'
 import { communityPackageCategories } from '#universal/community-categories.ts'
-import { type ForkListingRelation } from '#universal/community-listing-ahead.ts'
+import type { ForkListingRelation } from '#universal/community-listing-ahead.ts'
 import { credentialFillPlacementViewSchema } from '#universal/credential-fill-placement.ts'
 
 export const kodyPackageIdPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
@@ -158,6 +158,12 @@ export const packageAppVisitorNeedSchema = z
 		},
 	)
 
+/** `kody.app.realtime.anonymous` values. */
+export const packageAppAnonymousRealtimeModes = ['receive', 'two-way'] as const
+
+export type PackageAppAnonymousRealtimeMode =
+	(typeof packageAppAnonymousRealtimeModes)[number]
+
 export const packageAppDefinitionSchema = z.object({
 	/**
 	 * Server entry bundled for the package-app isolate. The default export
@@ -210,6 +216,19 @@ export const packageAppDefinitionSchema = z.object({
 			z.string().regex(packageAppVisitorNeedKeyPattern),
 			packageAppVisitorNeedSchema,
 		)
+		.optional(),
+	/**
+	 * Realtime settings. `anonymous` lets visitors who are not signed in to
+	 * the owning org open the app's `/ws` sockets on an internet-visible app:
+	 * `"receive"` gets broadcasts only and never runs app hooks, `"two-way"`
+	 * also delivers their messages to the realtime hooks. Off by default, part
+	 * of the approved capability set, and ignored unless the app is
+	 * internet-visible.
+	 */
+	realtime: z
+		.strictObject({
+			anonymous: z.enum(packageAppAnonymousRealtimeModes).optional(),
+		})
 		.optional(),
 })
 
@@ -880,6 +899,29 @@ export function assertKodyDescriptionLength(description: string) {
 	}
 }
 
+/**
+ * `kody.publish`: how this package publishes. `execution.context` binds every
+ * publish that does not name a context itself to one execution context (or
+ * `"cloud"`). A binding never falls back down the chain or to Kody cloud.
+ */
+export const packagePublishDefinitionSchema = z.strictObject({
+	execution: z
+		.strictObject({
+			context: z
+				.string()
+				.trim()
+				.min(1)
+				.describe(
+					'Execution context name or id (ec_...) every publish builds on unless the publish names a context, or "cloud". No fallback.',
+				),
+		})
+		.optional(),
+})
+
+export type PackagePublishDefinition = z.infer<
+	typeof packagePublishDefinitionSchema
+>
+
 export const authoredPackageKodySchema = z.object({
 	id: z.string().regex(kodyPackageIdPattern).optional(),
 	// No max here: this schema is shared by load/parse. Enforce
@@ -910,6 +952,7 @@ export const authoredPackageKodySchema = z.object({
 	app: packageAppDefinitionSchema.optional(),
 	jobs: z.record(z.string().min(1), packageJobDefinitionSchema).optional(),
 	webhooks: packageWebhooksSchema.optional(),
+	publish: packagePublishDefinitionSchema.optional(),
 })
 
 export type AuthoredPackageKody = Omit<
@@ -920,8 +963,8 @@ export type AuthoredPackageKody = Omit<
 	/**
 	 * Published snapshot load only: `kody.credentials` slots that fail today's
 	 * slot schema, by name, with the validation message. They are left out of
-	 * `credentials` and every use of one fails with this message. Never read
-	 * from package.json.
+	 * `credentials`, block self-publish, and are shown to the owner on
+	 * packageGet. Never read from package.json.
 	 */
 	invalidCredentialSlots?: Record<string, string>
 }

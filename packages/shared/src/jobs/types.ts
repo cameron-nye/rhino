@@ -1,5 +1,5 @@
-import { type McpCallerContext, type McpUserContext } from '../chat.ts'
-import { type OwnerId } from '../owner-person-ids.ts'
+import type { McpCallerContext, McpUserContext } from '../chat.ts'
+import type { OwnerId } from '../owner-person-ids.ts'
 
 export type JobSchedule =
 	| {
@@ -55,6 +55,10 @@ export type JobRecord = {
 	errorCount: number
 }
 
+/**
+ * Job as list/get/search surfaces see it: `JobRecord` without `userId`, plus a
+ * schedule summary.
+ */
 export type JobView = Omit<JobRecord, 'userId'> & {
 	scheduleSummary: string
 }
@@ -63,17 +67,6 @@ export type JobSourceInspection = {
 	entrypoint: string | null
 	code: string | null
 	error: string | null
-}
-
-export type JobSearchProjection = {
-	id: string
-	name: string
-	description: string
-	scheduleSummary: string
-	sourceId: string
-	publishedCommit: string | null
-	storageId: string
-	updatedAt: string
 }
 
 export type JobExecutionResult =

@@ -27,7 +27,8 @@ Execution contexts are an experiment. Turn them on at
   `automationExecutionSet`.
 - Every run on a context uses the requester's own credentials exactly as in Kody
   cloud, and credentialed requests leave from Kody cloud, so credential values
-  never reach the machine.
+  never reach the machine. `execute`'s `credentials` map is stored on the run
+  lease; the machine cannot override those picks.
 - The operator's own runs on a context have the same Kody access as in Kody
   cloud, workflows included. On a shared context, someone else's runs need their
   opt-in (`executionContextOptIn`, `POST /v1/execution-contexts/{id}/opt-in`, or
@@ -37,12 +38,26 @@ Execution contexts are an experiment. Turn them on at
   inputs, logs and results. Without the opt-in the context is skipped
   (`not_opted_in`) and the chain falls through; a run that names the context
   without `fallback: "chain"` fails instead. Their runs start no workflows and
-  get `context_run_denied` from Kody APIs kept for Kody cloud.
+  get `context_run_denied` from Kody APIs kept for Kody cloud. Host folders in
+  the grant stay on the operator's own runs only; shared runs do not mount them
+  (`fs_operator_only` if a run `requires: ["fs"]`).
 - Capabilities: `executionContextList`, `executionContextGet`,
   `executionContextUpdate`, `executionContextRevoke`, `executionContextDelete`,
   `executionContextRunList`, `executionContextRunCancel`, `executionChainGet`,
-  `executionChainSet`, and the sharing capabilities. Find them with
-  `search({ query: "execution context" })`.
+  `executionChainSet`, `executionContextNoticeDismiss`,
+  `executionContextSharePreview`, and the sharing capabilities. Find them with
+  `search({ query: "execution context" })`. Shared-box access notices appear
+  once in execute and search `notices` (`context-elevation` for a grantee;
+  `context-misconfigured` for the operator). See
+  [Shared-box best practices](../guides/execution-contexts.md#shared-box-best-practices).
+- Token scopes: reads (`executionContextList`, `executionContextGet`, sharing
+  and run lists, `executionChainGet`) need `execution_context:read`. Sharing
+  changes (`executionContextShareSet`, `executionContextShareRemove`,
+  `executionContextAttach`, `executionContextDetach`) need
+  `execution_context:manage_access`. `executionContextNoticeDismiss`,
+  `executionChainSet`, opt-in and opt-out need `execution_context:execute`. A
+  `kody login` token carries all of them; the handlers still check that you are
+  the operator or hold Manage.
 - CLI: `kody connect --name <name>` (register plus background service),
   `kody context register --name <name>`,
   `kody daemon install | status [--json] | logs | start | stop | restart | uninstall`,
@@ -99,6 +114,12 @@ another daemon still replaces this one on the server (an older CLI without the
 lock, or the same key on another machine), the daemon logs one explanation
 naming the other process and stops instead of reconnecting in a loop.
 
+Install the desktop app from
+[kody-hq/kody-desktop releases](https://github.com/kody-hq/kody-desktop/releases/latest)
+(canonical) or the shareable shortcut
+[https://kody.codes/download](https://kody.codes/download). On Windows, trust
+the sideloading certificate once, then open the App Installer link
+([Windows install](../../packages/desktop/README.md#windows-install-and-updates)).
 The desktop app and the CLI share this machine's registration and its runner:
 
 - When `kody daemon install` set up a service, or a daemon already runs, the app
@@ -108,6 +129,14 @@ The desktop app and the CLI share this machine's registration and its runner:
 - Setup offers **Use this machine's existing registration** when the CLI already
   registered this machine, instead of creating a second context. It checks first
   that the registration belongs to your account.
+- In an organization, **This machine** setup keeps a team destination through
+  personal registration when needed, then **Make available to @team** attaches
+  that registration and puts it first in your chain there. **Manage setup** does
+  the attach step when the machine is already registered personally. It does not
+  register again, and your personal setup and your other entries in the
+  organization's chain stay as they are. Setup resumes from the last completed
+  stage and does not report success before the intended workspace lists the
+  machine.
 - With no service, the app runs the daemon itself, with the same lock and
   auto-update.
 - On macOS, only the app's own runner can control other apps (such as Messages)
@@ -132,11 +161,11 @@ install software, read, change, or delete your files, and use your network.
 Commands run as the user who runs `kody daemon` (or the Kody desktop app), never
 as root; `sudo` behaves like it does in your own terminal (it prompts and fails,
 because nobody is there to type a password). Only you get the command grant on
-your own machine. People you share the machine with get it only if you share it
-with `commands: true`. Every command is recorded in the machine's audit log with
-the command, folder, exit code, and who ran it. Environment variable values are
-never recorded, only their names, so pass secrets in `env`, never in the command
-text (the command text is recorded as written).
+your own machine. People you share the machine with never get it, and their runs
+get no host folders either. Every command is recorded in the machine's audit log
+with the command, folder, exit code, and who ran it. Environment variable values
+are never recorded, only their names, so pass secrets in `env`, never in the
+command text (the command text is recorded as written).
 
 **Turn them on (on the machine itself).**
 
@@ -173,10 +202,16 @@ Messages database (`~/Library/Messages/chat.db`) needs Full Disk Access. macOS
 asks once per target app; after you allow it, runs with host commands on can use
 that app without asking you again.
 
+The Kody desktop app (0.1.5 or later) includes a Contacts entitlement. Packages
+that use the macOS Contacts framework to resolve names, phone numbers, or email
+addresses get a separate Contacts prompt. That consent belongs to the desktop
+app's own runner, not an adopted CLI service or terminal daemon.
+
 macOS checks the app that runs the daemon:
 
 - **Kody desktop app runs the runner** (no CLI service or terminal daemon):
-  macOS asks for **Kody**. Use desktop 0.1.4 or later.
+  macOS asks for **Kody**. Use desktop 0.1.4 or later for Messages Automation,
+  and 0.1.5 or later for Contacts.
 - **CLI service** (`kody daemon install`, a LaunchAgent) or **`kody daemon` in a
   terminal**: macOS checks that `node` binary or the terminal app, not Kody,
   even when the desktop app shows the runner as adopted. It may deny control
@@ -193,9 +228,9 @@ If a terminal `kody daemon` owns the runner instead, stop it with
 `kody daemon stop`. This also keeps the registration.
 
 Then open **This machine** in the desktop app and resume it if paused. Allow
-**Kody** when macOS asks to control Messages, and grant Full Disk Access to Kody
-in System Settings › Privacy & Security if the run reads `chat.db`. The runner
-then stops when you quit the app.
+**Kody** when macOS asks to control Messages, grant Full Disk Access to Kody in
+System Settings › Privacy & Security if the run reads `chat.db`, and allow
+Contacts if the run looks up names. The runner then stops when you quit the app.
 
 **Fields.**
 
@@ -207,9 +242,11 @@ then stops when you quit the app.
 - Grant: `grant.commands: { enabled, enabledAt }` on `executionContextGet`.
   `executionContextUpdate` accepts only `enabled: false`; `enabled: true` fails
   with `commands_opt_in_local`.
-- Permission: `execution_context:command`. The operator has it on their own
-  context. `executionContextShareSet` with `commands: true` adds it to a share;
-  presets and everyone-in-the-org sharing never include it.
+- Permission: `execution_context:command`. Only the operator has it, on their
+  own context. `executionContextShareSet` with `commands: true` fails with
+  `commands_operator_only`, and legacy command shares confer nothing. Commands
+  get the daemon's environment without `KODY_*` variables and cannot use a
+  credential folder as `cwd`.
 - Errors: `execution_context_commands_off` (the machine has not opted in),
   `execution_context_command_not_granted` (the caller lacks the command grant),
   `execution_context_command_requires_context` (the run is in Kody cloud or a

@@ -1,4 +1,18 @@
 /** @jsxImportSource @emotion/react */
+import { restoreActor } from 'xstate/persist'
+import { useSelector, useActor } from '@xstate/react'
+import {
+	connectOauthStepContext,
+	connectOauthStepState,
+	connectOauthOperationState,
+} from '#client/routes/connect-oauth-state.ts'
+import { uiState, sendUiEvent } from '#client/ui-actor.ts'
+import {
+	toConnectOauthUi,
+	projectConnectOauthUi,
+	type OauthState,
+	type ConnectOauthUiState,
+} from './connect-oauth-ui-state.ts'
 import { useRouter } from '@tanstack/react-router'
 import { normalizeProviderKey } from '@kody-internal/shared/url-hosts.ts'
 import { createOAuthCallbackNavigationScope } from '../oauth-callback-navigation.ts'
@@ -11,23 +25,21 @@ import {
 	useMemo,
 	type FormEvent,
 } from 'react'
-import {
-	type ConnectOauthExistingConnection,
-	type ConnectOauthLoaderData,
+import type {
+	ConnectOauthExistingConnection,
+	ConnectOauthLoaderData,
 } from '#universal/loader-data.ts'
-
 import {
+	formatScopeGrantNotice,
 	resolveOauthScopeMenu,
 	uniqueOauthScopes,
 } from '#universal/oauth-scopes.ts'
 import { isConnectOauthCallbackUrl } from '#universal/oauth-connect.ts'
 import { useHydrated } from '../components/use-hydrated.ts'
-
 import { readOrgSlugFromUrl } from '#universal/org-binding/url.ts'
 import { useShellData } from '../routes/__root.tsx'
 import { orgSectionRestPath } from '#universal/org-section-hrefs.ts'
 import { organizationsWithSignupFallback } from '#universal/org-pages.ts'
-
 import { ProviderMark } from '../components/provider-icons.tsx'
 import {
 	ConnectOauthOrgPicker,
@@ -63,6 +75,7 @@ import {
 	type LiveReplaceState,
 	newConnectionNameError,
 	suggestNewConnectionName,
+	storedClientSecretApplies,
 	wouldReplaceDifferentApp,
 	wouldReplaceLiveApp,
 } from './connect-oauth-sections.tsx'
@@ -99,33 +112,6 @@ import {
 	summarizeStoredSetupState,
 	toStoredIntegrationConfig,
 } from '#client/routes/connect-oauth-config.ts'
-
-type OauthState = {
-	statusMessage: string
-	statusTone: ConnectOauthStatusTone
-	currentStep: ConnectOauthStep
-	config: ConnectOauthConfig | null
-	existingIntegrationConfig: StoredIntegrationConfig | null
-	accessTokenSaved: boolean
-	refreshTokenSaved: boolean
-	hasConfigError: boolean
-	existingConnection: ConnectOauthExistingConnection | null
-	replaceConfirmed: boolean
-	/** Set while the setup save waits on the live-app replace choice. */
-	liveReplace: LiveReplaceState | null
-	chooserOptions: Array<ConnectOauthChooserOption>
-	chooserFilter: string
-	requestedProvider: string | null
-	offeredScopeMenu: Array<string>
-	nextSteps: ConnectOauthNextSteps | null
-	submitting: boolean
-	ssrRedirectUri: string | null
-	clientIdInput: string
-	clientSecretInput: string
-	hasStoredClientId: boolean
-	hasStoredClientSecret: boolean
-	revealStoredClientSecretField: boolean
-}
 function initialOauthState(
 	routeData: ConnectOauthLoaderData,
 	href: string,
@@ -324,21 +310,111 @@ export function ConnectOauthRoute({
 		avatarUrl: session?.avatarUrl ?? null,
 	}
 	const invalidatePages = usePageInvalidation(mutationResources)
-	const [state, setState] = useState(() =>
-		initialOauthState(
-			{
-				...initialData,
-				chooser: initialData.chooser
-					? {
-							options: withConnectOauthChooserOrg(
-								initialData.chooser.options,
-								flowOrg,
-							),
-						}
-					: undefined,
-			},
-			currentHref,
+	const [initialFlow] = useState(() =>
+		toConnectOauthUi(
+			initialOauthState(
+				{
+					...initialData,
+					chooser: initialData.chooser
+						? {
+								options: withConnectOauthChooserOrg(
+									initialData.chooser.options,
+									flowOrg,
+								),
+							}
+						: undefined,
+				},
+				currentHref,
+			),
 		),
+	)
+	const [operationSnapshot, , operationActor] = useActor(
+		connectOauthOperationState,
+	)
+	const [flowSnapshot, , flowActor] = useActor(
+		useState(() =>
+			restoreActor(
+				connectOauthStepState,
+				connectOauthStepState.getPersistedSnapshot(
+					(() => {
+						const initialView = initialFlow
+						return connectOauthStepState.resolveState({
+							value: initialView.status,
+							context: connectOauthStepContext(initialView),
+						})
+					})(),
+				),
+			),
+		)[0],
+	)
+	const screen = uiState<ConnectOauthUiState>(flowSnapshot)
+	const flow =
+		screen.status === 'success'
+			? screen
+			: { ...screen, request: operationSnapshot.value }
+	const transitionFlow = useCallback(
+		(event: Parameters<typeof flowActor.send>[0]) =>
+			sendUiEvent(flowActor, event),
+		[flowActor],
+	)
+	const getFlow = useCallback(() => {
+		const screen = uiState<ConnectOauthUiState>(flowActor.getSnapshot())
+		return screen.status === 'success'
+			? screen
+			: { ...screen, request: operationActor.getSnapshot().value }
+	}, [flowActor, operationActor])
+	const state = projectConnectOauthUi(flow)
+	const isSubmitting = useCallback(() => {
+		const current = getFlow()
+		return current.status !== 'success' && current.request === 'submitting'
+	}, [getFlow])
+	const setState = useCallback(
+		(update: (previous: OauthState) => OauthState) => {
+			const previous = projectConnectOauthUi(getFlow())
+			const next = update(previous)
+			const submitting = next.currentStep !== 'success' && next.submitting
+			const event =
+				operationActor.getSnapshot().matches('submitting') === submitting
+					? null
+					: {
+							type: submitting ? ('SUBMIT' as const) : ('SETTLED' as const),
+							data: {},
+						}
+			if (event && !operationActor.getSnapshot().can(event)) return
+			const moved = transitionFlow(
+				(() => {
+					const view = toConnectOauthUi(next)
+					if (flowActor.getSnapshot().value === view.status)
+						return { type: 'EDIT', data: connectOauthStepContext(view).data }
+					switch (view.status) {
+						case 'setup':
+							return { type: 'SETUP', data: connectOauthStepContext(view).data }
+						case 'connect':
+							return {
+								type: 'CONNECT',
+								data: connectOauthStepContext(view).data,
+							}
+						case 'device':
+							return {
+								type: 'DEVICE',
+								data: connectOauthStepContext(view).data,
+							}
+						case 'callback':
+							return {
+								type: 'CALLBACK',
+								data: connectOauthStepContext(view).data,
+							}
+						case 'success':
+							return {
+								type: 'CREDENTIALS_SAVED',
+								data: connectOauthStepContext(view).data,
+							}
+					}
+				})() as Parameters<typeof flowActor.send>[0],
+			)
+			if (moved && event) operationActor.send(event)
+		},
+		[getFlow, flowActor, operationActor, transitionFlow],
 	)
 	const {
 		statusMessage,
@@ -382,15 +458,17 @@ export function ConnectOauthRoute({
 			<ConnectOauthOrgTarget org={targetOrg} viewer={viewer} />
 		) : null
 	const mounted = useRef(false),
-		inFlight = useRef(false),
 		callbackStarted = useRef(false)
 	const isFlowActive = useCallback(
 		() => mounted.current && navigationScope.isActive(),
 		[navigationScope],
 	)
-	function update(next: Partial<typeof state>) {
-		setState((previous) => ({ ...previous, ...next }))
-	}
+	const update = useCallback(
+		(next: Partial<OauthState>) => {
+			setState((previous) => ({ ...previous, ...next }))
+		},
+		[setState],
+	)
 	function setStatus(
 		statusMessage: string,
 		statusTone: ConnectOauthStatusTone = 'info',
@@ -406,9 +484,8 @@ export function ConnectOauthRoute({
 		() =>
 			createConnectOauthDeviceStep({
 				getConfig: () => stateRef.current.config,
-				getSubmitting: () => stateRef.current.submitting || inFlight.current,
+				getSubmitting: isSubmitting,
 				setSubmitting: (value) => {
-					inFlight.current = value
 					setState((previous) => ({ ...previous, submitting: value }))
 				},
 				setStatus: (message, tone = 'info') => {
@@ -424,6 +501,7 @@ export function ConnectOauthRoute({
 				onSuccess: (result) => {
 					setState((previous) => ({
 						...previous,
+						currentStep: 'success',
 						accessTokenSaved: result.accessTokenSaved,
 						refreshTokenSaved: result.refreshTokenSaved,
 						nextSteps: result.nextSteps,
@@ -434,8 +512,9 @@ export function ConnectOauthRoute({
 					setDeviceTick((tick) => tick + 1)
 				},
 			}),
-		[invalidatePages],
+		[invalidatePages, isSubmitting, setState],
 	)
+	useSelector(deviceStep.actor, (snapshot) => snapshot)
 	useEffect(() => () => deviceStep.dispose(), [deviceStep])
 	useEffect(() => {
 		mounted.current = true
@@ -456,9 +535,16 @@ export function ConnectOauthRoute({
 	 * warning; without either, a save that would rewrite the app behind a
 	 * live connection stops and asks first.
 	 */
+	function storedSecretApplies(current: ConnectOauthConfig, clientId: string) {
+		return storedClientSecretApplies({
+			hasStoredClientSecret,
+			storedClientId: current.clientId,
+			nextClientId: clientId,
+		})
+	}
 	async function submitSetup(choice: { replace?: boolean; newName?: string }) {
-		if (!config || inFlight.current) return
-		inFlight.current = true
+		if (!config || isSubmitting()) return
+
 		update({ submitting: true })
 		try {
 			const clientId = clientIdInput.trim(),
@@ -467,19 +553,25 @@ export function ConnectOauthRoute({
 				setStatus('Client ID is required.', 'error')
 				return
 			}
+			const keepsStoredSecret = storedSecretApplies(config, clientId)
 			if (
 				config.flow === 'confidential' &&
-				(!hasStoredClientSecret || revealStoredClientSecretField) &&
+				(!keepsStoredSecret || revealStoredClientSecretField) &&
 				!clientSecret
 			) {
-				setStatus('Client secret is required for confidential flow.', 'error')
+				setStatus(
+					keepsStoredSecret || !hasStoredClientSecret
+						? 'Client secret is required for confidential flow.'
+						: 'Enter the client secret for the new client ID.',
+					'error',
+				)
 				return
 			}
 			const sameNameConfig = {
 				...config,
 				clientId,
 				hasClientSecret:
-					hasStoredClientSecret ||
+					keepsStoredSecret ||
 					(config.flow === 'confidential' && Boolean(clientSecret)),
 			}
 			if (
@@ -549,7 +641,6 @@ export function ConnectOauthRoute({
 					'error',
 				)
 		} finally {
-			inFlight.current = false
 			if (isFlowActive()) update({ submitting: false })
 		}
 	}
@@ -573,12 +664,12 @@ export function ConnectOauthRoute({
 		update({ config: nextConfig })
 	}
 	async function handleConnect() {
-		if (!config || inFlight.current) return
+		if (!config || isSubmitting()) return
 		if (config.flow === 'device') {
 			await deviceStep.handleDeviceConnect()
 			return
 		}
-		inFlight.current = true
+
 		update({ submitting: true })
 		try {
 			persistConnectOauthOrgSlug(flowOrg)
@@ -595,7 +686,6 @@ export function ConnectOauthRoute({
 					'error',
 				)
 		} finally {
-			inFlight.current = false
 			if (isFlowActive()) update({ submitting: false })
 		}
 	}
@@ -730,7 +820,12 @@ export function ConnectOauthRoute({
 					accessTokenSaved: payload.accessTokenSaved === true,
 					refreshTokenSaved: payload.refreshTokenSaved === true,
 					nextSteps: parseConnectOauthNextSteps(payload.nextSteps),
-					statusMessage: 'OAuth tokens saved.',
+					statusMessage: [
+						'OAuth tokens saved.',
+						formatScopeGrantNotice(payload.scopeGrant),
+					]
+						.filter(Boolean)
+						.join(' '),
 					statusTone: 'info',
 					currentStep: 'success',
 				})
@@ -750,6 +845,7 @@ export function ConnectOauthRoute({
 		void complete()
 	}, [
 		readIntegration,
+		update,
 		readChooser,
 		exchangeCode,
 		saveConnection,
@@ -869,7 +965,11 @@ export function ConnectOauthRoute({
 					config={currentConfig}
 					existingIntegrationConfig={existingIntegrationConfig}
 					hasStoredClientId={hasStoredClientId}
-					hasStoredClientSecret={hasStoredClientSecret}
+					hasStoredClientSecret={
+						currentConfig
+							? storedSecretApplies(currentConfig, clientIdInput)
+							: false
+					}
 					revealStoredClientSecretField={revealStoredClientSecretField}
 					clientIdInput={clientIdInput}
 					clientSecretInput={clientSecretInput}

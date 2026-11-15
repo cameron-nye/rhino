@@ -1,4 +1,4 @@
-import { type ToolAnnotations } from '@modelcontextprotocol/sdk/types.js'
+import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import { redactKodyCredentials } from '@kody-internal/shared/api-token-format.ts'
 import {
@@ -7,12 +7,12 @@ import {
 	limitExecutionResultValue,
 } from '#mcp/executor.ts'
 import { preferLocalCliExecuteGuidance } from '#mcp/instructions/prefer-local-cli-execute-guidance.ts'
-import { type McpRegistrationAgent } from '#mcp/mcp-registration-agent.ts'
+import type { McpRegistrationAgent } from '#mcp/mcp-registration-agent.ts'
 import { callerContextFields, logMcpEvent } from '#mcp/observability.ts'
 import { createApiInvocationContext } from '#worker/open-api/context.ts'
 import { ApiError, toApiError } from '#worker/open-api/errors.ts'
 import type * as OpenApiInvoke from '#worker/open-api/invoke.ts'
-import { type StructuredContentFromFields } from './mcp-tool-output.ts'
+import type { StructuredContentFromFields } from './mcp-tool-output.ts'
 import { buildKodyToolIcons } from './tool-icons.ts'
 import { finishToolTiming, startToolTiming } from './tool-timing.ts'
 
@@ -39,7 +39,7 @@ export const apiToolDescription = [
 	'Use `execute` instead when you need to compose several calls, transform results, fetch external URLs, or call an execute-only capability.',
 	'',
 	preferLocalCliExecuteGuidance,
-	'Agents already on this MCP session: call `cliCredentialBootstrap` with `lifetime: "short"` (single-task) or `"long"` (returns a one-shot `kody_bc_…` code + `cli_command` that includes lifetime flags, never a `kody_at_…`), run that CLI command, then `npx @kodycodes/cli execute --local --code \'…\'` — no second interactive OAuth and no `tokenCreate`. Interactive humans: `kody login` then `--local`. Mint `tokenCreate` only for CI/headless without an MCP session (include a required lifetime; set `KODY_API_TOKEN` in the environment, never paste into chat). If `--local` cannot run, use Open API / MCP `api` or fix the environment. See https://kody.codes/docs/local-execute and https://kody.codes/docs/open-api.',
+	"Agents already on this MCP session: call `cliCredentialBootstrap` with no params (returns a one-shot `kody_bc_…` code + `cli_command`, never a `kody_at_…`; the CLI then holds the same credential `kody login` gives), run that CLI command, then `npx @kodycodes/cli execute --local --code '…'` — no second interactive OAuth and no `tokenCreate`. Interactive humans: `kody login` then `--local`. Mint `tokenCreate` only for CI/headless without an MCP session (include a required lifetime; set `KODY_API_TOKEN` in the environment, never paste into chat). If `--local` cannot run, use Open API / MCP `api` or fix the environment. See https://kody.codes/docs/local-execute and https://kody.codes/docs/open-api.",
 ].join('\n')
 
 export const apiToolAnnotations = {
@@ -170,7 +170,7 @@ export async function registerApiTool(agent: McpRegistrationAgent) {
 					},
 				}
 			} catch (error) {
-				const apiError = toApiError(error)
+				const apiError = toApiError(error, { operation: 'mcp_api' })
 				logMcpEvent({
 					...logFields,
 					outcome: 'failure',

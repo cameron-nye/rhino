@@ -19,6 +19,7 @@ import {
 	abortOrgDeleting,
 	clearUserMeterDeletionTombstone,
 	markOrgDeleting,
+	accountDeletionWritersActive,
 } from '#worker/account/deletion-state.ts'
 import { bumpAccessEpochStatement } from '#worker/authorization/access-compile.ts'
 import { andLiveDeletedAtSql } from '#worker/soft-delete/live-sql.ts'
@@ -28,6 +29,7 @@ import {
 } from '#worker/soft-delete/window.ts'
 import {
 	logOrgAuditEvent,
+	optionalOrgAuditWriter,
 	orgAuditWriterForPerson,
 } from '#worker/orgs/org-audit.ts'
 import { jobsData } from '#worker/jobs/jobs-data.ts'
@@ -49,8 +51,9 @@ import {
 import { isPersonalOrg } from '#worker/orgs/is-personal-org.ts'
 import { onMemberSoftRemoved } from '#worker/orgs/member-offboarding.ts'
 import { resolveOAuthHelpers } from '#worker/oauth-helpers.ts'
-import { type OAuthGrantHelpers } from '#worker/oauth-grants.ts'
+import type { OAuthGrantHelpers } from '#worker/oauth-grants.ts'
 import { revokeOAuthGrantsForOrg } from '#worker/orgs/offboarding.ts'
+import { wipePinnedConnectionsForOrg } from '#worker/integrations/pinned-connections.ts'
 
 export { AccountDeletionWritersActiveError }
 
@@ -311,7 +314,7 @@ export async function softDeleteOrg(input: {
 			} finally {
 				// Prefer the lease-busy signal even when abort's UserMeter RPC fails;
 				// leftover heal clears meter tombstones once D1 is live again.
-				throw new AccountDeletionWritersActiveError(marked.leaseCount)
+				throw accountDeletionWritersActive(marked)
 			}
 		}
 	}
@@ -322,16 +325,29 @@ export async function softDeleteOrg(input: {
 		id: input.orgId,
 		nowIso,
 		missingError: 'org_not_found_or_already_deleted',
+		// Memberships share the org's batch so a later failing step can never
+		// leave live members (or Owners) on a tombstoned org.
 		stamp: async (stampAt) => {
-			const orgUpdate = await appDb
-				.prepare(
-					`UPDATE orgs
-					 SET deleted_at = ?, updated_at = ?
-					 WHERE id = ? AND deleted_at IS NULL`,
-				)
-				.bind(stampAt, stampAt, input.orgId)
-				.run()
-			return orgUpdate.meta.changes ?? 0
+			const [orgUpdate] = await appDb.batch([
+				appDb
+					.prepare(
+						`UPDATE orgs
+						 SET deleted_at = ?, updated_at = ?
+						 WHERE id = ? AND deleted_at IS NULL`,
+					)
+					.bind(stampAt, stampAt, input.orgId),
+				appDb
+					.prepare(
+						`UPDATE org_memberships
+						 SET deleted_at = ?
+						 WHERE org_id = ? AND deleted_at IS NULL
+						   AND EXISTS (
+						     SELECT 1 FROM orgs WHERE id = ? AND deleted_at = ?
+						   )`,
+					)
+					.bind(stampAt, input.orgId, input.orgId, stampAt),
+			])
+			return orgUpdate?.meta.changes ?? 0
 		},
 	})
 
@@ -385,6 +401,16 @@ export async function softDeleteOrg(input: {
 			})
 		}
 	}
+
+	// Before the org's apps are tombstoned: upstream revoke needs the live app.
+	await wipePinnedConnectionsForOrg({
+		env: input.env,
+		orgId: input.orgId,
+		audit: optionalOrgAuditWriter(input.env, {
+			userId: input.actorUserId ?? null,
+			username: input.actorUsername ?? null,
+		}),
+	})
 
 	const resourceRowsSoftDeleted = await softDeleteOrgOwnedAppRows({
 		appDb,
@@ -1027,19 +1053,14 @@ export async function restoreUserAccount(input: {
 	}
 
 	const deletedOrgs = await input.env.APP_DB.prepare(
-		`SELECT id FROM orgs WHERE deleted_at = ?`,
+		`SELECT o.id FROM orgs o
+		 INNER JOIN org_memberships m ON m.org_id = o.id
+		 WHERE o.deleted_at = ? AND m.user_id = ? AND m.deleted_at = ?`,
 	)
-		.bind(deletedAt)
+		.bind(deletedAt, input.userId, deletedAt)
 		.all<{ id: OwnerId }>()
 	const restoredOrgIds: Array<string> = []
 	for (const row of deletedOrgs.results ?? []) {
-		const membership = await input.env.APP_DB.prepare(
-			`SELECT 1 AS ok FROM org_memberships
-			 WHERE org_id = ? AND user_id = ? AND deleted_at = ?`,
-		)
-			.bind(row.id, input.userId, deletedAt)
-			.first<{ ok: number }>()
-		if (!membership) continue
 		await restoreOrg({
 			env: input.env,
 			orgId: row.id,

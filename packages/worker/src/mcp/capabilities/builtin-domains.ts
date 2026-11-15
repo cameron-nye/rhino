@@ -1,4 +1,4 @@
-import { type DomainSpec } from './types.ts'
+import type { DomainSpec } from './types.ts'
 
 /**
  * Builtin domains merged by `buildCapabilityRegistry` in `registry.ts`.
@@ -33,6 +33,7 @@ const builtinDomainLoaders: ReadonlyArray<() => Promise<DomainSpec>> = [
 		import('./execution-contexts/domain.ts').then(
 			(m) => m.executionContextsDomain,
 		),
+	() => import('./files/domain.ts').then((m) => m.filesDomain),
 	() => import('./follow/domain.ts').then((m) => m.followDomain),
 	() => import('./integrations/domain.ts').then((m) => m.integrationsDomain),
 	() => import('./jobs/domain.ts').then((m) => m.jobsDomain),

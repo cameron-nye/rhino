@@ -60,15 +60,17 @@ Usage:
   kody org list [--json] [--mcp-url <url>]
   kody org use [<slug>] [--mcp-url <url>]
   kody status [--mcp-url <url>] [--api-url <url>]
-  kody auth bootstrap (--code <kody_bc_…> | --scopes <list>) (--lifetime short|long | --idle-ttl-seconds <n> --max-lifetime-seconds <n>)
+  kody auth bootstrap (--code <kody_bc_…> | --scopes <list>) [--lifetime short|long | --idle-ttl-seconds <n> --max-lifetime-seconds <n>]
                       [--token <token>] [--mcp-url <url>] [--api-url <url>]
-  kody auth setup-git [--lifetime long|short] [--scopes <list>] [--token <token>] [--mcp-url <url>] [--api-url <url>]
+  kody auth setup-git [--mcp-url <url>] [--api-url <url>]
   kody auth remove-git [--mcp-url <url>] [--api-url <url>]
   kody git-credential <get|store|erase>
   kody whoami [--org <slug>] [--target prod|mock] [--mcp-url <url>] [--token <token>] [--api-url <url>] [--json]
   kody search [query] [--org <slug>] [--entity <ref>] [--domain <id>] [--limit <n>] [--target prod|mock] [--token <token>] [--api-url <url>] [--json]
   kody api <operationId> [--org <slug>] [--params <json>] [--token <token>] [--api-url <url>] [--json]
-  kody package publish [<@owner/leaf|package_id>] [--org <slug>] [--params <json>] [--token <token>] [--api-url <url>] [--json]
+  kody secret get <name>… [--format raw|env|json] [--reveal] [--org <slug>] [--token <token>] [--api-url <url>]
+  kody run --secret <name>[=ENV_NAME]… [--org <slug>] [--token <token>] [--api-url <url>] -- <command> [args…]
+  kody package publish [<@owner/leaf|package_id>] [--build local|context] [--context <name|cloud>] [--org <slug>] [--params <json>] [--token <token>] [--api-url <url>] [--json]
   kody package collaborators <package> [--org <slug>] [--json] [--token <token>] [--api-url <url>]
   kody package grant <package> (--team <slug> | --user <username>) [--preset read|use|contribute|manage] [--allow-changes-despite-unmappable-credentials | --disallow-changes-despite-unmappable-credentials] [--org <slug>] [--json]
   kody package revoke <package> (--team <slug> | --user <username> | --grant <grant_id>) [--org <slug>] [--json]
@@ -77,16 +79,17 @@ Usage:
   kody context revoke <name|ec id> | kody context delete <name|ec id> [--org <slug>] [--json]
   kody context cancel-run <name|ec id> <run id> [--org <slug>] [--json]
   kody context policy [show] | allow <path> [--mode ro|rw] | remove <path> [--json]
+  kody context grant [show] | allow <path> [--mode ro|rw] | remove <path> | lan on|off [--context <name|ec id>] [--json]
   kody chain show | add <name> | remove <name> [--org <slug>] [--json]
   kody connect --name <name> [--org <slug>] [--no-install] [--key-storage keyring|file] [--yes]
   kody daemon [--context <ec id>] [--max-concurrent <n>]
   kody daemon install [--context <ec id>] [--max-concurrent <n>] [--key-storage keyring|file] [--yes]
-  kody daemon status [--context <ec id>] [--json] | logs [--lines <n>] [--follow] | restart
+  kody daemon status [--context <ec id>] [--json] | logs [--lines <n>] [--follow] | restart | start | stop
   kody daemon uninstall [--context <ec id>] [--unregister | --no-unregister]
   kody daemon auto-update [on | off | status] [--json]
   kody update
                [--credential <key=name>]… [--context <id|name>] [--fallback chain] [--requires fs,lan] [--chain <a,b,cloud>] [--target prod|mock] [--token <token>] [--api-url <url>] [--local] [--allow-private-network]
-  kody dev [serve] [--org <slug>] [--target prod|mock] [--reset-storage] [--port <n>] [--app-base-path <path>] [--allow-private-network] [--no-live-reload] [--json] [--ready-file <path>]
+  kody dev [serve] [--org <slug>] [--target prod|mock] [--reset-storage] [--host <addr>] [--expose-prod] [--port <n>] [--app-base-path <path>] [--allow-private-network] [--no-live-reload] [--run-jobs] [--simulate-latency] [--cold] [--clock <iso|ms>] [--cpu-limit-ms <n>] [--json] [--ready-file <path>]
   kody dev fetch <path> [--method <verb>] [--body <file>] [--target prod|mock] [--json] [--no-attach]
   kody dev job <name> [--target prod|mock] [--dry-run] [--json]
   kody dev webhook <name> --body <file.json> [--target prod|mock] [--dry-run] [--json]
@@ -95,13 +98,20 @@ Usage:
   kody install [--mcp-url <url>] [--clients <ids>] [--yes] [--project] [--json]
   kody skill install [--project]
 
+  Run \`kody <command> --help\` (or \`kody help <command>\`) for one command's
+  usage, flags, and subcommands.
+
   kody connect registers this machine as an execution context and installs
   \`kody daemon\` as a per-user background service (systemd --user on Linux,
   a LaunchAgent on macOS, a Task Scheduler logon task on Windows, no admin
   needed) so it starts at login and restarts after crashes.
   \`kody daemon status\` names each problem with the command that fixes it;
   re-running \`kody daemon install\` repairs the service. Host folders use
-  native paths (C:\\Users\\you\\project on Windows). \`kody update\`
+  native paths (C:\\Users\\you\\project on Windows). A run can use a host
+  folder only when both layers allow it: this machine's local policy
+  (\`kody context policy allow\`, the machine owner's call) and the
+  context's server grant (\`kody context grant allow\`, needs Contribute
+  or Manage on the context, same as executionContextUpdate). \`kody update\`
   installs the latest CLI and restarts services after runs in flight finish.
   Every daemon also auto-updates: it checks npm on start and every ~4h,
   installs the verified new version, and relaunches once runs and background
@@ -158,41 +168,30 @@ ${orgBlock}
              (never ask a human to paste a token). Humans: \`kody login\`.
              This command redeems a one-shot \`kody_bc_…\` (POST
              /v1/tokens/bootstrap/redeem, no Authorization header).
-             Lifetime is required: \`--lifetime short|long\` (\`short\` = 1h
-             idle / 24h max; \`long\` = 14d idle / 3mo max), or both
-             \`--idle-ttl-seconds\` and \`--max-lifetime-seconds\`.
-             Single-task agents should use \`--lifetime short\`.
-             Stores the resulting \`kody_at_…\` for \`execute --local\`,
-             search, whoami, api, and token-auth cloud execute without
-             printing the token. Do not call
-             \`kody api cliCredentialBootstrapRedeem\` (that would print the
-             token).
+             Saves the same credential \`kody login\` saves (every scope
+             your org role grants, 14d idle / 3mo max) in the same slot;
+             every command, including git, uses it. \`--lifetime short|long\`
+             or \`--idle-ttl-seconds\` + \`--max-lifetime-seconds\` are
+             optional and default to the code's lifetime. Never prints the
+             token. Do not call \`kody api cliCredentialBootstrapRedeem\`
+             (that would print the token).
 
   --scopes <list>
-             Opt in to scopes beyond the cliCredentialBootstrap defaults
-             (comma- or space-separated, e.g.
-             \`--scopes org:execute,org:read,package:read,package:write\`).
-             The list replaces the defaults, so include every scope you
-             need. Instead of \`--code\`, the CLI mints the code itself by
-             passing \`scopes\` to cliCredentialBootstrap, then redeems and
-             stores it. It mints with \`--token\` if given, else the
-             \`kody login\` session (any scope your org role grants), else
-             ${apiTokenEnvVar} / a stored token (only scopes that token
-             already holds). A bootstrap code's scopes are fixed when it is
-             minted, so \`--code\` with \`--scopes\` is an error. Defaults
-             stay least-privilege; \`insufficient_scope\` errors print the
-             exact \`--scopes\` command to run.
+             Save a deliberately narrower credential (comma- or
+             space-separated). The list replaces the login-equivalent
+             default. Instead of \`--code\`, the CLI mints the code itself
+             with \`--token\`, else ${apiTokenEnvVar}, else the saved
+             credential, then redeems and saves it. A child never exceeds
+             its parent's scopes or expiry. \`--code\` with \`--scopes\` is
+             an error.
 
   auth setup-git
              Install a Git credential helper for HTTPS clones/fetches/pushes
              at \`https://kody.codes/@owner/name.git\` (see guide:auth_setup_git).
-             Uses a \`kody login\` session (or \`--token\` / ${apiTokenEnvVar} /
-             stored bootstrap token) to mint a user-owned \`kody_at_…\` with
-             at least \`package:read\` and \`package:write\` (default
-             \`--lifetime long\`; reuses a suitable stored token). That token
-             authorizes every repo you can access across all orgs — login
-             \`--org\` only scopes the MCP mint session, not git. User-wide:
-             one setup covers every org. Requires a server that advertises
+             Never mints: uses the saved CLI credential (\`kody login\` or
+             \`kody auth bootstrap\`), which must be user-owned and hold
+             \`package:read\` and \`package:write\`. It authorizes every repo
+             you can access across all orgs. Requires a server that advertises
              \`org_binding\`. Configures a stable
              \`credential.https://<host>.helper\` (global \`kody\` only when
              its version supports \`git-credential\`, else
@@ -206,18 +205,16 @@ ${orgBlock}
              Inverse of \`auth setup-git\`: removes every
              \`credential.https://<host>.*\` helper entry setup-git may have
              written (global and local; including stale \`~/.npm/_npx\` and
-             major-only \`@1\` pins), revokes the stored API token on the
-             server (\`token:delete\` / DELETE /v1/tokens/current), and
-             deletes it from the OS keychain. Idempotent when nothing is
-             set up; prints what it removed. Leaves \`kody login\` sessions
-             alone.
+             major-only \`@1\` pins) and revokes any token an older CLI left
+             in the old API-token slot. Idempotent when nothing is set up;
+             prints what it removed. Leaves the saved credential alone.
 
   git-credential
              Git credential helper invoked by git after \`auth setup-git\`
              (\`get\` returns username=x / password=kody_at_… for the Kody
-             host with no network while the stored token is still valid;
-             silently remints via \`kody login\` only when expired or near
-             expiry; \`store\`/\`erase\` are no-ops). Not meant for interactive
+             host: ${apiTokenEnvVar} when set, else the saved CLI credential,
+             refreshed like any command; never mints; \`store\`/\`erase\` are
+             no-ops). Not meant for interactive
              use.
 
   api        Call one Open API operation by operationId + flat --params
@@ -271,16 +268,10 @@ ${orgBlock}
   --token / ${apiTokenEnvVar}
              Scoped API token (preferred via env). One resolver picks the
              credential, and \`kody whoami\` reports that pick:
-             whoami, api, package, execute --local, context, daemon, dev:
-               --token, ${apiTokenEnvVar}, stored API token, kody login.
-             search and cloud execute: --token, kody login (MCP),
-               ${apiTokenEnvVar}, stored API token.
-             \`kody login\` does not replace a stored API token; replace it
-             with \`kody auth bootstrap --lifetime short --scopes <list>\`
-             or clear it with \`kody logout\`.
-             Prefer \`cliCredentialBootstrap\` then \`auth bootstrap\`
-             (\`--lifetime short|long\`). CI/headless: \`tokenCreate\` with
-             \`org:execute\` plus the capability scopes you need.
+             every command: --token, ${apiTokenEnvVar}, then the saved CLI
+             credential (\`kody login\` / \`kody auth bootstrap\`).
+             CI/headless: \`tokenCreate\` with \`org:execute\` plus the
+             capability scopes you need.
              Profiles: \`tokenCreate\` with \`profile_id\`, or
              \`profileHandoff\` for a new sub-profile, mints a token
              that acts as that profile (not accepted by /mcp).
@@ -355,10 +346,10 @@ ${orgBlock}
              ambient fetch can still reach the public network (not
              offline). \`--target prod\` keeps the process local but does
              **not** give the working-tree package hosted
-             \`packageStorage\` / \`packageSecrets\` — those need a published
-             package id; imported published deps still use their own
-             hosted storage/secrets. See the package apps guide target
-             table.
+             \`packageStorage\` / \`packageSecrets\`. That is intentionally
+             unsupported: publish is the trust boundary. Imported published
+             deps still use their own hosted storage/secrets. See the
+             package apps guide target table.
 
   --reset-storage
              With \`--target mock\`, wipe the mock session's scratch storage
@@ -371,6 +362,21 @@ ${orgBlock}
              Default is empty (serve at \`/\`). Use
              \`--app-base-path /<package-name>\` to match the
              hosted app mount while iterating locally.
+
+  --host <addr>
+             With \`kody dev serve\`, the address the dev server listens on
+             (default \`127.0.0.1\`). \`0.0.0.0\`, \`::\`, or a LAN IP lets
+             phones, tablets, and other devices on your network open the
+             app; kody dev prints the LAN URLs and warns on stderr that
+             anyone who can reach the port can use the app. Only this
+             machine's own addresses are accepted as Host. Non-loopback
+             hosts with \`--target prod\` are refused unless
+             \`--expose-prod\` is also passed.
+
+  --expose-prod
+             With \`kody dev --host <non-loopback>\`, allow \`--target prod\`:
+             every device that can reach the port acts with your real Kody
+             credentials.
 
   --dry-run  With \`kody dev job|webhook|emit\`, print the module path and
              params that would run without invoking (safe against prod side
@@ -458,13 +464,4 @@ Environment:
   KODY_CACHE_DIR      Where execute --local caches workerd (default: user cache dir)
   KODY_WORKERD_PATH   Use this workerd binary instead of the pinned download
 `
-}
-
-/**
- * Build usage on demand. Do not call at module load: reading the credential
- * store (and pulling keyring) on every `kody --version` blows the startup
- * budget. Callers that need the offline org list pass `mcpUrl` / `backend`.
- */
-export function usage(input?: Parameters<typeof buildUsage>[0]): string {
-	return buildUsage(input)
 }

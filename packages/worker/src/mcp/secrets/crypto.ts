@@ -2,7 +2,7 @@ import {
 	base64UrlToBytes,
 	bytesToBase64Url,
 } from '@kody-internal/shared/base64.ts'
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
 
 const ivBytes = 12
 
@@ -482,4 +482,92 @@ export async function decryptLoginCredentialSession(
 	} catch {
 		throw new Error('Unable to decrypt login session.')
 	}
+}
+
+// File sharing state is platform-owned, not an organization credential. A
+// distinct purpose keeps these ciphertexts out of the secret resolver lane.
+type FileSharePayload = 'public-link' | 'copy-plan' | 'asset-url'
+export function sealFileShareValue(
+	env: Pick<Env, 'SECRET_STORE_KEY'>,
+	purpose: FileSharePayload,
+	context: string,
+	value: string,
+) {
+	return encryptWithKey(
+		env.SECRET_STORE_KEY,
+		`file-share-${purpose}`,
+		context,
+		value,
+	)
+}
+
+export function openFileShareValue(
+	env: Pick<Env, 'SECRET_STORE_KEY'>,
+	purpose: FileSharePayload,
+	context: string,
+	ciphertext: string,
+) {
+	return decryptWithKey(
+		env.SECRET_STORE_KEY,
+		`file-share-${purpose}`,
+		context,
+		ciphertext,
+	)
+}
+
+/**
+ * Platform-owned bearer material at rest (not organization credentials). Each
+ * class gets its own purpose so ciphertexts never cross lanes, and callers
+ * bind the AAD context to the owning identity so a row swap fails to open.
+ */
+export type PlatformSecretPurpose =
+	| 'mcp-client-oauth-storage'
+	| 'totp-secret'
+	| 'guest-claim-code'
+	| 'integration-device-session'
+
+export function sealPlatformSecret(
+	env: Pick<Env, 'SECRET_STORE_KEY'>,
+	purpose: PlatformSecretPurpose,
+	context: string,
+	value: string,
+) {
+	return encryptWithKey(requirePlatformKey(env), purpose, context, value)
+}
+
+function requirePlatformKey(env: Pick<Env, 'SECRET_STORE_KEY'>) {
+	if (!env.SECRET_STORE_KEY) {
+		throw new Error('SECRET_STORE_KEY is not configured.')
+	}
+	return env.SECRET_STORE_KEY
+}
+
+export async function openPlatformSecret(
+	env: Pick<Env, 'SECRET_STORE_KEY'>,
+	purpose: PlatformSecretPurpose,
+	context: string,
+	payload: string,
+) {
+	try {
+		return await decryptWithKey(
+			requirePlatformKey(env),
+			purpose,
+			context,
+			payload,
+		)
+	} catch {
+		throw new Error('Unable to decrypt platform secret.')
+	}
+}
+
+/** Shape check only: `v2.<iv>.<ciphertext>`. Opening still verifies the AAD. */
+export function isSealedSecretPayload(value: unknown): value is string {
+	if (typeof value !== 'string') return false
+	const parts = value.split('.')
+	return (
+		parts.length === 3 &&
+		parts[0] === ciphertextVersion &&
+		/^[A-Za-z0-9_-]+$/.test(parts[1] ?? '') &&
+		/^[A-Za-z0-9_-]+$/.test(parts[2] ?? '')
+	)
 }

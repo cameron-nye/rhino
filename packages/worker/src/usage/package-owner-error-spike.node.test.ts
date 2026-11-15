@@ -1,8 +1,8 @@
 import { expect, test, vi } from 'vitest'
 import { consoleWarn } from '#worker/test-support/console-spies.ts'
-import {
-	type PackageOwnerSpikeState,
-	type PackageOwnerSpikeWindow,
+import type {
+	PackageOwnerSpikeState,
+	PackageOwnerSpikeWindow,
 } from './package-owner-error-spike.ts'
 
 const queryAnalyticsEngineSql = vi.fn()
@@ -300,6 +300,10 @@ test('fold attributes package metrics to publishers and job metrics to billing o
 })
 
 test('parsePackageOwnerSpikeState rejects unknown versions', () => {
+	expect(parsePackageOwnerSpikeState(null)).toBeNull()
+	expect(
+		parsePackageOwnerSpikeState({ version: 1, status: 'unexpected' }),
+	).toBeNull()
 	expect(parsePackageOwnerSpikeState({ version: 2, status: 'ok' })).toBeNull()
 	expect(
 		parsePackageOwnerSpikeState({

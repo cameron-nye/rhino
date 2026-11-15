@@ -55,9 +55,7 @@ test('a new person signs up from the authorize page and finishes the same OAuth 
 	try {
 		await page.goto(authorizePath)
 		await waitForClientHydration(page)
-		const signupLink = page
-			.getByTestId('oauth-authorize-signup')
-			.getByRole('link', { name: 'Create an account' })
+		const signupLink = page.getByTestId('oauth-authorize-signup')
 		await expect(signupLink).toHaveAttribute('href', signupHref)
 		// The footer sign-up link keeps the pending authorization too.
 		await expect(
@@ -68,7 +66,7 @@ test('a new person signs up from the authorize page and finishes the same OAuth 
 		await expect(page).toHaveURL(signupHref)
 		await waitForClientHydration(page)
 		await page.getByRole('textbox', { name: 'Username' }).fill(username)
-		await page.getByLabel('Email').fill(email)
+		await page.getByLabel('Email', { exact: true }).fill(email)
 		await page.getByLabel('Password', { exact: true }).fill(password)
 		await expect(
 			page.getByRole('status').filter({ hasText: `${username} is available` }),

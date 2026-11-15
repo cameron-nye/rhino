@@ -133,6 +133,103 @@ test('a declared credential need lists only the credentials that fill it', async
 	}
 })
 
+test('a declared need nothing fills is reported as unbound without changing the fingerprint', async () => {
+	const t = await setup({
+		kody: {
+			credentials: {
+				resend: { description: 'Send the digest' },
+			},
+		},
+	})
+
+	const { capabilitySet, declarations } = await t.compute()
+
+	expect(capabilitySet.entries).toEqual([])
+	expect(declarations.unboundNeeds).toEqual([
+		{
+			needKey: 'resend',
+			description: 'Send the digest',
+			provider: 'resend',
+			via: ['digest'],
+		},
+	])
+
+	const resendId = await t.storeKey('RESEND_KEY', 'resend')
+	const bound = await t.compute()
+	expect(bound.capabilitySet.entries).toEqual([
+		expect.objectContaining({ credentialId: resendId, needKey: 'resend' }),
+	])
+	expect(bound.declarations.unboundNeeds).toEqual([])
+
+	// setup() re-mocks the manifest, so compare against a no-needs package last.
+	const empty = await setup({})
+	expect(capabilitySet.fingerprint).toBe(
+		(await empty.compute()).capabilitySet.fingerprint,
+	)
+})
+
+test('declared manifest capability fields are reported for display', async () => {
+	const t = await setup({ kody: { jobs: { nightly: {} } } })
+
+	const { declarations } = await t.compute()
+
+	expect(declarations.manifestFields).toEqual([
+		{ field: 'jobs', via: ['digest'] },
+	])
+	expect(declarations.unboundNeeds).toEqual([])
+})
+
+test('an anonymous realtime opt-in is a capability entry that changes the fingerprint', async () => {
+	const off = await (
+		await setup({ kody: { app: { entry: 'app/router.ts' } } })
+	).compute()
+	expect(off.capabilitySet.entries).toEqual([])
+
+	const receive = await (
+		await setup({
+			kody: {
+				app: { entry: 'app/router.ts', realtime: { anonymous: 'receive' } },
+			},
+		})
+	).compute()
+	expect(receive.capabilitySet.entries).toEqual([
+		{
+			kind: 'realtime',
+			anonymousRealtime: 'receive',
+			hosts: [],
+			via: ['digest'],
+		},
+	])
+
+	const twoWay = await (
+		await setup({
+			kody: {
+				app: { entry: 'app/router.ts', realtime: { anonymous: 'two-way' } },
+			},
+		})
+	).compute()
+	expect(twoWay.capabilitySet.entries).toEqual([
+		expect.objectContaining({ kind: 'realtime', anonymousRealtime: 'two-way' }),
+	])
+
+	const fingerprints = new Set([
+		off.capabilitySet.fingerprint,
+		receive.capabilitySet.fingerprint,
+		twoWay.capabilitySet.fingerprint,
+	])
+	expect(fingerprints.size).toBe(3)
+})
+
+test('an anonymous realtime opt-in without an app adds no entry', async () => {
+	const t = await setup({
+		kody: { app: { entry: '', realtime: { anonymous: 'two-way' } } },
+	})
+
+	const { capabilitySet } = await t.compute()
+
+	expect(capabilitySet.entries).toEqual([])
+})
+
 test('a credential mapped to a declared need is listed even when its provider would not auto-resolve', async () => {
 	const t = await setup({
 		kody: {

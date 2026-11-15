@@ -1,5 +1,5 @@
 /** @jsxImportSource @emotion/react */
-import { type CSSObject } from '@emotion/react'
+import type { CSSObject } from '@emotion/react'
 import { rhinoWordmarkFontFamily } from '../brand/rhino-mark.ts'
 import { rhinoPublicLinkVisible } from '../brand/rhino-personal.ts'
 import { KodyMark } from './kody-mark.tsx'

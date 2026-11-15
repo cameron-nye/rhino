@@ -1,6 +1,6 @@
 import * as Sentry from '@sentry/cloudflare'
-import { type McpCallerContext } from '@kody-internal/shared/chat.ts'
-import { type JobManagerDebugState } from '@kody-internal/shared/jobs/manager-debug.ts'
+import type { McpCallerContext } from '@kody-internal/shared/chat.ts'
+import type { JobManagerDebugState } from '@kody-internal/shared/jobs/manager-debug.ts'
 import { resolveJobManagerAlarmState } from '@kody-internal/shared/jobs/manager-state.ts'
 import {
 	logJobSchedulerError,
@@ -8,10 +8,11 @@ import {
 	schedulerErrorFields,
 	summarizeSchedulerJobOutcomes,
 } from '@kody-internal/shared/jobs/scheduler-logging.ts'
-import { type JobRepoCheckPolicy } from '@kody-internal/shared/jobs/types.ts'
+import type { JobRepoCheckPolicy } from '@kody-internal/shared/jobs/types.ts'
 import { DurableObject } from 'cloudflare:workers'
-import { type JobsWorkerEnv } from './env.ts'
+import type { JobsWorkerEnv } from './env.ts'
 import {
+	jobAccountDeletionDeferralMs,
 	tryRearmAlarmForRetryableD1Failure,
 	trySettleHungRunDueJobsFailure,
 } from './manager-alarm-deferral.ts'
@@ -204,6 +205,19 @@ export class JobManagerBase extends DurableObject<JobsWorkerEnv> {
 		})
 		try {
 			const result = await this.env.HOST.runDueJobsForUser({ userId })
+			if (result.skippedReason === 'account_deleted') {
+				const deferUntilMs = Date.now() + jobAccountDeletionDeferralMs
+				await rearmAlarmPreservingEarlier(this.ctx, deferUntilMs)
+				logJobSchedulerEvent({
+					event: 'alarm_deferred',
+					userId,
+					reason: 'account_deleted',
+					retryCount: alarmInfo?.retryCount,
+					isRetry: alarmInfo?.isRetry,
+					nextRunAt: new Date(deferUntilMs).toISOString(),
+				})
+				return
+			}
 			logJobSchedulerEvent({
 				event: 'run_due_jobs_completed',
 				userId,

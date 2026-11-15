@@ -20,13 +20,26 @@ import {
 } from '../src/auth-bootstrap.js'
 import { openCapabilityProxySession } from '../src/capability-proxy.js'
 import { runCli } from '../src/cli.js'
+import { localExecuteScopes } from '../src/defaults.js'
 import {
+	loadCredentials,
 	createFileBackend,
+	deleteCredentials,
 	fileStorePath,
 	saveCredentials,
 } from '../src/store.js'
 
 const apiUrl = 'https://api.scopes.test'
+const scopesMcpUrl = 'https://scopes.test/mcp'
+const loginScopesMcpUrl = 'https://login-scopes.test/mcp'
+
+function clearSavedCredentials() {
+	for (const mcpUrl of [scopesMcpUrl, loginScopesMcpUrl]) {
+		for (let i = 0; i < 5; i++) {
+			if (!deleteCredentials(mcpUrl).deleted) break
+		}
+	}
+}
 const mintedCode = `kody_bc_${'c'.repeat(16)}_${'D'.repeat(32)}`
 const redeemedToken = 'kody_at_scoped_secret_do_not_print'
 const requestedScopes = ['org:execute', 'package:read', 'package:write']
@@ -86,7 +99,8 @@ async function withCliEnv<T>(
 	// Windows keeps CLI config under %APPDATA%.
 	process.env.APPDATA = home
 	delete process.env.KODY_API_TOKEN
-	delete process.env.KODY_MCP_URL
+	// Never touch the real kody.codes login: the OS keyring is per user.
+	process.env.KODY_MCP_URL = scopesMcpUrl
 	delete process.env.KODY_API_URL
 	const requests: Array<Recorded> = []
 	const previousFetch = globalThis.fetch
@@ -109,10 +123,12 @@ async function withCliEnv<T>(
 	// Windows Credential Manager (and macOS Keychain) are per-user, not per
 	// HOME, so a token an earlier test saved would leak into this one.
 	deleteStoredApiToken(apiUrl)
+	clearSavedCredentials()
 	try {
 		return await run({ home, requests })
 	} finally {
 		deleteStoredApiToken(apiUrl)
+		clearSavedCredentials()
 		globalThis.fetch = previousFetch
 		for (const [key, value] of Object.entries(saved)) {
 			if (value === undefined) delete process.env[key]
@@ -216,7 +232,7 @@ test('auth bootstrap --scopes with --token mints through the Open API, then rede
 				/scopes: org:execute, package:read, package:write/,
 			)
 			assert.doesNotMatch(result.stdout, /kody_at_|kody_bc_/)
-			assert.equal(loadStoredApiToken(apiUrl)?.tokenId, 'tok_scoped_1')
+			assert.equal(loadStoredApiToken(apiUrl), null)
 		},
 	)
 })
@@ -278,7 +294,7 @@ test('auth bootstrap --scopes redeems server-clamped lifetimes without CLI flag 
 				idle_ttl_seconds: 45,
 				max_lifetime_seconds: 45,
 			})
-			assert.equal(loadStoredApiToken(apiUrl)?.tokenId, 'tok_scoped_1')
+			assert.equal(loadStoredApiToken(apiUrl), null)
 		},
 	)
 })
@@ -335,7 +351,7 @@ test('auth bootstrap --scopes explains how to widen when the token cannot grant 
 })
 
 test('auth bootstrap --scopes with a kody login session mints through the Open API', async () => {
-	const mcpUrl = 'https://login-scopes.test/mcp'
+	const mcpUrl = loginScopesMcpUrl
 	await withCliEnv(
 		(url) => {
 			if (requestPath(url).endsWith('/openapi.json'))
@@ -369,7 +385,9 @@ test('auth bootstrap --scopes with a kody login session mints through the Open A
 				scopes: requestedScopes,
 				lifetime: 'short',
 			})
-			assert.equal(loadStoredApiToken(apiUrl)?.tokenId, 'tok_scoped_1')
+			assert.equal(loadStoredApiToken(apiUrl), null)
+			// The wider token replaces the login it was minted from.
+			assert.equal(loadCredentials(mcpUrl)?.accessToken, redeemedToken)
 			assert.doesNotMatch(result.stdout, /kody_at_|kody_bc_/)
 		},
 	)
@@ -594,6 +612,42 @@ test('insufficientScopeMessage names the missing scope and the exact mint comman
 	)
 })
 
+test('local execute insufficient_scope lists every local-execute scope in one remint', async () => {
+	const fetchFn = (async () =>
+		json(
+			{
+				error: {
+					code: 'insufficient_scope',
+					message: 'This credential is not scoped for package:execute.',
+					details: {
+						required_permission: 'package:execute',
+						denial: 'credential_scope',
+						mint_scopes: ['org:execute', 'package:execute', 'package:write'],
+					},
+				},
+			},
+			403,
+		)) as typeof fetch
+	await withCliEnv(fetchFn, async () => {
+		await assert.rejects(
+			() => openCapabilityProxySession({ apiUrl, token: 'kody_at_x', fetchFn }),
+			(error: Error) => {
+				const scopes = [
+					...new Set([...localExecuteScopes, 'package:write']),
+				].sort()
+				assert.ok(
+					error.message.includes(
+						`npx @kodycodes/cli auth bootstrap --lifetime short --scopes ${scopes.join(',')}`,
+					),
+					error.message,
+				)
+				assert.match(error.message, /adds them all at once/)
+				return true
+			},
+		)
+	})
+})
+
 test('CapabilityProxy insufficient_scope prints the platform mint scopes as commands', async () => {
 	const fetchFn = (async () =>
 		json(
@@ -610,21 +664,23 @@ test('CapabilityProxy insufficient_scope prints the platform mint scopes as comm
 			},
 			403,
 		)) as typeof fetch
-	await assert.rejects(
-		() =>
-			openCapabilityProxySession({
-				apiUrl: 'https://api.kody.codes',
-				token: 'kody_at_x',
-				fetchFn,
-			}),
-		(error: Error) => {
-			assert.ok(
-				error.message.includes(
-					'npx @kodycodes/cli auth bootstrap --lifetime short --scopes org:execute,package:write',
-				),
-				error.message,
-			)
-			return true
-		},
-	)
+	await withCliEnv(fetchFn, async () => {
+		await assert.rejects(
+			() =>
+				openCapabilityProxySession({
+					apiUrl,
+					token: 'kody_at_x',
+					fetchFn,
+				}),
+			(error: Error) => {
+				assert.ok(
+					error.message.includes(
+						'npx @kodycodes/cli auth bootstrap --lifetime short --scopes org:execute,package:write',
+					),
+					error.message,
+				)
+				return true
+			},
+		)
+	})
 })

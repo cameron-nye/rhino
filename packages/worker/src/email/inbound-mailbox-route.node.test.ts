@@ -24,6 +24,11 @@ function routeFor(envelopeTo: string) {
 }
 
 test('permanent reserved locals cover system locals and inbound aliases', () => {
+	expect(routeFor('news@kody.codes')).toMatchObject({
+		kind: 'system',
+		localBase: 'news',
+	})
+	expect(isPermanentlyReservedUsername('news')).toBe(true)
 	for (const local of systemEmailLocals) {
 		expect(isPermanentlyReservedUsername(local)).toBe(true)
 		expect(permanentlyReservedSystemLocals).toContain(local)
@@ -102,6 +107,17 @@ test('plus tags on org inbox hosts are never reserved system locals', () => {
 		recipient: `support+ticket-123@${systemDomain}`,
 		localBase: 'support',
 		systemDomain,
+	})
+	// Founder replies: kent@apex is its own system inbox (also forwarded).
+	expect(routeFor(`Kent@${systemDomain}`)).toEqual({
+		kind: 'system',
+		recipient: `kent@${systemDomain}`,
+		localBase: 'kent',
+		systemDomain,
+	})
+	expect(routeFor(`kent@${userDomain}`)).toEqual({
+		kind: 'reject',
+		reason: 'This address is reserved for system mail.',
 	})
 	// Inbound-only alias: team@apex stores in the support system inbox.
 	expect(routeFor(`team@${systemDomain}`)).toEqual({

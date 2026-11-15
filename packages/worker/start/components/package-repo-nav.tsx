@@ -1,6 +1,7 @@
 /** @jsxImportSource @emotion/react */
 /** @jsxRuntime automatic */
-import { type CSSProperties, type ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
+import { PackageCommands } from '../commands/package-commands.tsx'
 import { packageCollaboratorsHref } from '#universal/package-collaborators.ts'
 import { SiteLink } from './site-link.tsx'
 import { IdentityIconMark } from './identity-icon-mark.tsx'
@@ -180,6 +181,7 @@ export function renderPackageRepoChrome(input: {
 
 	return (
 		<div data-testid="package-repo-chrome">
+			<PackageCommands {...input} />
 			<SiteLink
 				{...rise('0')}
 				href={backHref}
@@ -341,6 +343,7 @@ export function PackageRepoTabPanel(props: { children: ReactNode }) {
 
 const packageRepoTabPanelCss = {
 	display: 'grid',
+	gridTemplateColumns: 'minmax(0, 1fr)',
 	alignContent: 'start',
 	gap: spacing.xl,
 	marginTop: spacing.xl,

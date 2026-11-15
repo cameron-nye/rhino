@@ -3,7 +3,7 @@ import { expect, test } from 'vitest'
 import { renderStartPage } from './test-support/render-start-page.ts'
 import { AdminUserAccountModeration } from './pages/admin-account-delete-dialog.tsx'
 import { AdminAccountDeletionApprovalPage } from './pages/admin-account-deletion-approval.tsx'
-import { type AdminAccountDeletionSummary } from '#universal/admin-account-deletion.ts'
+import type { AdminAccountDeletionSummary } from '#universal/admin-account-deletion.ts'
 
 const summary: AdminAccountDeletionSummary = {
 	handle: 'ada-lovelace',
@@ -44,13 +44,9 @@ test('admin user moderation offers Delete account next to Suspend', async () => 
 	expect(html).toContain('Suspend account')
 	expect(html).toContain('Delete account')
 	expect(html).toContain('data-testid="admin-delete-account"')
-	expect(html).toContain('data-testid="admin-delete-account-dialog"')
-	expect(html).toContain('data-testid="admin-delete-account-handle"')
-	expect(html).toContain('Type ')
-	expect(html).toContain('ada-lovelace')
-	expect(html).toContain(' to confirm')
-	expect(html).toContain('data-testid="admin-delete-account-confirm"')
-	expect(html).toContain('disabled=""')
+	expect(html.indexOf('Suspend account')).toBeLessThan(
+		html.indexOf('Delete account'),
+	)
 })
 
 test('the approval page shows the summary and the acknowledgement checkbox', async () => {

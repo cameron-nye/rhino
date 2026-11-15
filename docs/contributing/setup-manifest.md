@@ -38,6 +38,10 @@ This project uses the following resources:
     (`DMARC_REPORT_FORWARD_TO`, default `me@kentcdodds.com`) so DMARC aggregate
     reports land in an operator mailbox. Destination verification is
     dashboard-only (Cloudflare sends a confirm link).
+  - `kent@<SYSTEM_EMAIL_DOMAIN>` (the founder welcome Reply-To) has a zone
+    Routing rule that forwards straight to Kent's verified destination. It
+    bypasses the Worker, so it has no system inbox copy; without the rule the
+    catch-all still stores it in the system inbox.
 - DMARC reporting TXT
   - Production CI upserts `_dmarc.<SYSTEM_EMAIL_DOMAIN>` and
     `_dmarc.<USER_EMAIL_DOMAIN>` (when distinct) to
@@ -145,7 +149,13 @@ This project uses the following resources:
   - Preview and local runtimes without this production-only queue binding run
     the same registry inline so maintenance behavior remains testable.
 - Vectorize indexes for MCP capability search (`CAPABILITY_VECTOR_INDEX`)
-  - Production: `kody-capabilities-prod`
+  - Production: `kody-capabilities-prod`. The Deploy workflow
+    (`tools/ci/production-resources.ts`) adds any missing metadata index
+    (`kind`, `userId`, `status`, `category`, `domain`) without touching the
+    index itself. When it creates one, the
+    `reindex-vectors-for-new-metadata-indexes` job runs a full `--force`
+    reindex, because Vectorize only filters vectors upserted after the index
+    exists.
   - Preview: `<preview-worker-name>-vectors`, created and deleted per preview by
     `tools/ci/preview-resources.ts` (with metadata indexes) and filled by the
     preview workflow's builtin reindex. `kody-capabilities-preview` is only the

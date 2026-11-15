@@ -7,6 +7,7 @@ import {
 import {
 	extractVerifyEmailPath,
 	findConnectAgentEmail,
+	findFounderWelcomeEmail,
 	findVerificationEmail,
 	listE2eCloudflareMockMessages,
 	type MockEmailMessage,
@@ -56,7 +57,7 @@ test('a new user signs up, verifies email from the message, and reaches MCP conn
 		).toBeVisible()
 
 		await page.getByRole('textbox', { name: 'Username' }).fill(username)
-		await page.getByLabel('Email').fill(email)
+		await page.getByLabel('Email', { exact: true }).fill(email)
 		await page.getByLabel('Password', { exact: true }).fill(password)
 		await expect(
 			page.getByRole('status').filter({ hasText: `${username} is available` }),
@@ -173,18 +174,32 @@ test('a new user signs up, verifies email from the message, and reaches MCP conn
 			page.getByRole('link', { name: 'Continue to onboarding' }),
 		).toBeVisible()
 
-		let connectAgentEmail = null as MockEmailMessage | null
+		let founderWelcomeEmail = null as MockEmailMessage | null
 		await expect
 			.poll(
 				async () => {
 					const payload = await listE2eCloudflareMockMessages()
-					connectAgentEmail = findConnectAgentEmail(payload.messages, email)
-					return connectAgentEmail
+					founderWelcomeEmail = findFounderWelcomeEmail(payload.messages, email)
+					return founderWelcomeEmail
 				},
-				{ timeout: 15_000 },
+				// The welcome email is sent after the response; under load the
+				// mock email API can drop and retry the send.
+				{ timeout: 45_000 },
 			)
 			.not.toBeNull()
-		expect(connectAgentEmail?.subject).toBe('Connect the agent you already use')
+		const welcomePage = await page.context().newPage()
+		await welcomePage.setContent(founderWelcomeEmail?.html ?? '')
+		const connectHref = await welcomePage
+			.getByRole('link', { name: 'Connect your agent', exact: true })
+			.getAttribute('href')
+		await welcomePage.close()
+		const connectUrl = new URL(connectHref ?? '', 'invalid:/')
+		expect(connectUrl.origin).toBe(origin)
+		expect(connectUrl.pathname).toBe('/onboarding')
+		// connect_agent waits for the campaign dwell instead of landing seconds
+		// after the founder welcome.
+		const afterWelcome = await listE2eCloudflareMockMessages()
+		expect(findConnectAgentEmail(afterWelcome.messages, email)).toBeNull()
 
 		const sessionAfter = await page.request.get('/session')
 		expect(sessionAfter.ok()).toBe(true)

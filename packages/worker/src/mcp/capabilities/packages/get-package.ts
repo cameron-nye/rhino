@@ -1,3 +1,5 @@
+import { showBuildOrigin } from '#worker/publish-offload/policy.ts'
+import { getCommittedPublishBuildOrigin } from '#worker/publish-offload/store.ts'
 import { z } from 'zod'
 import { McpCallerError } from '#mcp/caller-error.ts'
 import { defineDomainCapability } from '#mcp/capabilities/define-domain-capability.ts'
@@ -20,6 +22,7 @@ import { buildPackageImportSpecifier } from '#worker/package-registry/package-im
 import { resolvePackageOwnerContext } from '#worker/package-registry/package-owner.ts'
 import { getSavedPackageWithCommunityProvenanceById } from '#worker/package-registry/repo.ts'
 import { loadPackageSourceBySourceId } from '#worker/package-registry/source.ts'
+import { listPublishedBundleArtifactProvenance } from '#worker/repo/published-bundle-artifacts-repo.ts'
 import {
 	buildPlainRepoPromotionErrorMessage,
 	findPlainRepoPromotionHint,
@@ -126,7 +129,46 @@ export const getPackageCapability = defineDomainCapability(
 				packageId: saved.id,
 				supplierSemanticsEnabled: suppliersEnabled,
 			})
+			const publishedCommit = loaded.source.published_commit ?? null
+			const outsideBuild = showBuildOrigin
+				? await getCommittedPublishBuildOrigin({
+						db: ctx.env.APP_DB,
+						sourceId: saved.sourceId,
+						commit: publishedCommit,
+					})
+				: null
+			// Informational only: a failed read must not fail packageGet.
+			const provenanceArtifacts = publishedCommit
+				? await listPublishedBundleArtifactProvenance(ctx.env.APP_DB, {
+						userId: owner.ownerUserId,
+						sourceId: saved.sourceId,
+						publishedCommit,
+					}).catch(() => [])
+				: []
 			return {
+				...(publishedCommit && provenanceArtifacts.length > 0
+					? {
+							provenance: {
+								commit: publishedCommit,
+								artifacts: provenanceArtifacts.map((artifact) => ({
+									kind: artifact.artifactKind,
+									name: artifact.artifactName,
+									entry_point: artifact.entryPoint,
+									built_in: artifact.builtIn,
+									context_name: artifact.builtContextName,
+									bundle_sha256: artifact.bundleSha256,
+								})),
+							},
+						}
+					: {}),
+				...(outsideBuild
+					? {
+							build_origin: {
+								origin: outsideBuild.origin,
+								context_name: outsideBuild.context_name ?? null,
+							},
+						}
+					: {}),
 				package_id: saved.id,
 				kody_id: saved.kodyId,
 				slug: saved.kodyId,
@@ -153,7 +195,13 @@ export const getPackageCapability = defineDomainCapability(
 				created_at: saved.createdAt,
 				updated_at: saved.updatedAt,
 				package_secrets: packageSecrets,
-				credentials: { needs: credentialNeeds, suppliersEnabled },
+				credentials: {
+					needs: credentialNeeds,
+					invalidSlots: Object.entries(
+						loaded.manifest.kody.invalidCredentialSlots ?? {},
+					).map(([key, message]) => ({ key, message })),
+					suppliersEnabled,
+				},
 				exports: (projection.exports ?? []).map((exportDetail) => ({
 					subpath: exportDetail.subpath,
 					import_specifier: buildPackageImportSpecifier(

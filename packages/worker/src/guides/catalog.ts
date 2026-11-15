@@ -14,6 +14,7 @@ import {
 import accountSecretSetup from '../../../../docs/guides/account-secret-setup.md'
 import adminEvents from '../../../../docs/guides/admin-events.md'
 import connectYourAgent from '../../../../docs/guides/connect-your-agent.md'
+import museChat from '../../../../docs/guides/muse-chat.md'
 import firstWin from '../../../../docs/guides/first-win.md'
 import flakeHunter from '../../../../docs/guides/flake-hunter.md'
 import sentryIssues from '../../../../docs/guides/sentry-issues.md'
@@ -25,6 +26,7 @@ import googleOauth from '../../../../docs/guides/google-oauth.md'
 import kodyFactory from '../../../../docs/guides/kody-factory.md'
 import localMcpTunnels from '../../../../docs/guides/local-mcp-tunnels.md'
 import heavyWorkOffload from '../../../../docs/guides/heavy-work-offload.md'
+import publishLargePackages from '../../../../docs/guides/publish-large-packages.md'
 import memory from '../../../../docs/guides/memory.md'
 import agentGuidance from '../../../../docs/guides/agent-guidance.md'
 import quickExample from '../../../../docs/guides/quick-example.md'
@@ -38,6 +40,7 @@ import organizations from '../../../../docs/guides/organizations.md'
 import packageSharing from '../../../../docs/guides/package-sharing.md'
 import sharedPackages from '../../../../docs/guides/shared-packages.md'
 import packageSkills from '../../../../docs/guides/package-skills.md'
+import packageExportJsdoc from '../../../../docs/guides/package-export-jsdoc.md'
 import packageApps from '../../../../docs/guides/package-apps.md'
 import packageAppCustomDomains from '../../../../docs/guides/package-app-custom-domains.md'
 import packageLifecycle from '../../../../docs/guides/package-lifecycle.md'
@@ -93,6 +96,7 @@ const guideSources: Array<{ slug: string; raw: string }> = [
 	{ slug: 'how-kody-works', raw: howKodyWorks },
 	{ slug: 'kody-factory', raw: kodyFactory },
 	{ slug: 'connect-your-agent', raw: connectYourAgent },
+	{ slug: 'muse-chat', raw: museChat },
 	{ slug: 'onboarding', raw: onboarding },
 	{ slug: 'quick-example', raw: quickExample },
 	{ slug: 'portability', raw: portability },
@@ -122,6 +126,7 @@ const guideSources: Array<{ slug: string; raw: string }> = [
 	{ slug: 'package-sharing', raw: packageSharing },
 	{ slug: 'shared-packages', raw: sharedPackages },
 	{ slug: 'package-skills', raw: packageSkills },
+	{ slug: 'package-export-jsdoc', raw: packageExportJsdoc },
 	{ slug: 'package-apps', raw: packageApps },
 	{ slug: 'package-app-custom-domains', raw: packageAppCustomDomains },
 	{ slug: 'package-subscriptions', raw: packageSubscriptions },
@@ -130,6 +135,7 @@ const guideSources: Array<{ slug: string; raw: string }> = [
 	{ slug: 'profiles', raw: profiles },
 	{ slug: 'wake-your-agent', raw: wakeYourAgent },
 	{ slug: 'heavy-work-offload', raw: heavyWorkOffload },
+	{ slug: 'publish-large-packages', raw: publishLargePackages },
 	{ slug: 'integration-bootstrap', raw: integrationBootstrap },
 	{ slug: 'oauth', raw: oauth },
 	{ slug: 'google-oauth', raw: googleOauth },

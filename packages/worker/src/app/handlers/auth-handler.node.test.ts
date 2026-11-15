@@ -165,6 +165,9 @@ type TestUser = {
 	plan: string | null
 	stable_user_id: string
 	personal_org_id: string
+	whats_new_email_opt_in: number
+	whats_new_email_opt_in_updated_at: string | null
+	whats_new_email_opt_in_source: string | null
 } & Record<(typeof utmColumns)[number], string | null>
 
 function createTestDb(
@@ -230,6 +233,15 @@ function createTestDb(
 							plan: nullable(values.plan),
 							stable_user_id: String(values.stable_user_id ?? ''),
 							personal_org_id: String(values.personal_org_id ?? ''),
+							whats_new_email_opt_in: Number(
+								values.whats_new_email_opt_in ?? 0,
+							),
+							whats_new_email_opt_in_updated_at: nullable(
+								values.whats_new_email_opt_in_updated_at,
+							),
+							whats_new_email_opt_in_source: nullable(
+								values.whats_new_email_opt_in_source,
+							),
 							...Object.fromEntries(
 								utmColumns.map((column) => [column, nullable(values[column])]),
 							),
@@ -272,11 +284,15 @@ function createTestDb(
 						all: executeAll,
 						async first() {
 							if (
-								normalizedQuery.includes('from email_verification_hard_bounces')
+								normalizedQuery.includes('from email_recipient_suppressions')
 							) {
 								const recipient = String(params[0] ?? '').toLowerCase()
 								return options.hardBouncedEmail?.toLowerCase() === recipient
-									? { recipient, status: 'bounced' }
+									? {
+											recipient,
+											verification_suppressed_at: '2026-01-01T00:00:00.000Z',
+											last_status: 'bounced',
+										}
 									: null
 							}
 							if (
@@ -356,6 +372,9 @@ function createTestDb(
 			plan: 'free',
 			stable_user_id: testStableUserIdFromEmail(email),
 			personal_org_id: testStableUserIdFromEmail(email),
+			whats_new_email_opt_in: 0,
+			whats_new_email_opt_in_updated_at: null,
+			whats_new_email_opt_in_source: null,
 			...Object.fromEntries(utmColumns.map((column) => [column, null])),
 		} as TestUser
 		nextId += 1
@@ -575,6 +594,31 @@ test('auth handler login and signup workflow', async () => {
 		'login:success',
 	])
 })
+
+test.each([true, false, undefined, 'true'])(
+	'password signup records only explicit newsletter consent: %s',
+	async (choice) => {
+		const context = createAuthTestContext()
+		const response = await context.signup(
+			'reader@example.com',
+			'reader-choice',
+			{ whatsNewEmailOptIn: choice },
+		)
+		expect(response.status).toBe(200)
+		const user = context.testDb.users.get('reader@example.com')
+		expect(user?.whats_new_email_opt_in).toBe(choice === true ? 1 : 0)
+		expect(user?.whats_new_email_opt_in_source).toBe(
+			choice === true ? 'signup' : null,
+		)
+		if (choice === true) {
+			expect(user?.whats_new_email_opt_in_updated_at).toEqual(
+				expect.any(String),
+			)
+		} else {
+			expect(user?.whats_new_email_opt_in_updated_at).toBeNull()
+		}
+	},
+)
 
 test('password signup schedules user.created with first-touch attribution and persists UTMs once', async () => {
 	const context = createAuthTestContext()

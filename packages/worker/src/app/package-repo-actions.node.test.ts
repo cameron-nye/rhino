@@ -3,7 +3,7 @@ import {
 	buildPackageRepoActions,
 	resolvePackageAppLinks,
 } from '#app/package-repo-actions.ts'
-import { type PublicCommunityListing } from '#universal/community-public-types.ts'
+import type { PublicCommunityListing } from '#universal/community-public-types.ts'
 
 const publicLocation = vi.hoisted(() => ({
 	hostedUrl: 'https://app.example.com/' as string | null,
@@ -120,7 +120,6 @@ test('open app uses the /open handoff path for runners', async () => {
 		hasPackage: true,
 		hasApp: true,
 		ownerUserId: 'org-owner',
-		requestUrl: 'https://kody.test/@pkg-owner/demo-app',
 	}
 	// Runners always get the self-describing handoff path; no second host button.
 	await expect(
@@ -146,7 +145,6 @@ test('open app for public readers prefers a verified custom domain URL', async (
 			hasApp: true,
 			ownerUserId: 'org-owner',
 			viewerMayRun: false,
-			requestUrl: 'https://kody.test/@pkg-owner/demo-app',
 		}),
 	).resolves.toEqual({
 		packageAppHref: 'https://app.example.com/',
@@ -169,7 +167,6 @@ test('open app for public readers falls back to the kody.run hosted URL', async 
 			hasApp: true,
 			ownerUserId: 'org-owner',
 			viewerMayRun: false,
-			requestUrl: 'https://kody.test/@pkg-owner/demo-app',
 		}),
 	).resolves.toEqual({
 		packageAppHref: 'https://pkg-owner.kody.run/demo-app',

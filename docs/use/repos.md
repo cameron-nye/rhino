@@ -54,29 +54,34 @@ segment. Concurrent push lock contention from Artifacts
 an HTTP 200 sideband fatal) is held and retried on the proxy (45s bounded wait,
 same-isolate FIFO) before returning HTTP **503** with `Retry-After` and the body
 `repository busy, retry`, so git clients usually wait out the lock instead of
-hanging up or stampeding retries. Repos with the `repo-push-queue` flag go
-through a per-repo Durable Object queue instead: pushes from every client are
-served one at a time in arrival order, each with a **90s** budget, and anything
-past the budget (or a full or unavailable queue) gets **503** with
-`Retry-After: 2`. Queued push responses carry `Kody-Push-Queue: v1`,
-`Kody-Push-Queue-Position` (pushes ahead on arrival), `Kody-Push-Queue-Wait-Ms`,
-`Kody-Push-Queue-Attempts` (Artifacts sends, so `>1` means busy was retried),
-`Kody-Push-Queue-Depth` (pushes already in the queue on arrival),
-`Kody-Push-Queue-Wall-Ms` (time the push spent in the queue, including its
-send), and on 503 `Kody-Push-Queue-Outcome` (`timeout`, `full`, or
-`unavailable`). Unflagged pushes report `Kody-Push-Queue: off`. Real ref
-contention (non-fast-forward, stale ref) still comes back as git's normal
-rejection. The result includes `git_author` (signed-in Kody account email and
-display name) and setup commands that set local `user.email` / `user.name` to
-that identity. Use those values for commits; do not invent a git email. Kody's
-**10 MiB** per-file gate (10,485,760 stored bytes) binds on session and
-file-level writes and again at `repoPromoteToPackage`; the proxied push lane
-does not re-apply that gate. Push size is bounded by Artifacts, which rejects
-pushes above ~32 MiB of decompressed pack content with a raw HTTP 413, and by
-Kody, which holds each receive-pack request body (in proxy memory, or in queue
-storage for flagged repos) so busy retries can resend it, and rejects bodies
-above **40 MiB** with HTTP 413. Plain repos do not run the package publish
-reconcile cron after push—HEAD is live.
+hanging up or stampeding retries. Pushes to the canonical
+`kody.codes/@owner/name.git` remote (`kody auth setup-git`) take the same path.
+Repos with the `repo-push-queue` flag go through a per-repo Durable Object queue
+instead: pushes from every client are served one at a time in arrival order,
+each with a **90s** budget, and anything past the budget (or a full or
+unavailable queue) gets **503** with `Retry-After: 2`. Queued push responses
+carry `Kody-Push-Queue: v1`, `Kody-Push-Queue-Position` (pushes ahead on
+arrival), `Kody-Push-Queue-Wait-Ms`, `Kody-Push-Queue-Attempts` (Artifacts
+sends, so `>1` means busy was retried), `Kody-Push-Queue-Depth` (pushes already
+in the queue on arrival), `Kody-Push-Queue-Wall-Ms` (time the push spent in the
+queue, including its send), and on 503 `Kody-Push-Queue-Outcome` (`timeout`,
+`full`, or `unavailable`). Unflagged pushes report `Kody-Push-Queue: off`. When
+every command's old-oid is the tip this queue just moved past, the queue answers
+report-status `ng <ref> fetch first` and skips Artifacts (N agents racing one
+ref stay O(N)). Older or unknown old-oids, mixed multi-ref pushes, and clients
+that did not request report-status still send. Other ref contention
+(non-fast-forward, Artifacts `ng`) still comes back as git's normal rejection.
+The result includes `git_author` (signed-in Kody account email and display name)
+and setup commands that set local `user.email` / `user.name` to that identity.
+Use those values for commits; do not invent a git email. Kody's **10 MiB**
+per-file gate (10,485,760 stored bytes) binds on session and file-level writes
+and again at `repoPromoteToPackage`; the proxied push lane does not re-apply
+that gate. Push size is bounded by Artifacts, which rejects pushes above ~32 MiB
+of decompressed pack content with a raw HTTP 413, and by Kody, which holds each
+receive-pack request body (in proxy memory, or in queue storage for flagged
+repos) so busy retries can resend it, and rejects bodies above **40 MiB** with
+HTTP 413. Plain repos do not run the package publish reconcile cron after
+push—HEAD is live.
 
 ## Sessions
 

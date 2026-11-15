@@ -6,8 +6,8 @@
  * packages exist.
  */
 import { getErrorMessage } from '@kody-internal/shared/error-message.ts'
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
-import { type RequestContext } from '@kody-internal/shared/request-context.ts'
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import type { RequestContext } from '@kody-internal/shared/request-context.ts'
 import {
 	checkPermission,
 	computeEffectivePermissions,
@@ -31,10 +31,10 @@ import {
 } from '#worker/package-capabilities/approval-requests-repo.ts'
 import { loadCapabilityApprovalSummary } from '#worker/package-capabilities/capability-approval-service.ts'
 import { loadCurrentPackageSecurityAudit } from '#worker/package-capabilities/security-audit-state.ts'
-import { type CapabilitySetEntry } from '#worker/package-capabilities/capability-set.ts'
+import type { CapabilitySetEntry } from '#worker/package-capabilities/capability-set.ts'
 import { readWentPublicSummary } from '#worker/package-capabilities/went-public-approval.ts'
 import { getSavedPackageById } from '#worker/package-registry/repo.ts'
-import { type SavedPackageRecord } from '#worker/package-registry/types.ts'
+import type { SavedPackageRecord } from '#worker/package-registry/types.ts'
 import { getEntitySourceById } from '#worker/repo/entity-sources.ts'
 import { loadPublishedCredentialNeeds } from '#worker/credentials/credential-needs-closure.ts'
 import {
@@ -63,7 +63,7 @@ import {
 } from '#universal/package-credential-approval-page.ts'
 import { describeTrigger } from '#universal/package-credentials-page.ts'
 import { routes } from '#universal/routes.ts'
-import { type ApprovalBundleDecisionRecord } from './repo.ts'
+import type { ApprovalBundleDecisionRecord } from './repo.ts'
 
 /** The person reviewing, bound to the org the bundle is for. */
 export type ApprovalViewer = {
@@ -544,9 +544,16 @@ function publishItemState(
 }
 
 function capabilityKey(entry: CapabilitySetEntry) {
+	if (entry.kind === 'realtime') return 'realtime:anonymous'
 	return entry.kind === 'credential'
 		? `credential:${entry.credentialId ?? entry.name ?? ''}`
 		: `storage:${entry.storageId ?? ''}`
+}
+
+function describeAnonymousRealtime(entry: CapabilitySetEntry) {
+	return entry.anonymousRealtime === 'two-way'
+		? 'Anonymous visitors can send and receive realtime messages'
+		: 'Anonymous visitors can receive realtime broadcasts'
 }
 
 function readApprovedEntries(json: string | null): Array<CapabilitySetEntry> {
@@ -561,6 +568,7 @@ function readApprovedEntries(json: string | null): Array<CapabilitySetEntry> {
 
 function describeCapabilityEntry(entry: CapabilitySetEntry) {
 	if (entry.kind === 'storage') return 'Package storage'
+	if (entry.kind === 'realtime') return describeAnonymousRealtime(entry)
 	const hosts =
 		entry.hosts.length > 0 ? entry.hosts.join(', ') : 'no hosts listed'
 	return `${kindLabel(entry.credentialKind ?? 'secret')} sent to ${hosts}${entry.placement ? ` (${entry.placement})` : ''}`
@@ -574,6 +582,7 @@ function capabilityEntrySignature(entry: CapabilitySetEntry) {
 		entry.hosts.map((host) => host.toLowerCase()).sort(),
 		entry.placement ?? null,
 		entry.storageId ?? null,
+		entry.anonymousRealtime ?? null,
 		entry.via,
 	])
 }
@@ -606,9 +615,11 @@ export function capabilityGrantLines(
 		label:
 			entry.kind === 'storage'
 				? 'Storage'
-				: (entry.name ?? entry.credentialId ?? 'Credential'),
+				: entry.kind === 'realtime'
+					? 'Anonymous realtime'
+					: (entry.name ?? entry.credentialId ?? 'Credential'),
 		where: entry.via.length > 1 ? `Reached via ${entry.via.join(' → ')}` : null,
-		kind: entry.kind === 'storage' ? null : kindLabel(entry.credentialKind),
+		kind: entry.kind === 'credential' ? kindLabel(entry.credentialKind) : null,
 		provider: null,
 		hosts: entry.hosts,
 		before: prior

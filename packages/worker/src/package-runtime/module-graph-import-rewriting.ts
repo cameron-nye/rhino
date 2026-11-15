@@ -1,19 +1,20 @@
 import { publishedArtifactNeedsPackageBindingRebuild } from './pre-binding-artifact-repair.ts'
 import { collectTopLevelFetchCollisionNames } from './rewrite-local-execute-secret-fetch.ts'
 import {
-	loadPackageSourceBySourceId,
+	loadServingPackageSourceBySourceId,
 	type LoadedPackageSource,
 } from '#worker/package-registry/source.ts'
+import { servingArtifactCommitForSource } from '#worker/repo/serving-commit.ts'
 import {
 	normalizePackageExportKey,
 	normalizePackageWorkspacePath,
 	resolvePackageExportPath,
 } from '#worker/package-registry/manifest.ts'
-import {
-	type AuthoredPackageJson,
-	type SavedPackageRecord,
+import type {
+	AuthoredPackageJson,
+	SavedPackageRecord,
 } from '#worker/package-registry/types.ts'
-import { type WorkerLoaderModules } from '#worker/worker-loader-types.ts'
+import type { WorkerLoaderModules } from '#worker/worker-loader-types.ts'
 import {
 	parseKodyPackageSpecifier,
 	packageSpecifierPrefix,
@@ -34,8 +35,9 @@ import {
 	collectModuleImportNodesCached,
 	type ModuleImportNodesCache,
 } from './import-specifiers.ts'
-import { type BundleArtifactDependency } from './published-runtime-artifacts.ts'
+import type { BundleArtifactDependency } from './published-runtime-artifacts.ts'
 import {
+	linkedPackageImportPath,
 	createPackageProxyPathSegment,
 	createRelativeImportSpecifier,
 	encodePathKeyAsPath,
@@ -67,7 +69,7 @@ import {
 	refreshKodyRuntimeModules,
 } from './runtime-source-modules.ts'
 import { collectModuleExportNames } from './module-export-names.ts'
-import { materializePublishedArtifactModules } from './module-graph-artifacts.ts'
+import { materializeDependencyArtifactModules } from './module-graph-artifacts.ts'
 import {
 	collectReachableSourceFilePaths,
 	isBundlerRootConfigPath,
@@ -96,11 +98,28 @@ export type LoadedKodyGraphPackage = LoadedPackageSource & {
 
 export type LoadedKodyGraphPackages = Map<string, LoadedKodyGraphPackage>
 
+/**
+ * Why a module is in a prepared graph, recorded where the module is added.
+ * Consumers pick modules by role instead of guessing from the path, so a
+ * layout change cannot silently drop modules from one of them.
+ */
+export type KodyGraphModuleRole =
+	| 'runtime'
+	| 'public-runtime'
+	| 'package-runtime'
+	| 'import-proxy'
+	| 'published-artifact'
+	| 'package-source'
+	| 'root-config'
+	| 'root-dependency'
+	| 'root-source'
+
 type RewriteState = {
 	env: Env
 	baseUrl: string
 	userId: string
 	files: Record<string, string>
+	moduleRoles: Map<string, KodyGraphModuleRole>
 	sourceFiles: Record<string, string>
 	rootPackage: {
 		manifest: AuthoredPackageJson
@@ -114,6 +133,12 @@ type RewriteState = {
 	 * artifacts that later get composed into foreign bundles.
 	 */
 	rootPackageId: string | null
+	/**
+	 * Publish offload builds: import other Kody packages from
+	 * {@link linkedPackageImportPath} placeholders instead of resolving them,
+	 * so the build needs no registry and never contains their code.
+	 */
+	linkKodyPackageImports: boolean
 	proxies: Map<string, string>
 	dynamicPackageImports: Map<string, string>
 	packages: LoadedKodyGraphPackages
@@ -168,6 +193,7 @@ async function maybeEnsurePublishedArtifactTarget(input: {
 				env: input.state.env,
 				userId: input.state.userId,
 				...identity,
+				commit: servingArtifactCommitForSource(input.loaded.source),
 			})
 	if (!artifact?.artifact) {
 		return null
@@ -192,12 +218,14 @@ async function maybeEnsurePublishedArtifactTarget(input: {
 		encodePathKeyAsPath(exportName),
 	)
 	for (const [modulePath, module] of Object.entries(
-		materializePublishedArtifactModules({
+		materializeDependencyArtifactModules({
 			artifactPrefix,
 			modules: artifact.artifact.modules,
+			linkedRoot: artifactPrefix,
 		}),
 	)) {
 		input.state.files[modulePath] = module
+		input.state.moduleRoles.set(modulePath, 'published-artifact')
 	}
 	for (const dependency of artifact.artifact.dependencies) {
 		input.state.publishedArtifactDependencies.push(dependency)
@@ -254,6 +282,7 @@ async function prefetchPublishedArtifactTargets(
 		kind: 'importable-module'
 		artifactName: string
 		entryPoint: string
+		commit: string | null
 	}> = []
 	for (const specifier of new Set(specifiers)) {
 		if (state.proxies.has(specifier)) continue
@@ -272,6 +301,7 @@ async function prefetchPublishedArtifactTargets(
 					manifest: loaded.manifest,
 					exportName,
 				}),
+				commit: servingArtifactCommitForSource(loaded.source),
 			}
 			if (
 				!state.prefetchedPublishedArtifacts.has(
@@ -316,7 +346,7 @@ async function ensurePackageResolved(
 		throw new SavedPackageNotFoundError(parsed.packageName)
 	}
 	const { row } = resolution
-	const loaded = await loadPackageSourceBySourceId({
+	const loaded = await loadServingPackageSourceBySourceId({
 		env: state.env,
 		baseUrl: state.baseUrl,
 		userId: state.userId,
@@ -341,6 +371,7 @@ async function materializePackageSourceIntoFiles(
 		const normalizedPath = normalizePackageWorkspacePath(filePath)
 		assertNoKodyVirtualModuleReference(normalizedPath, content)
 		const targetPath = joinPath(loaded.prefix, normalizedPath)
+		state.moduleRoles.set(targetPath, 'package-source')
 		if (isTypeDeclarationFilePath(normalizedPath)) {
 			state.files[targetPath] = content
 			continue
@@ -363,6 +394,14 @@ async function ensurePackageProxy(
 	if (existing) return existing
 	const parsed = parseKodyPackageSpecifier(specifier)
 	assertNotSealedSecretProviderExport(parsed.exportName)
+	if (
+		state.linkKodyPackageImports &&
+		parsed.packageName !== state.rootPackage?.manifest.name
+	) {
+		const linkedPath = linkedPackageImportPath(specifier)
+		state.proxies.set(specifier, linkedPath)
+		return linkedPath
+	}
 	// Callee saved-package UUID stamped into the metered proxy below. Root
 	// self-imports resolve back into the bundle's own source and are not
 	// stamped: the surrounding run already meters that package via
@@ -413,6 +452,7 @@ async function ensurePackageProxy(
 		proxyPath,
 		absoluteExportPath,
 	)
+	state.moduleRoles.set(proxyPath, 'import-proxy')
 	state.files[proxyPath] = calleePackageId
 		? createMeteredPackageImportProxySource({
 				targetPath: proxyTarget,
@@ -494,11 +534,13 @@ function createUniqueHelperName(source: string, baseName: string) {
 function ensurePackageRuntimeModule(state: RewriteState, packageId: string) {
 	const modulePath = buildPackageRuntimeModulePath(packageId)
 	state.files[modulePath] ??= createPackageRuntimeModuleSource(packageId)
+	state.moduleRoles.set(modulePath, 'package-runtime')
 	return modulePath
 }
 
 function ensurePublicRuntimeModule(state: RewriteState) {
 	state.files[publicRuntimeModulePath] ??= createPublicRuntimeModuleSource()
+	state.moduleRoles.set(publicRuntimeModulePath, 'public-runtime')
 	return publicRuntimeModulePath
 }
 
@@ -532,7 +574,7 @@ function jsonValueTargetsKodyVirtualModule(value: unknown): boolean {
 function fileReachesKodyVirtualModule(filePath: string, content: string) {
 	if (!textMentionsKodyVirtualModule(content)) return false
 	if (bundlerScriptSourcePathPattern.test(filePath)) {
-		const specifiers = collectBundlerResolvedSpecifiers(content)
+		const specifiers = collectBundlerResolvedSpecifiers(content, { filePath })
 		return (
 			specifiers == null || specifiers.some(specifierTargetsKodyVirtualModule)
 		)
@@ -553,7 +595,10 @@ function fileReachesKodyVirtualModule(filePath: string, content: string) {
  * `exports` / `imports` / `main` and wrangler `main` / `alias` could
  * otherwise point there).
  */
-function assertNoKodyVirtualModuleReference(filePath: string, content: string) {
+export function assertNoKodyVirtualModuleReference(
+	filePath: string,
+	content: string,
+) {
 	if (isTypeDeclarationFilePath(filePath)) return
 	if (!fileReachesKodyVirtualModule(filePath, content)) return
 	const label = bundlerScriptSourcePathPattern.test(filePath)
@@ -593,20 +638,28 @@ async function rewriteKodyImports(input: {
 	const {
 		literalImports: importNodes,
 		dynamicImportExpressions: dynamicImportNodes,
-	} = collectModuleImportNodesCached(input.state.importNodesCache, input.source)
+	} = collectModuleImportNodesCached(
+		input.state.importNodesCache,
+		input.source,
+		{
+			filePath: input.modulePath,
+		},
+	)
 	if (importNodes.length === 0 && dynamicImportNodes.length === 0) {
 		return boundFetchPrefix + input.source
 	}
-	await prefetchPublishedArtifactTargets(
-		input.state,
-		importNodes
-			.filter(
-				(node) =>
-					node.kind !== 'dynamic' &&
-					node.specifier.startsWith(packageSpecifierPrefix),
-			)
-			.map((node) => node.specifier),
-	)
+	if (!input.state.linkKodyPackageImports) {
+		await prefetchPublishedArtifactTargets(
+			input.state,
+			importNodes
+				.filter(
+					(node) =>
+						node.kind !== 'dynamic' &&
+						node.specifier.startsWith(packageSpecifierPrefix),
+				)
+				.map((node) => node.specifier),
+		)
+	}
 	const replacements: Array<RewriteReplacement> = []
 	for (const node of importNodes) {
 		if (node.specifier === 'kody:runtime') {
@@ -695,6 +748,11 @@ async function rewriteKodyImports(input: {
 
 export type PreparedKodyGraph = {
 	files: Record<string, string>
+	/**
+	 * Role of each module in `files`. A module the runtime refresh adds after
+	 * composition has none.
+	 */
+	moduleRoles: ReadonlyMap<string, KodyGraphModuleRole>
 	packages: LoadedKodyGraphPackages
 	publishedArtifactDependencies: Array<BundleArtifactDependency>
 	entryPoint: string
@@ -709,10 +767,12 @@ export type PreparedKodyGraphCache = Map<string, Promise<PreparedKodyGraph>>
 function preparedKodyGraphCacheKey(input: {
 	entryPoint: string
 	rootPackageId: string | null
+	linkKodyPackageImports?: boolean
 }) {
 	return JSON.stringify([
 		normalizePackageWorkspacePath(input.entryPoint),
 		input.rootPackageId,
+		input.linkKodyPackageImports === true,
 	])
 }
 
@@ -723,10 +783,14 @@ export async function prepareKodyGraphFiles(input: {
 	sourceFiles: Record<string, string>
 	entryPoint: string
 	rootPackageId?: string | null
+	linkKodyPackageImports?: boolean
 }): Promise<PreparedKodyGraph> {
 	const files: Record<string, string> = {
 		[runtimeModulePath]: createRuntimeModuleSource(),
 	}
+	const moduleRoles = new Map<string, KodyGraphModuleRole>([
+		[runtimeModulePath, 'runtime'],
+	])
 	const rootPackage = readRootPackage(input.sourceFiles)
 	const entryPoint =
 		resolveWorkspaceSourceFilePath({
@@ -745,9 +809,11 @@ export async function prepareKodyGraphFiles(input: {
 		baseUrl: input.baseUrl,
 		userId: input.userId,
 		files,
+		moduleRoles,
 		sourceFiles: input.sourceFiles,
 		rootPackage,
 		rootPackageId: input.rootPackageId?.trim() || null,
+		linkKodyPackageImports: input.linkKodyPackageImports === true,
 		proxies: new Map(),
 		dynamicPackageImports: new Map(),
 		packages: new Map(),
@@ -766,8 +832,10 @@ export async function prepareKodyGraphFiles(input: {
 		}
 		if (isBundlerRootConfigPath(normalizedSourcePath)) {
 			files[normalizedSourcePath] = content
+			moduleRoles.set(normalizedSourcePath, 'root-config')
 		}
 		if (isBundlerRootDependencyPath(normalizedSourcePath)) {
+			moduleRoles.set(normalizedSourcePath, 'root-dependency')
 			// Same rewrite dependency packages get after an artifact miss in
 			// materializePackageSourceIntoFiles, so computed import() in
 			// installed dependency code hits the guard.
@@ -786,11 +854,13 @@ export async function prepareKodyGraphFiles(input: {
 		const normalizedPath = joinPath(rootSourcePrefix, normalizedSourcePath)
 		if (normalizedSourcePath === packageManifestPath) {
 			files[normalizedPath] = content
+			moduleRoles.set(normalizedPath, 'root-source')
 			continue
 		}
 		if (!reachableRootFiles.has(normalizedSourcePath)) {
 			continue
 		}
+		moduleRoles.set(normalizedPath, 'root-source')
 		if (isTypeDeclarationFilePath(normalizedSourcePath)) {
 			files[normalizedPath] = content
 			continue
@@ -804,6 +874,7 @@ export async function prepareKodyGraphFiles(input: {
 	}
 	return {
 		files: refreshKodyRuntimeModules(files) as Record<string, string>,
+		moduleRoles,
 		packages: state.packages,
 		publishedArtifactDependencies: state.publishedArtifactDependencies,
 		entryPoint,
@@ -828,6 +899,7 @@ export async function getOrPrepareKodyGraphFiles(
 	const key = preparedKodyGraphCacheKey({
 		entryPoint: input.entryPoint,
 		rootPackageId,
+		linkKodyPackageImports: input.linkKodyPackageImports,
 	})
 	const existing = cache.get(key)
 	if (existing) return await existing

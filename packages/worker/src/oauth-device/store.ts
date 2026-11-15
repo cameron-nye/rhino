@@ -1,15 +1,19 @@
 import {
+	sqlSourcesOf,
+	parseState,
+} from '@kody-internal/shared/state-machine.ts'
+import {
 	deviceAuthorizationRetentionSeconds,
 	deviceSlowDownIncrementSeconds,
 } from './device-grant.ts'
 
-export type DeviceAuthorizationStatus =
-	| 'pending'
-	| 'approved'
-	| 'denied'
-	| 'consumed'
+import {
+	deviceAuthorizationState,
+	type DeviceAuthorizationStatus,
+} from './device-authorization-state.ts'
+export type { DeviceAuthorizationStatus } from './device-authorization-state.ts'
 
-export type DeviceAuthorizationKind = 'cli' | 'package_app'
+export type DeviceAuthorizationKind = 'cli' | 'package_app' | 'account'
 
 export type DeviceAuthorizationRow = {
 	id: string
@@ -28,15 +32,27 @@ export type DeviceAuthorizationRow = {
 	org_id: string | null
 	decided_at: number | null
 	consumed_at: number | null
-	/** `package_app` rows are package-app visitor sign-ins (ADR 0094). */
+	/**
+	 * `package_app` rows are package-app visitor sign-ins and `account` rows
+	 * are full Kody account sign-ins (ADR 0094).
+	 */
 	kind: DeviceAuthorizationKind
-	/** Package-app rows only: the rest of the authorize request, as JSON. */
+	/**
+	 * Package-app rows: the rest of the authorize request. Account rows: the
+	 * requesting browser and where it lands. JSON either way.
+	 */
 	request_json: string | null
 	/** Package-app rows only: the scopes the approver allowed. */
 	approved_scope: string | null
 }
 
 const table = 'oauth_device_authorizations'
+const decisionGuard = sqlSourcesOf(deviceAuthorizationState, 'APPROVE', [
+	'pending',
+])
+const consumeGuard = sqlSourcesOf(deviceAuthorizationState, 'CONSUME', [
+	'approved',
+])
 
 export function nowSeconds() {
 	return Math.floor(Date.now() / 1000)
@@ -102,10 +118,13 @@ export async function findDeviceAuthorizationByDeviceCodeHash(
 	db: D1Database,
 	deviceCodeHash: string,
 ) {
-	return await db
+	const row = await db
 		.prepare(`SELECT * FROM ${table} WHERE device_code_hash = ?`)
 		.bind(deviceCodeHash)
 		.first<DeviceAuthorizationRow>()
+	return row
+		? { ...row, status: parseState(deviceAuthorizationState, row.status) }
+		: null
 }
 
 /** A pending, unexpired request by its normalized user code. */
@@ -114,13 +133,16 @@ export async function findPendingDeviceAuthorizationByUserCode(
 	userCode: string,
 	now = nowSeconds(),
 ) {
-	return await db
+	const row = await db
 		.prepare(
 			`SELECT * FROM ${table}
 			WHERE user_code = ? AND status = 'pending' AND expires_at > ?`,
 		)
 		.bind(userCode, now)
 		.first<DeviceAuthorizationRow>()
+	return row
+		? { ...row, status: parseState(deviceAuthorizationState, row.status) }
+		: null
 }
 
 /**
@@ -179,7 +201,7 @@ export async function decideDeviceAuthorization(
 		.prepare(
 			`UPDATE ${table}
 			SET status = ?, user_id = ?, org_id = ?, decided_at = ?
-			WHERE id = ? AND status = 'pending' AND expires_at > ?
+			WHERE id = ? AND status IN ${decisionGuard} AND expires_at > ?
 				AND kind = 'cli'`,
 		)
 		.bind(
@@ -215,7 +237,7 @@ export async function decidePackageAppDeviceAuthorization(
 		.prepare(
 			`UPDATE ${table}
 			SET status = ?, user_id = ?, approved_scope = ?, decided_at = ?
-			WHERE id = ? AND status = 'pending' AND expires_at > ?
+			WHERE id = ? AND status IN ${decisionGuard} AND expires_at > ?
 				AND kind = 'package_app'`,
 		)
 		.bind(
@@ -230,6 +252,27 @@ export async function decidePackageAppDeviceAuthorization(
 	return (result.meta.changes ?? 0) > 0
 }
 
+/**
+ * Records the decision on a pending full-account sign-in (ADR 0094). The
+ * requesting browser gets a Kody session for `userId` when it next checks in.
+ */
+export async function decideAccountDeviceAuthorization(
+	db: D1Database,
+	input: { id: string; decision: 'approved' | 'denied'; userId: string },
+	now = nowSeconds(),
+) {
+	const result = await db
+		.prepare(
+			`UPDATE ${table}
+			SET status = ?, user_id = ?, decided_at = ?
+			WHERE id = ? AND status IN ${decisionGuard} AND expires_at > ?
+				AND kind = 'account'`,
+		)
+		.bind(input.decision, input.userId, now, input.id, now)
+		.run()
+	return (result.meta.changes ?? 0) > 0
+}
+
 /** Moves an approved row to consumed. Only one caller can win. */
 export async function consumeApprovedDeviceAuthorization(
 	db: D1Database,
@@ -239,7 +282,7 @@ export async function consumeApprovedDeviceAuthorization(
 	const result = await db
 		.prepare(
 			`UPDATE ${table} SET status = 'consumed', consumed_at = ?
-			WHERE id = ? AND status = 'approved' AND expires_at > ?`,
+			WHERE id = ? AND status IN ${consumeGuard} AND expires_at > ?`,
 		)
 		.bind(now, id, now)
 		.run()

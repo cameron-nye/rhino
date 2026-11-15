@@ -1,7 +1,9 @@
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import { parseIntegrationTokenPlaceholders } from '#mcp/secrets/placeholders.ts'
 import {
+	anySealedTokenDomain,
 	isSealedTokenName,
+	jwtSignSendToHostRequiredAt,
 	openSealedToken,
 	openSealedTokenForSave,
 	sealToken,
@@ -31,7 +33,7 @@ async function open(
 	placeholder: string,
 	overrides: Partial<Parameters<typeof openSealedToken>[0]> = {},
 ) {
-	return await openSealedToken({
+	const opened = await openSealedToken({
 		env,
 		name: nameOf(placeholder),
 		org: 'org-1',
@@ -40,6 +42,7 @@ async function open(
 		parts: ['header'],
 		...overrides,
 	})
+	return opened.value
 }
 
 test('a sealed token holds no readable value and opens only at its fill', async () => {
@@ -134,7 +137,13 @@ test('a token minted on another domain also fills on the credential approved hos
 		env,
 		response: Response.json({ access_token: 'a-value' }, { status: 200 }),
 		requestUrl: 'https://login.example-auth.com/oauth/token',
-		approvedHosts: ['login.example-auth.com', '*.example.com'],
+		mintedWith: [
+			{
+				secret: 'clientSecret',
+				scope: 'user',
+				hosts: ['login.example-auth.com', '*.example.com'],
+			},
+		],
 		org: 'org-1',
 		binding: 'run-1',
 	})
@@ -142,7 +151,9 @@ test('a token minted on another domain also fills on the credential approved hos
 	await expect(open(String(body.access_token))).resolves.toBe('a-value')
 	await expect(
 		open(String(body.access_token), { requestHost: 'evil.test' }),
-	).rejects.toThrow(/may only be sent to example-auth\.com, example\.com/)
+	).rejects.toThrow(
+		/may only be sent to example-auth\.com, login\.example-auth\.com, \*\.example\.com, not evil\.test\./,
+	)
 })
 
 test('sealTokenResponse seals JSON token responses and passes other bodies through', async () => {
@@ -247,7 +258,13 @@ async function sealEntraResponse(payload: Record<string, unknown>) {
 		env,
 		response: Response.json(payload),
 		requestUrl: 'https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token',
-		approvedHosts: ['login.microsoftonline.com'],
+		mintedWith: [
+			{
+				secret: 'clientSecret',
+				scope: 'user',
+				hosts: ['login.microsoftonline.com'],
+			},
+		],
 		org: 'org-1',
 		binding: 'run-1',
 	})
@@ -271,12 +288,14 @@ test('an Entra access token fills on its audience host without widening the clie
 			requestHost: 'attacker.eastus.cloudapp.azure.com',
 		}),
 	).rejects.toThrow(
-		/may only be sent to microsoftonline\.com, management\.azure\.com, not attacker\.eastus\.cloudapp\.azure\.com\. It was issued for https:\/\/management\.azure\.com; if attacker\.eastus\.cloudapp\.azure\.com is a different API, mint a token whose scope or resource is/,
+		/may only be sent to microsoftonline\.com, management\.azure\.com, login\.microsoftonline\.com, not attacker\.eastus\.cloudapp\.azure\.com\. It was issued for https:\/\/management\.azure\.com; if attacker\.eastus\.cloudapp\.azure\.com is a different API, mint a token whose scope or resource is/,
 	)
 	// Only the access token carries an audience; the refresh token stays put.
 	await expect(
 		open(arm.refresh_token!, { requestHost: 'management.azure.com' }),
-	).rejects.toThrow(/may only be sent to microsoftonline\.com, not/)
+	).rejects.toThrow(
+		/may only be sent to microsoftonline\.com, login\.microsoftonline\.com, not management/,
+	)
 
 	const logs = await sealEntraResponse({
 		access_token: fakeJwt({ aud: 'https://api.loganalytics.io' }),
@@ -340,7 +359,7 @@ test('an opaque token never fills on a host the token request only asked for', a
 	await expect(
 		open(opaque.access_token!, { requestHost: 'evil.test' }),
 	).rejects.toThrow(
-		/not evil\.test\. It names no https audience Kody can read\. If evil\.test is the API it is for, have the identity provider issue a JWT access token whose "aud" is https:\/\/evil\.test, or approve evil\.test on the credential that minted it\./,
+		/not evil\.test\. It names no https audience Kody can read\. If evil\.test is the API it is for, have the identity provider issue a JWT access token whose "aud" is https:\/\/evil\.test\. It was minted with secret "clientSecret", approved for login\.microsoftonline\.com\. None of those approves evil\.test; to send it there, approve evil\.test on "clientSecret"\./,
 	)
 })
 
@@ -353,6 +372,54 @@ test('a refused secretJwtSign handle hints at send_to_host', async () => {
 	await expect(open(sealed, { requestHost: 'evil.test' })).rejects.toThrow(
 		/pass send_to_host: "evil\.test" to secretJwtSign/,
 	)
+})
+
+test('an any-host secretJwtSign handle stops filling on 2026-12-02', async () => {
+	const minted = jwtSignSendToHostRequiredAt - 60_000
+	const sealed = await sealToken({
+		env,
+		value: 'signed-jwt',
+		to: { ...to, domains: [anySealedTokenDomain], source: 'jwt-sign' },
+		now: minted,
+	})
+	const elsewhere = { requestHost: 'api.example.net' }
+	await expect(
+		open(sealed, { ...elsewhere, now: jwtSignSendToHostRequiredAt - 1 }),
+	).resolves.toBe('signed-jwt')
+	await expect(
+		open(sealed, { ...elsewhere, now: jwtSignSendToHostRequiredAt }),
+	).rejects.toThrow(/pass send_to_host: "api\.example\.net" to secretJwtSign/)
+})
+
+test('an any-host JWT fill reports the caller that minted it', async () => {
+	const anyHost = await sealToken({
+		env,
+		value: 'signed-jwt',
+		to: {
+			...to,
+			domains: [anySealedTokenDomain],
+			source: 'jwt-sign',
+			anyHostPackageId: 'pkg-1',
+		},
+		now: jwtSignSendToHostRequiredAt - 60_000,
+	})
+	const bound = await sealToken({
+		env,
+		value: 'signed-jwt',
+		to: { ...to, source: 'jwt-sign' },
+		now: jwtSignSendToHostRequiredAt - 60_000,
+	})
+	const onAnyHostFill = vi.fn()
+	const now = jwtSignSendToHostRequiredAt - 1
+	await open(bound, { requestHost: 'api.example.com', onAnyHostFill, now })
+	expect(onAnyHostFill).not.toHaveBeenCalled()
+	await expect(
+		open(anyHost, { requestHost: 'api.example.net', onAnyHostFill, now }),
+	).resolves.toBe('signed-jwt')
+	expect(onAnyHostFill).toHaveBeenCalledWith({
+		ownerId: 'org-1',
+		packageId: 'pkg-1',
+	})
 })
 
 test('an audience host fills exactly, not on its subdomains', async () => {
@@ -375,7 +442,13 @@ test('a Basic-filled client secret echoed raw in a JWT keeps only the token and 
 			),
 		}),
 		requestUrl: 'https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token',
-		approvedHosts: ['login.microsoftonline.com'],
+		mintedWith: [
+			{
+				secret: 'clientSecret',
+				scope: 'user',
+				hosts: ['login.microsoftonline.com'],
+			},
+		],
 		filledValues: [`Basic ${basic}`, basic],
 		org: 'org-1',
 		binding: 'run-1',
@@ -383,7 +456,9 @@ test('a Basic-filled client secret echoed raw in a JWT keeps only the token and 
 	const { access_token } = (await sealed.json()) as Record<string, string>
 	await expect(
 		open(access_token!, { requestHost: 'evil.test' }),
-	).rejects.toThrow(/may only be sent to microsoftonline\.com, not evil\.test/)
+	).rejects.toThrow(
+		/may only be sent to microsoftonline\.com, login\.microsoftonline\.com, not evil\.test/,
+	)
 })
 
 test('a JWT whose claims carry the filled client id still fills on its audience', async () => {
@@ -396,7 +471,13 @@ test('a JWT whose claims carry the filled client id still fills on its audience'
 			}),
 		}),
 		requestUrl: 'https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token',
-		approvedHosts: ['login.microsoftonline.com'],
+		mintedWith: [
+			{
+				secret: 'clientSecret',
+				scope: 'user',
+				hosts: ['login.microsoftonline.com'],
+			},
+		],
 		filledValues: ['client-id-value', 'client-secret-value'],
 		org: 'org-1',
 		binding: 'run-1',
@@ -421,6 +502,20 @@ test('an approved Entra resource host still adds its documented alias', () => {
 	).toEqual([])
 })
 
+test('an audience on a minting secret approved host does not hide a new API audience', () => {
+	const token = fakeJwt({
+		aud: ['https://run.googleapis.com', 'https://monitoring.googleapis.com'],
+	})
+	expect(
+		sealedTokenAudienceHosts(
+			token,
+			['oauth2.googleapis.com'],
+			['run.googleapis.com'],
+		),
+	).toEqual(['monitoring.googleapis.com'])
+	expect(sealedTokenAudienceHosts(token, ['oauth2.googleapis.com'])).toEqual([])
+})
+
 test('a token response that echoes a filled secret keeps only the token and approved domains', async () => {
 	const echoed = fakeJwt({ aud: 'https://evil.test' }).replace(
 		'signature',
@@ -430,7 +525,13 @@ test('a token response that echoes a filled secret keeps only the token and appr
 		env,
 		response: Response.json({ access_token: echoed }),
 		requestUrl: 'https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token',
-		approvedHosts: ['login.microsoftonline.com'],
+		mintedWith: [
+			{
+				secret: 'clientSecret',
+				scope: 'user',
+				hosts: ['login.microsoftonline.com'],
+			},
+		],
 		filledValues: ['client-secret-value'],
 		org: 'org-1',
 		binding: 'run-1',
@@ -438,7 +539,9 @@ test('a token response that echoes a filled secret keeps only the token and appr
 	const { access_token } = (await sealed.json()) as Record<string, string>
 	await expect(
 		open(access_token!, { requestHost: 'evil.test' }),
-	).rejects.toThrow(/may only be sent to microsoftonline\.com, not evil\.test/)
+	).rejects.toThrow(
+		/may only be sent to microsoftonline\.com, login\.microsoftonline\.com, not evil\.test/,
+	)
 })
 
 test('a saved token goes to the token host, exact approved hosts, and its audience', async () => {
@@ -447,10 +550,12 @@ test('a saved token goes to the token host, exact approved hosts, and its audien
 		env,
 		response: Response.json({ access_token: token }),
 		requestUrl: 'https://login.example-auth.com/oauth/token',
-		approvedHosts: [
-			'login.example-auth.com',
-			'*.example.com',
-			'api.example.com',
+		mintedWith: [
+			{
+				secret: 'clientSecret',
+				scope: 'user',
+				hosts: ['login.example-auth.com', '*.example.com', 'api.example.com'],
+			},
 		],
 		org: 'org-1',
 		binding: 'run-1',

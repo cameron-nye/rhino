@@ -32,6 +32,12 @@ import {
 import { handleMcpClientIdMetadataRequest } from './mcp-client/client-id-metadata.ts'
 import { handleCliClientIdMetadataRequest } from './cli-client-metadata.ts'
 import {
+	ensureLocalCliClientRegistration,
+	handleLocalDevApiRequest,
+	isLocalDevApiRequest,
+	isLocalDevRequest,
+} from './open-api/local-dev-api-edge.ts'
+import {
 	handleWebhookIngressRequest,
 	isWebhookIngressRequest,
 } from './webhooks/http.ts'
@@ -128,6 +134,12 @@ function loadLegacyMcpFetch(): Promise<LegacyMcpFetch> {
 }
 
 function shouldApplyLongLivedAssetCaching(pathname: string, env: Env) {
+	if (
+		/^(?:\/__start\/[a-f0-9]{40})?\/office-viewers\/(docx|xlsx|pptx)-[a-f0-9]{12}\.js$/.test(
+			pathname,
+		)
+	)
+		return true
 	const commitSha = (env as { APP_COMMIT_SHA?: string }).APP_COMMIT_SHA?.trim()
 	if (!commitSha) return false
 	return (
@@ -873,6 +885,18 @@ async function fetchWithDynamicWorkerBudget(
 	ctx: ExecutionContext,
 ) {
 	const url = new URL(request.url)
+
+	if (isLocalDevRequest(env, url)) {
+		await ensureLocalCliClientRegistration(env, url.origin)
+		if (isLocalDevApiRequest(env, url)) {
+			return handleLocalDevApiRequest({
+				request,
+				env,
+				ctx,
+				appOrigin: url.origin,
+			})
+		}
+	}
 
 	// Production `*.workers.dev` is not a product origin. `/health` stays
 	// reachable so deploy and status probes can hit the script directly.

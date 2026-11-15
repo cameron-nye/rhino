@@ -105,6 +105,7 @@ const productionArgs = (outConfigPath: string) => ({
 	communityAssetsBucketName: 'kody-community-assets',
 	emailBlobsBucketName: 'kody-email-blobs',
 	repoSessionBlobsBucketName: 'kody-repo-session-blobs',
+	fileBlobsBucketName: 'kody-file-blobs',
 	operatorBackupsBucketName: 'kody-operator-backups',
 })
 
@@ -263,6 +264,7 @@ test('writeGeneratedWranglerConfig preserves migrations and copies environment a
 		{ binding: 'COMMUNITY_ASSETS', bucket_name: 'kody-community-assets' },
 		{ binding: 'EMAIL_BLOBS', bucket_name: 'kody-email-blobs' },
 		{ binding: 'REPO_SESSION_BLOBS', bucket_name: 'kody-repo-session-blobs' },
+		{ binding: 'FILE_BLOBS', bucket_name: 'kody-file-blobs' },
 		{ binding: 'OPERATOR_BACKUPS', bucket_name: 'kody-operator-backups' },
 	])
 	// Routes are generated from the base-URL vars rather than committed (a
@@ -293,6 +295,7 @@ test('writeGeneratedWranglerConfig preserves migrations and copies environment a
 		communityAssetsBucketName: 'kody-pr-123-community-assets',
 		emailBlobsBucketName: 'kody-pr-123-email-blobs',
 		repoSessionBlobsBucketName: 'kody-pr-123-repo-session-blobs',
+		fileBlobsBucketName: 'kody-pr-123-file-blobs',
 		operatorBackupsBucketName: 'kody-pr-123-operator-backups',
 		queueBindings: [
 			{
@@ -332,6 +335,7 @@ test('writeGeneratedWranglerConfig preserves migrations and copies environment a
 			binding: 'REPO_SESSION_BLOBS',
 			bucket_name: 'kody-pr-123-repo-session-blobs',
 		},
+		{ binding: 'FILE_BLOBS', bucket_name: 'kody-pr-123-file-blobs' },
 		{
 			binding: 'OPERATOR_BACKUPS',
 			bucket_name: 'kody-pr-123-operator-backups',

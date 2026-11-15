@@ -1,6 +1,6 @@
 import { jsx } from 'react/jsx-runtime'
 import { renderStartPage } from './test-support/render-start-page.ts'
-import { type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 const renderToString = (page: ReactNode) => renderStartPage(page, '/docs')
 import { expect, test } from 'vitest'
 import { renderMarkdownNodes } from './components/markdown-view.tsx'
@@ -113,6 +113,45 @@ test('package README imageBaseHref emits img only for in-repo relative images', 
 	const defaultPolicy = await renderMarkdown('![poster](./docs/poster.png)')
 	expect(defaultPolicy).not.toContain('<img')
 	expect(defaultPolicy).toContain('<span>poster</span>')
+})
+
+test('blogImages emits lazy img only for /images/ paths; other hrefs stay links', async () => {
+	const markdown = [
+		'![Package files page](/images/blog/kody-weekly-2026-10-30/package-files.webp)',
+		'',
+		'![remote](https://img.example/shot.webp)',
+		'',
+		'![protocol-relative](//img.example/shot.webp)',
+		'',
+		'![query](/images/blog/post/shot.webp?v=2)',
+		'',
+		'![other-path](/logo.png)',
+		'',
+		'![upper](/images/blog/Post/Shot.webp)',
+	].join('\n')
+
+	const withBlogImages = await renderToString(
+		jsx('div', {
+			children: renderMarkdownNodes(markdown, { blogImages: true }),
+		}),
+	)
+	expect(withBlogImages.match(/<img /g)?.length).toBe(1)
+	expect(withBlogImages).toMatch(
+		/<img src="[^"]*images\/blog\/kody-weekly-2026-10-30\/package-files\.webp" alt="Package files page" loading="lazy" decoding="async"\/>/,
+	)
+	expect(withBlogImages).toContain(
+		'<a href="https://img.example/shot.webp" target="_blank" rel="noopener noreferrer nofollow ugc">remote</a>',
+	)
+	expect(withBlogImages).toContain('<span>protocol-relative</span>')
+	expect(withBlogImages).toContain('<span>query</span>')
+	expect(withBlogImages).toContain('<span>other-path</span>')
+	expect(withBlogImages).toContain('<span>upper</span>')
+
+	const defaultPolicy = await renderMarkdown(
+		'![Package files page](/images/blog/post/package-files.webp)',
+	)
+	expect(defaultPolicy).not.toContain('<img')
+	expect(defaultPolicy).toContain('<span>Package files page</span>')
 })
 
 test('first-party heading ids are unique and use parsed heading text', async () => {
@@ -272,6 +311,28 @@ test('first-party watch blocks render a lite youtube player; untrusted markdown 
 	expect(untrusted).not.toContain('youtube-nocookie.com')
 	expect(untrusted).toContain('[!WATCH]')
 	expect(untrusted).toContain('<blockquote>')
+})
+
+test('first-party vertical watch blocks render a 9:16 lite player', async () => {
+	const html = await renderToString(
+		jsx('div', {
+			children: renderMarkdownNodes(
+				[
+					'> [!WATCH-VERTICAL] https://www.youtube.com/watch?v=_EJTrJFLa3g',
+					'> Watch: A phone-shot video',
+				].join('\n'),
+				{
+					linkPolicy: 'first-party',
+					headingOffset: 0,
+					linkRel: 'noopener noreferrer',
+				},
+			),
+		}),
+	)
+	expect(html).toContain('data-doc-youtube-vertical')
+	expect(html).toContain('/youtube-thumb/_EJTrJFLa3g')
+	expect(html).toContain('Play A phone-shot video')
+	expect(html).not.toContain('[!WATCH-VERTICAL]')
 })
 
 test('first-party diagram blocks render a registered figure with the quote as its caption', async () => {

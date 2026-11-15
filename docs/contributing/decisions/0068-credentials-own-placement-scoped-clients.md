@@ -1030,10 +1030,17 @@ JWT, and a manual token request returned whatever the token endpoint sent.
   separate auth domain still reaches the API the credential is approved for,
   with no new `oauthClientCredentials` option), or of the JWT's https `aud` or
   `send_to_host`, never in a URL query or path, and for at most one hour. A JWT
-  with neither an https `aud` nor `send_to_host` stays sealed and org-bound but
-  may fill on any host, so existing callers keep working; the result carries a
-  deprecation `warning`, and requiring `send_to_host` is tracked in
-  kody-hq/kody#4456.
+  with neither an https `aud` nor `send_to_host` is refused with an error
+  pointing at `send_to_host`, except for an org + package pair that made such a
+  call before the new-caller cutoff (2026-11-10 America/Denver), as recorded in
+  `jwt_sign_any_host_callers` or, for calls before that table existed, in
+  Analytics Engine (`kody_jwt_sign_any_host_events`). That pair keeps a sealed,
+  org-bound handle that may fill on any host, with a deprecation `warning`,
+  until 2026-12-02 (America/Denver). Each host such a handle fills on is counted
+  per pair in `jwt_sign_any_host_destinations` (never the JWT). From that date
+  an any-host handle stops filling, and a call without `send_to_host` is bound
+  to the pair's only destination domain when it has exactly one, and refused
+  otherwise (kody-hq/kody#4456).
 - **Refresh tokens.** A sealed `refresh_token` shares the one-run, one-hour cap.
   Kody holding refresh tokens server side is tracked in kody-hq/kody#4457.
 - **Server-side.** `oauthClientCredentials` runs its token request through the
@@ -1125,6 +1132,32 @@ sanctioned path:
   package-held tokens remain open
   ([kody-hq/kody#4457](https://github.com/kody-hq/kody/issues/4457)).
 
+### 2026-11-14: a derived token fills on its minting secrets' exact hosts
+
+Platform feedback: a Google service-account package signed a JWT with
+`secretJwtSign` (`aud` `https://oauth2.googleapis.com/token`), exchanged it at
+`oauth2.googleapis.com/token`, and every Google API refused the returned
+`access_token`, though the key approved `run.googleapis.com` and
+`sqladmin.googleapis.com`. Two causes: `googleapis.com` is on the Public Suffix
+List, so the token URL's registrable domain is `oauth2.googleapis.com` itself;
+and the only stored secret behind the token request was the signing key, which
+reached it through a sealed JWT, so no approved host joined the token. The
+refusal then told the caller to approve the host on "the credential that minted
+it", which named no credential and could not help.
+
+- **Minters.** A sealed token records the stored secrets it was minted with,
+  each with its scope and approved hosts. A `secretJwtSign` JWT records its
+  signing key. A token response records every secret the request filled,
+  directly or through a sealed token, so the signing key's hosts carry to the
+  exchanged token.
+- **Exact hosts.** A sealed token fills on the token URL's registrable domain,
+  its `aud` hosts, and the hosts its minters approve, matched exactly as Keys
+  match (`*.example.com` is one label). This replaces the registrable domains of
+  approved hosts in the Bound rule above, which could reach hosts no minter
+  approved; a token is never wider than the secrets that minted it.
+- **Refusal.** A refused host names the secrets that minted the token, the hosts
+  they approve, and the approval link that adds the refused host to each.
+
 ## Amendment 2026-10-28: owner placement approval links
 
 - **Context.** A new user Key for a body-auth API (Plaid) was approved for its
@@ -1202,9 +1235,10 @@ but never use it or read its tokens.**
   (`credential.pinned_connection_revoked`) and in the owner's personal org
   (`credential.pinned_connection_wiped`). Revoking never gives the admin the
   token.
-- **Cut-off.** Leaving or removal (`offboardOrgMember`) and deleting the org's
-  app wipe every connection pinned to it and revoke upstream first, so deleting
-  the app is never blocked by members' connections.
+- **Cut-off.** Leaving or removal (`offboardOrgMember`), deleting the org's app,
+  and deleting the org (soft delete and hard purge) wipe every connection pinned
+  to it and revoke upstream first, so deleting the app is never blocked by
+  members' connections.
 - **Upstream revoke.** GitHub OAuth Apps:
   `DELETE /applications/{client_id}/token` with the app's client credentials.
   Providers with an RFC 7009 endpoint: a revocation request for the refresh

@@ -338,9 +338,12 @@
 					"/.well-known/agent-skills/*",
 					"/.well-known/security.txt",
 					"/.well-known/openai-apps-challenge",
+					"/.well-known/apple-app-site-association",
 					"/styles.css",
 					"/client-entry.js",
 					"/assets/*",
+					// Weekly blog screenshots live in R2 (COMMUNITY_ASSETS, blog-images/).
+					"/images/blog/*",
 				],
 			},
 			"durable_objects": {
@@ -389,6 +392,16 @@
 					{
 						"class_name": "RepoSessionIndex",
 						"name": "REPO_SESSION_INDEX",
+						"script_name": "kody-platform",
+					},
+					{
+						"class_name": "FileStore",
+						"name": "FILE_STORE",
+						"script_name": "kody-platform",
+					},
+					{
+						"class_name": "FileRoom",
+						"name": "FILE_ROOM",
 						"script_name": "kody-platform",
 					},
 					{
@@ -597,6 +610,10 @@
 					"bucket_name": "kody-repo-session-blobs",
 				},
 				{
+					"binding": "FILE_BLOBS",
+					"bucket_name": "kody-file-blobs",
+				},
+				{
 					"binding": "OPERATOR_BACKUPS",
 					"bucket_name": "kody-operator-backups",
 				},
@@ -640,6 +657,10 @@
 					"binding": "PACKAGE_APP_LEGACY_EVENTS",
 					"dataset": "kody_package_app_legacy_events",
 				},
+				{
+					"binding": "JWT_SIGN_ANY_HOST_EVENTS",
+					"dataset": "kody_jwt_sign_any_host_events",
+				},
 			],
 			"ai": {
 				"binding": "AI",
@@ -655,6 +676,7 @@
 			],
 			"vars": {
 				"SENTRY_ENVIRONMENT": "production",
+				"FILES_INCLUDED_BYTES": "67108864",
 				// JSON number on purpose: buildSentryOptions reads the raw
 				// runtime env and only honors a number here (string secrets
 				// are ignored). 0 disables Sentry SDK trace sampling.
@@ -901,9 +923,12 @@
 					"/.well-known/agent-skills/*",
 					"/.well-known/security.txt",
 					"/.well-known/openai-apps-challenge",
+					"/.well-known/apple-app-site-association",
 					"/styles.css",
 					"/client-entry.js",
 					"/assets/*",
+					// Weekly blog screenshots live in R2 (COMMUNITY_ASSETS, blog-images/).
+					"/images/blog/*",
 				],
 			},
 			"durable_objects": {
@@ -946,6 +971,16 @@
 					{
 						"class_name": "RepoSessionIndex",
 						"name": "REPO_SESSION_INDEX",
+						"script_name": "kody-platform",
+					},
+					{
+						"class_name": "FileStore",
+						"name": "FILE_STORE",
+						"script_name": "kody-platform",
+					},
+					{
+						"class_name": "FileRoom",
+						"name": "FILE_ROOM",
 						"script_name": "kody-platform",
 					},
 					{
@@ -1064,6 +1099,10 @@
 					"bucket_name": "kody-preview-repo-session-blobs",
 				},
 				{
+					"binding": "FILE_BLOBS",
+					"bucket_name": "kody-preview-file-blobs",
+				},
+				{
 					"binding": "OPERATOR_BACKUPS",
 					"bucket_name": "kody-preview-operator-backups",
 				},
@@ -1107,6 +1146,10 @@
 					"binding": "PACKAGE_APP_LEGACY_EVENTS",
 					"dataset": "kody_package_app_legacy_events_preview",
 				},
+				{
+					"binding": "JWT_SIGN_ANY_HOST_EVENTS",
+					"dataset": "kody_jwt_sign_any_host_events_preview",
+				},
 			],
 			"ai": {
 				"binding": "AI",
@@ -1122,6 +1165,7 @@
 			],
 			"vars": {
 				"SENTRY_ENVIRONMENT": "preview",
+				"FILES_INCLUDED_BYTES": "67108864",
 				"ARTIFACTS_NAMESPACE": "preview",
 				// Upstream preview allowlists Kent's playlist
 				// PLV5CVI1eNcJhP4nrJt85L7PxHjebFpDfY. Rhino leaves it unset.
@@ -1242,6 +1286,8 @@
 					"new_sqlite_classes": ["ExecutionContextSessionV1"],
 					"tag": "v27",
 				},
+				{ "tag": "files-v1", "new_sqlite_classes": ["FileStore"] },
+				{ "tag": "file-rooms-v1", "new_sqlite_classes": ["FileRoom"] },
 			],
 			"worker_loaders": [
 				{
@@ -1275,9 +1321,12 @@
 					"/.well-known/agent-skills/*",
 					"/.well-known/security.txt",
 					"/.well-known/openai-apps-challenge",
+					"/.well-known/apple-app-site-association",
 					"/styles.css",
 					"/client-entry.js",
 					"/assets/*",
+					// Weekly blog screenshots live in R2 (COMMUNITY_ASSETS, blog-images/).
+					"/images/blog/*",
 				],
 			},
 			"durable_objects": {
@@ -1314,6 +1363,11 @@
 						"class_name": "RepoSessionIndex",
 						"name": "REPO_SESSION_INDEX",
 					},
+					{
+						"class_name": "FileStore",
+						"name": "FILE_STORE",
+					},
+					{ "class_name": "FileRoom", "name": "FILE_ROOM" },
 					{
 						"class_name": "StripePlanRefresh",
 						"name": "STRIPE_PLAN_REFRESH",
@@ -1402,6 +1456,10 @@
 				{
 					"binding": "REPO_SESSION_BLOBS",
 					"bucket_name": "kody-preview-repo-session-blobs",
+				},
+				{
+					"binding": "FILE_BLOBS",
+					"bucket_name": "kody-preview-file-blobs",
 				},
 				{
 					"binding": "OPERATOR_BACKUPS",

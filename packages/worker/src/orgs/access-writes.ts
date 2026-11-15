@@ -1,3 +1,9 @@
+import {
+	IllegalStateTransitionError,
+	sqlSourcesOf,
+	parseState,
+	nextState,
+} from '@kody-internal/shared/state-machine.ts'
 /**
  * Writes that change org access (memberships, teams, grants, invites) and bump
  * access_epoch in the same D1 batch so the next request recompiles.
@@ -9,12 +15,13 @@ import {
 } from '@kody-internal/shared/grant-presets.ts'
 import {
 	isOrgPermission,
+	withoutRetiredOrgPermissions,
 	type OrgGrantResourceType,
 	type OrgPermission,
 	type OrgResourceType,
 } from '@kody-internal/shared/org-permissions.ts'
 import { mintPersonId } from '@kody-internal/shared/owner-person-ids.ts'
-import { type OrgRole } from '@kody-internal/shared/request-context.ts'
+import type { OrgRole } from '@kody-internal/shared/request-context.ts'
 import { bumpAccessEpochStatement } from '#worker/authorization/access-compile.ts'
 import { normalizeUsername } from '#worker/identity/username.ts'
 import {
@@ -24,7 +31,7 @@ import {
 	liveFreeOwnedOrgCountSql,
 } from '#worker/orgs/billing.ts'
 import { getOrgHandleClaimError } from '#worker/orgs/org-handle-claim.ts'
-import { type OrgProfileVisibility } from '#worker/orgs/org-public-profile.ts'
+import type { OrgProfileVisibility } from '#worker/orgs/org-public-profile.ts'
 import { andLiveDeletedAtSql } from '#worker/soft-delete/live-sql.ts'
 import {
 	recordOrgAuditEvent,
@@ -32,6 +39,11 @@ import {
 	type OrgAuditOutboxEvent,
 	type OrgAuditWriter,
 } from './org-audit.ts'
+import { inviteState, type InviteStatus } from './invite-state.ts'
+
+export type { InviteStatus } from './invite-state.ts'
+
+const inviteDecisionGuard = sqlSourcesOf(inviteState, 'ACCEPT', ['pending'])
 
 async function runAccessBatchWithAudit(input: {
 	db: D1Database
@@ -139,6 +151,7 @@ export type GrantOrigin = (typeof grantOrigins)[number]
 
 export const grantResourceTypes = [
 	'package',
+	'file',
 	'app',
 	'job',
 	'credential',
@@ -163,7 +176,7 @@ export function isGrantResourceType(value: string): value is GrantResourceType {
 	return (grantResourceTypes as ReadonlyArray<string>).includes(value)
 }
 
-const orgRoleValues = ['owner', 'member', 'billing'] as const
+const orgRoleValues = ['owner', 'admin', 'member', 'billing'] as const
 
 function isOrgRole(value: string): value is OrgRole {
 	return (orgRoleValues as ReadonlyArray<string>).includes(value)
@@ -330,6 +343,58 @@ export async function removeTeamMember(input: {
 			targetUserId: input.userId,
 		},
 	})
+}
+
+/**
+ * Soft-deletes a team. Its grant rows and seats stay for history; every access
+ * lookup joins live teams only, so they stop granting at once. Returns the
+ * people who held a live seat so callers can end their leases.
+ */
+export async function deleteTeam(input: {
+	db: D1Database
+	orgId: string
+	teamId: string
+	audit: OrgAuditWriter
+}) {
+	const team = await input.db
+		.prepare(
+			`SELECT id, slug FROM teams
+			 WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+		)
+		.bind(input.teamId, input.orgId)
+		.first<{ id: string; slug: string }>()
+	if (!team) throw new Error('Team was not found in this org.')
+	const seats = await input.db
+		.prepare(
+			`SELECT user_id FROM team_members
+			 WHERE team_id = ? AND deleted_at IS NULL`,
+		)
+		.bind(team.id)
+		.all<{ user_id: string }>()
+	const memberUserIds = (seats.results ?? []).map((row) => row.user_id)
+	const now = new Date().toISOString()
+	await runAccessBatchWithAudit({
+		db: input.db,
+		audit: input.audit,
+		statements: [
+			input.db
+				.prepare(
+					`UPDATE teams
+					 SET deleted_at = ?, updated_at = ?
+					 WHERE id = ? AND org_id = ? AND deleted_at IS NULL`,
+				)
+				.bind(now, now, team.id, input.orgId),
+			bumpAccessEpochStatement(input.db, input.orgId),
+		],
+		event: {
+			orgId: input.orgId,
+			action: 'team.deleted',
+			resourceType: 'team',
+			resourceId: team.id,
+			details: { slug: team.slug, member_count: memberUserIds.length },
+		},
+	})
+	return { id: team.id, slug: team.slug, memberUserIds }
 }
 
 function grantFamilyOf(
@@ -978,10 +1043,6 @@ export async function addOrgMember(input: {
 	})
 }
 
-const inviteStatuses = ['pending', 'accepted', 'revoked', 'expired'] as const
-
-export type InviteStatus = (typeof inviteStatuses)[number]
-
 export type StoredInvite = {
 	id: string
 	orgId: string
@@ -1041,9 +1102,7 @@ function parseStoredInvite(row: InviteRow): StoredInvite {
 	if (row.kind !== 'membership' && row.kind !== 'grant') {
 		throw new Error(`Invite ${row.id} has kind ${row.kind}.`)
 	}
-	if (!(inviteStatuses as ReadonlyArray<string>).includes(row.status)) {
-		throw new Error(`Invite ${row.id} has status ${row.status}.`)
-	}
+	const status = parseState(inviteState, row.status)
 	const role = row.role
 	if (role !== null && !isOrgRole(role)) {
 		throw new Error(`Invite ${row.id} has role ${role}.`)
@@ -1060,7 +1119,7 @@ function parseStoredInvite(row: InviteRow): StoredInvite {
 		? parseJsonStringList(row.permissions_json, `Invite ${row.id} permissions`)
 		: null
 	const permissions = permissionValues
-		? permissionValues.map((permission) => {
+		? withoutRetiredOrgPermissions(permissionValues).map((permission) => {
 				if (!isOrgPermission(permission)) {
 					throw new Error(`Invite ${row.id} has permission ${permission}.`)
 				}
@@ -1080,7 +1139,7 @@ function parseStoredInvite(row: InviteRow): StoredInvite {
 		inviteeEmail: row.invitee_email,
 		inviteeUsername: row.invitee_username,
 		tokenHash: row.token_hash,
-		status: row.status as InviteStatus,
+		status,
 		invitedByUserId: row.invited_by_user_id,
 		expiresAt: row.expires_at,
 		createdAt: row.created_at,
@@ -1128,6 +1187,22 @@ async function setInviteStatus(input: {
 	to: InviteStatus
 	acceptedByUserId?: string | null
 }) {
+	nextState(inviteState, input.from, {
+		type: (() => {
+			switch (input.to as string) {
+				case 'accepted':
+					return 'ACCEPT' as const
+				case 'revoked':
+					return 'REVOKE' as const
+				case 'expired':
+					return 'EXPIRE' as const
+				default:
+					throw new IllegalStateTransitionError(inviteState.id, input.from, {
+						type: String(input.to),
+					})
+			}
+		})(),
+	})
 	const now = new Date().toISOString()
 	const result =
 		input.to === 'accepted'
@@ -1135,7 +1210,7 @@ async function setInviteStatus(input: {
 					.prepare(
 						`UPDATE invites
 						 SET status = 'accepted', accepted_by_user_id = ?, accepted_at = ?
-						 WHERE id = ? AND status = ?`,
+						 WHERE id = ? AND status = ? AND status IN ${inviteDecisionGuard}`,
 					)
 					.bind(input.acceptedByUserId ?? null, now, input.inviteId, input.from)
 					.run()
@@ -1143,7 +1218,7 @@ async function setInviteStatus(input: {
 					.prepare(
 						`UPDATE invites
 						 SET status = ?
-						 WHERE id = ? AND status = ?`,
+						 WHERE id = ? AND status = ? AND status IN ${inviteDecisionGuard}`,
 					)
 					.bind(input.to, input.inviteId, input.from)
 					.run()
@@ -1188,7 +1263,7 @@ export async function markInviteRevoked(input: {
 				.prepare(
 					`UPDATE invites
 					 SET status = 'revoked'
-					 WHERE id = ? AND status = 'pending'`,
+					 WHERE id = ? AND status IN ${inviteDecisionGuard}`,
 				)
 				.bind(input.inviteId),
 		],
@@ -1225,7 +1300,7 @@ export async function markInviteDeclined(input: {
 				.prepare(
 					`UPDATE invites
 					 SET status = 'revoked'
-					 WHERE id = ? AND status = 'pending'`,
+					 WHERE id = ? AND status IN ${inviteDecisionGuard}`,
 				)
 				.bind(input.inviteId),
 		],

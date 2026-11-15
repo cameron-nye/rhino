@@ -1,19 +1,27 @@
 import {
 	buildClaudeCodeAddCommand,
+	buildCodexMcpAddCommand,
 	buildCopilotCliAddCommand,
 	buildHermesMcpAddCommand,
+	buildKodyCliLoginCommand,
 	buildMuseSettingsJson,
 	buildOpenClawMcpAddCommand,
 	buildOpenCodeMcpAddCommand,
+	chatGptCustomMcpGuideUrl,
+	chatGptDesktopMcpSteps,
+	chatGptDirectoryListingNote,
+	chatGptWebMcpSummary,
+	codexMcpLoginHint,
+	codexSharedConfigNote,
 	defaultKodyMcpUrl,
 	grokBotInstallUrl,
 	grokConnectorsUrl,
 	kodyBotTemplateLabel,
 	kodyBotTemplateSummary,
 	kodyBotTemplateUrl,
-	kodyChatGptPluginUrl,
 	kodyCursorAddPluginCommand,
 	kodyCursorMarketplaceUrl,
+	kodyCliGlobalInstallCommand,
 	museMcpLoginCommand,
 	openClawMcpLoginCommand,
 	openCodeMcpAuthCommand,
@@ -49,6 +57,8 @@ export type WithAgent = {
 	/** Replaces the default note shown above unofficial agents' steps. */
 	note?: string
 	pitch: string
+	/** Promo video on the @kodykoala YouTube channel, shown above the setup. */
+	youtubeVideoId?: string
 	/**
 	 * Recommended setup shown as the primary button above `steps`. When set,
 	 * `steps` become the manual alternative under `alternativeTitle`.
@@ -65,7 +75,9 @@ export type WithAgent = {
 const mcpUrl = defaultKodyMcpUrl
 
 function genericAgent<const Slug extends string>(
-	agent: Pick<WithAgent, 'name' | 'icon' | 'pitch'> & { slug: Slug },
+	agent: Pick<WithAgent, 'name' | 'icon' | 'pitch' | 'youtubeVideoId'> & {
+		slug: Slug
+	},
 ) {
 	return {
 		...agent,
@@ -86,10 +98,10 @@ function genericAgent<const Slug extends string>(
 	} satisfies WithAgent
 }
 
-const chatGptPluginStep = {
-	text: 'Add the Kody plugin from the ChatGPT plugin directory.',
-	link: { label: 'Open the Kody plugin', href: kodyChatGptPluginUrl },
-} satisfies WithAgentStep
+/** ChatGPT desktop app: Settings, MCP servers, Add server. */
+const chatGptDesktopWithSteps = chatGptDesktopMcpSteps.map((text, index) =>
+	index === 1 ? { text, code: mcpUrl } : { text },
+) satisfies ReadonlyArray<WithAgentStep>
 
 export const withAgents = [
 	{
@@ -99,6 +111,7 @@ export const withAgents = [
 		official: true,
 		pitch:
 			'Keep building in Cursor. Kody gives it your team\u2019s credentials, packages, and workflows, and anything it saves runs from every other agent your team uses.',
+		youtubeVideoId: 'w4JwZdLBTME',
 		steps: [
 			{
 				text: 'Install the Kody plugin from the Cursor Marketplace.',
@@ -117,6 +130,7 @@ export const withAgents = [
 		official: true,
 		pitch:
 			'Claude Code writes the package. Kody keeps it, runs it on a trigger, and shares it with the rest of your team.',
+		youtubeVideoId: '85vHMyLBwQc',
 		steps: [
 			{
 				text: 'Add Kody from your terminal:',
@@ -132,9 +146,17 @@ export const withAgents = [
 		official: true,
 		pitch:
 			'Let Codex build tools your whole team can run, with credentials it uses but never sees.',
+		youtubeVideoId: 'fuDXGko25u4',
 		steps: [
-			chatGptPluginStep,
-			{ text: 'Approve access when Codex asks you to sign in to Kody.' },
+			{
+				text: 'Add Kody from your terminal:',
+				code: buildCodexMcpAddCommand(mcpUrl),
+			},
+			{ text: codexMcpLoginHint },
+			{
+				text: `Using the ChatGPT desktop app or the Codex IDE extension? Open Settings (the gear menu in the IDE), select MCP servers, then Add server. Name it Kody, choose Streamable HTTP, paste ${mcpUrl}, save, restart, and select Authenticate. ${codexSharedConfigNote}`,
+			},
+			{ text: chatGptDirectoryListingNote },
 		],
 	},
 	{
@@ -144,11 +166,17 @@ export const withAgents = [
 		official: true,
 		pitch:
 			'Use your team\u2019s packages and connected accounts from a ChatGPT conversation, on the web or on your phone.',
+		youtubeVideoId: 'XhEOHp-xAvI',
 		steps: [
-			chatGptPluginStep,
+			...chatGptDesktopWithSteps,
 			{
-				text: 'Approve access when ChatGPT asks you to sign in to Kody. Plugins need a paid ChatGPT plan.',
+				text: chatGptWebMcpSummary,
+				link: {
+					label: 'OpenAI custom MCP help',
+					href: chatGptCustomMcpGuideUrl,
+				},
 			},
+			{ text: chatGptDirectoryListingNote },
 		],
 	},
 	{
@@ -158,6 +186,7 @@ export const withAgents = [
 		official: true,
 		pitch:
 			'Bring your team\u2019s tools and connected accounts into Claude conversations on desktop, web, and mobile.',
+		youtubeVideoId: 'hIoyopd7K0s',
 		steps: [
 			{
 				text: 'In Claude, open Settings, then Connectors, and add a custom connector with this URL:',
@@ -175,6 +204,7 @@ export const withAgents = [
 		official: true,
 		pitch:
 			'Give Copilot in VS Code or the terminal the same credentials and packages the rest of your team uses.',
+		youtubeVideoId: 'b10pWdw82fM',
 		steps: [
 			{
 				text: 'Add Kody to Copilot CLI:',
@@ -207,6 +237,7 @@ export const withAgents = [
 		official: true,
 		pitch:
 			'Run your team\u2019s packages from the Gemini app, with credentials Gemini never sees.',
+		youtubeVideoId: 'Q3wxGreaCR0',
 		steps: [
 			{
 				text: 'In the Gemini app, add a custom MCP connector with this URL:',
@@ -237,6 +268,7 @@ export const withAgents = [
 		official: true,
 		pitch:
 			'Start from the Kody Bot template and Grok Bot works on your Kody repos and packages through the Kody CLI and git.',
+		youtubeVideoId: 'Cbfi6ACAvZY',
 		primaryAction: {
 			label: kodyBotTemplateLabel,
 			href: kodyBotTemplateUrl,
@@ -288,6 +320,7 @@ export const withAgents = [
 		official: true,
 		pitch:
 			'Give Hermes the shared credentials and packages your team keeps in Kody, from the terminal or any chat app it runs in.',
+		youtubeVideoId: 'ZfAfxwIMOgI',
 		steps: [
 			{
 				text: 'Add Kody on the machine that runs Hermes:',
@@ -308,6 +341,7 @@ export const withAgents = [
 		official: true,
 		pitch:
 			'Connect Muse Code to Kody so the tools it builds outlive the session and reach the rest of your team.',
+		youtubeVideoId: 'znnJ4jfGGcg',
 		steps: [
 			{
 				text: 'Add Kody to ~/.config/muse/settings.json:',
@@ -350,6 +384,7 @@ export const withAgents = [
 		icon: 'pi',
 		pitch:
 			'Give Pi the shared credentials and workflows your team keeps in Kody.',
+		youtubeVideoId: 'czWITu_qvJo',
 	}),
 	genericAgent({
 		slug: 'wajo',
@@ -395,6 +430,29 @@ export const withAgents = [
 		pitch:
 			'Bring your team\u2019s tools and connected accounts into Dots through one MCP connection.',
 	}),
+	{
+		slug: 'instinct',
+		name: 'Instinct',
+		icon: 'instinct',
+		official: false,
+		note: `Instinct has no official MCP support, but it can use a computer the way you do, so it connects through the Kody CLI. If Instinct adds remote MCP support, it can connect to ${mcpUrl} instead.`,
+		pitch:
+			'Bring your team\u2019s tools and connected accounts to Instinct, the personal assistant you text or call.',
+		steps: [
+			{
+				text: 'Ask Instinct to install the Kody CLI on its computer (Node 22 or later):',
+				code: kodyCliGlobalInstallCommand,
+			},
+			{
+				text: 'Have it sign in. The command prints a link and a short code. Ask Instinct to send them to you, open the link, check that the code matches, and approve.',
+				code: buildKodyCliLoginCommand(mcpUrl),
+			},
+			{
+				text: 'Instinct can then use Kody from the CLI: kody search finds what your account can do, and kody execute --local runs it with your connected accounts, without Instinct seeing a key.',
+				code: 'kody search "what can you do"',
+			},
+		],
+	},
 ] as const satisfies ReadonlyArray<WithAgent>
 
 export type WithAgentSlug = (typeof withAgents)[number]['slug']
@@ -410,6 +468,12 @@ export function withAgentHref(slug: string) {
 export function findWithAgentByPathname(pathname: string): WithAgent | null {
 	const slug = /^\/with\/([^/]+)\/?$/.exec(pathname)?.[1]
 	return slug ? findWithAgent(slug) : null
+}
+
+export function withAgentYoutubeVideoIds(): Array<string> {
+	return withAgents.flatMap((agent: WithAgent) =>
+		agent.youtubeVideoId ? [agent.youtubeVideoId] : [],
+	)
 }
 
 export function withAgentIconSrc(agent: Pick<WithAgent, 'icon'>) {

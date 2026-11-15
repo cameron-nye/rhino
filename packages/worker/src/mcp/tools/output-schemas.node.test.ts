@@ -81,6 +81,17 @@ test('search structured content passes strict client validation for all return p
 			result: [{ entityRef: 'capability:a', error: 'not found' }],
 			error: 'All entity lookups failed.',
 		},
+		{
+			conversationId: 'c1',
+			timing,
+			result: [
+				{ entityRef: 'guide:a#one', guideMetadataRef: 'guide:a' },
+				{ entityRef: 'guide:a#two', guideMetadataRef: 'guide:a' },
+			],
+			guides: {
+				'guide:a': { id: 'a', title: 'A', description: 'd', sections: [] },
+			},
+		},
 		{ conversationId: 'c1', timing, error: 'Provide "query".' },
 		{
 			conversationId: 'c1',
@@ -141,8 +152,7 @@ test('execute structured content passes strict client validation for all return 
 			conversationId: 'c1',
 			timing,
 			returnedBytes: 0,
-			error:
-				'Plan limit reached: your "free" plan allows at most 10 saved packages and you currently have 10.',
+			error: 'Plan limit reached.',
 			errorDetails: { kind: 'entitlement_limit_exceeded' },
 			entitlement: {
 				code: 'entitlement_limit_exceeded',
@@ -150,7 +160,7 @@ test('execute structured content passes strict client validation for all return 
 				plan: 'free',
 				limit: 10,
 				current: 10,
-				upgradeHint: 'upgrade your plan at /@<slug>/-/billing.',
+				upgradeHint: 'upgrade your plan.',
 			},
 			logs: [],
 			usage,

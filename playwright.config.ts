@@ -2,7 +2,7 @@ import { defineConfig, devices } from '@playwright/test'
 import { parseCiShard } from './tools/ci-shard.ts'
 
 const hasExplicitBaseUrl = Boolean(process.env.PLAYWRIGHT_BASE_URL)
-const defaultPlaywrightPort = '3847'
+const defaultPlaywrightPort = process.env.PLAYWRIGHT_PORT ?? '3847'
 const baseURL =
 	process.env.PLAYWRIGHT_BASE_URL ?? `http://127.0.0.1:${defaultPlaywrightPort}`
 const webServerCommand = `npm run e2e:web-server -- --port ${defaultPlaywrightPort}`
@@ -47,8 +47,14 @@ export default defineConfig({
 		// mock-start retry (`startCloudflareMockWithRetry`).
 		timeout: process.env.CI ? 300_000 : 150_000,
 		reuseExistingServer: hasExplicitBaseUrl,
+		// Playwright ignores webServer stdout by default, which hid why a start
+		// failed (`Exit code: 1` and nothing else, #4916). Vite, wrangler and
+		// the setup steps report their errors on stdout.
+		stdout: 'pipe',
 		env: {
 			CLOUDFLARE_ENV: 'test',
+			FILES_INCLUDED_BYTES: '1048576',
+			FILES_COLLABORATION_ENABLED: 'true',
 			// Fatal wrangler exits land here; CI uploads this directory on E2E
 			// failure (see validate.yml + e2e/web-server-liveness.ts).
 			WRANGLER_LOG_PATH: './logs.local',

@@ -1,6 +1,7 @@
 /** @jsxImportSource @emotion/react */
-import { type ReactNode } from 'react'
-import { type CSSObject } from '@emotion/react'
+import { LoadingIndicator } from '../components/loading-indicator.tsx'
+import type { ReactNode } from 'react'
+import type { CSSObject } from '@emotion/react'
 import { SiteLink } from '../components/site-link.tsx'
 import {
 	AccountManagementPanel,
@@ -26,7 +27,7 @@ import {
 	formatConnectionUsageCount,
 	formatConnectionUsageQuantity,
 } from '#universal/connection-usage-presentation.ts'
-import { type ConnectedMcpAgent } from '#universal/connected-mcp-agents.ts'
+import type { ConnectedMcpAgent } from '#universal/connected-mcp-agents.ts'
 import {
 	descriptionCss,
 	primaryLinkCss,
@@ -227,7 +228,7 @@ function renderUpdated(usage: AccountConnectionUsageLoaderData) {
 function renderState(state: ConnectionUsageState, ready: () => ReactNode) {
 	switch (state.kind) {
 		case 'loading':
-			return <p css={descriptionCss}>Loading usage…</p>
+			return <LoadingIndicator label="Loading usage…" />
 		case 'error':
 			return (
 				<p role="alert" css={descriptionCss}>

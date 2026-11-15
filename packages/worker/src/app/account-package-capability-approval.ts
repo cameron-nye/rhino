@@ -3,9 +3,9 @@ import {
 	packageMutationResult,
 	type PackageMutationResult,
 } from './package-mutation-result.ts'
-import {
-	type AuthenticatedAppUser,
-	type readAuthenticatedAppUser,
+import type {
+	AuthenticatedAppUser,
+	readAuthenticatedAppUser,
 } from '#app/authenticated-user.ts'
 import { loadWritableAccountSavedPackage } from '#app/account-package-write-access.ts'
 import {
@@ -21,6 +21,7 @@ import {
 	loadCapabilityApprovalSummary,
 } from '#worker/package-capabilities/capability-approval-service.ts'
 import { buildPackageCapabilityApprovalUrl } from '#worker/package-capabilities/capability-approval-url.ts'
+import { getPackageApprovalRequest } from '#worker/package-capabilities/approval-requests-repo.ts'
 import {
 	applyMatchingPinInternetVisible,
 	attemptSelfPublish,
@@ -33,7 +34,7 @@ import {
 import { deriveRequestContext } from '#worker/request-context/request-context.ts'
 import { loadPackageSecurityAuditState } from '#worker/package-capabilities/security-audit-state.ts'
 import { loadPackageSecurityAuditNextStep } from '#worker/package-capabilities/security-audit-next-step.ts'
-import { type AccountPackageApproveCapabilitiesLoaderData } from '#universal/loader-data.ts'
+import type { AccountPackageApproveCapabilitiesLoaderData } from '#universal/loader-data.ts'
 import { logOrgAuditEvent } from '#worker/orgs/org-audit.ts'
 import { loadOrgBindingForOrg } from '#worker/orgs/repo.ts'
 import { getSavedPackageByIdInAnyOrg } from '#worker/package-registry/repo.ts'
@@ -166,6 +167,8 @@ export async function loadAccountPackageApproveCapabilitiesData(input: {
 		publishedCommit: summary.publishedCommit,
 		fingerprint: summary.capabilitySet.fingerprint,
 		entries: summary.capabilitySet.entries,
+		unboundNeeds: summary.declarations?.unboundNeeds ?? [],
+		declaredFields: summary.declarations?.manifestFields ?? [],
 		fingerprintMatchesApproval: summary.fingerprintMatchesApproval,
 		// Timestamp for the matching fingerprint row, not the chronologically
 		// latest approval (which may be a different capability set).
@@ -419,6 +422,19 @@ async function changePackageCapabilityApproval(
 				packageId: savedPackage.id,
 			})
 			if (pending?.id !== requestId) {
+				// A repeat of a combined approval that already landed succeeds.
+				const earlier = await getPackageApprovalRequest(input.env.APP_DB, {
+					id: requestId,
+					packageId: savedPackage.id,
+					ownerUserId,
+				})
+				if (
+					earlier?.reason === 'went_public' &&
+					earlier.status === 'approved' &&
+					savedPackage.isInternetVisible
+				) {
+					return accepted()
+				}
 				return packageMutationResult(
 					{
 						ok: false,

@@ -1,13 +1,23 @@
 import { startStripeMock } from '../e2e/stripe-mock-server.ts'
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { isRetryableD1LockMessage } from '@kody-internal/shared/d1-retry.ts'
 import { startCloudflareMock } from '#worker/test-support/cloudflare-mock-server.ts'
+import {
+	disposableE2ePersistPath,
+	resetDisposableE2ePersist,
+} from './check-stale-local-migrations.ts'
 import {
 	e2eCloudflareMockAccountId,
 	writeE2eCloudflareMockState,
 } from './e2e-cloudflare-mock-state.ts'
+import { startMockArtifactsGitServer } from './mock-artifacts-git-server.ts'
 import { isExecutedDirectly, resolveNpmCommand } from './node-runtime.ts'
+import { describeChildExit } from './apply-local-app-migrations.ts'
 import { spawnChildProcess, stopChildProcessTree } from './dev-process-utils.ts'
 import { workerOriginForPort } from './dev-server.ts'
 import {
@@ -95,6 +105,51 @@ export async function startCloudflareMockWithRetry<Mock>(input: {
 	}
 }
 
+export type E2eMigrateRunResult = {
+	status: number | null
+	output: string
+}
+
+/**
+ * Playwright's in-job webServer retry can start while the previous workerd
+ * still holds `.wrangler/state/e2e` (`SQLITE_BUSY_RECOVERY`). Wipe that
+ * disposable persist dir and retry migrate once so the shard does not fail
+ * before any spec runs.
+ */
+export function shouldRetryE2eMigrate(input: {
+	allowRetry: boolean
+	status: number | null
+	output: string
+}) {
+	return (
+		input.allowRetry &&
+		(input.status ?? 1) !== 0 &&
+		isRetryableD1LockMessage(input.output)
+	)
+}
+
+export function runE2eMigrateWithLockRetry(input: {
+	run: () => E2eMigrateRunResult
+	resetPersist: () => void
+	log: (message: string) => void
+}) {
+	const first = input.run()
+	if (
+		!shouldRetryE2eMigrate({
+			allowRetry: true,
+			status: first.status,
+			output: first.output,
+		})
+	) {
+		return first
+	}
+	input.log(
+		'e2e migrate hit a transient local D1 lock; resetting persist and retrying once.',
+	)
+	input.resetPersist()
+	return input.run()
+}
+
 function runSetup(command: string, args: Array<string>) {
 	const result = spawnSync(command, args, {
 		stdio: 'inherit',
@@ -102,6 +157,24 @@ function runSetup(command: string, args: Array<string>) {
 	})
 	const status = result.status ?? 1
 	if (status !== 0) process.exit(status)
+}
+
+function runMigrateE2e(): E2eMigrateRunResult {
+	const result = spawnSync(resolveNpmCommand(), ['run', 'migrate:e2e'], {
+		encoding: 'utf8',
+		env: process.env,
+		// Captured for SQLITE_BUSY retry detection; migration tables run past 16 MiB.
+		maxBuffer: 256 * 1024 * 1024,
+	})
+	if (result.stdout) process.stdout.write(result.stdout)
+	if (result.stderr) process.stderr.write(result.stderr)
+	if (result.status !== 0) {
+		console.error(describeChildExit('`migrate:e2e`', result))
+	}
+	return {
+		status: result.status,
+		output: `${result.stdout ?? ''}\n${result.stderr ?? ''}`,
+	}
 }
 
 async function startE2eWebServer() {
@@ -121,12 +194,31 @@ async function startE2eWebServer() {
 	process.env.SENTRY_ENVIRONMENT = 'test'
 
 	runSetup(process.execPath, ['tools/prepare-e2e-env.ts'])
-	runSetup(resolveNpmCommand(), ['run', 'migrate:e2e'])
+	const migrate = runE2eMigrateWithLockRetry({
+		run: runMigrateE2e,
+		resetPersist: () => resetDisposableE2ePersist(disposableE2ePersistPath),
+		log: (message) => console.error(message),
+	})
+	if ((migrate.status ?? 1) !== 0) {
+		process.exitCode = migrate.status ?? 1
+		return
+	}
 
+	// Git smart HTTP for mock Artifacts remotes (package publish/check pages).
+	const gitRoot = await mkdtemp(join(tmpdir(), 'kody-e2e-artifacts-git-'))
+	const gitBackend = await startMockArtifactsGitServer({ root: gitRoot })
+	async function disposeGitBackend() {
+		await gitBackend.close()
+		await rm(gitRoot, { recursive: true, force: true })
+	}
 	const mock = await startCloudflareMockWithRetry({
-		start: startCloudflareMock,
+		start: (token) =>
+			startCloudflareMock(token, { gitBackendUrl: gitBackend.origin }),
 		createToken: () => `e2e-cloudflare-${randomUUID()}`,
 		log: (message) => console.error(message),
+	}).catch(async (error) => {
+		await disposeGitBackend()
+		throw error
 	})
 	try {
 		await writeE2eCloudflareMockState({
@@ -136,11 +228,13 @@ async function startE2eWebServer() {
 		})
 	} catch (error) {
 		await mock[Symbol.asyncDispose]()
+		await disposeGitBackend()
 		throw error
 	}
 
 	const stripe = await startStripeMock().catch(async (error) => {
 		await mock[Symbol.asyncDispose]()
+		await disposeGitBackend()
 		throw error
 	})
 	const extraArgs = process.argv.slice(2)
@@ -203,6 +297,7 @@ async function startE2eWebServer() {
 		await stopChildProcessTree(vite)
 		await stripe.close()
 		await mock[Symbol.asyncDispose]()
+		await disposeGitBackend()
 		process.exit(exitCode)
 	}
 

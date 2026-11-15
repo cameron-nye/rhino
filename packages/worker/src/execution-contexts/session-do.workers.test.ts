@@ -1,6 +1,12 @@
-import { env, runInDurableObject } from 'cloudflare:test'
-import { expect, test } from 'vitest'
 import {
+	applyD1Migrations,
+	env,
+	runInDurableObject,
+	type D1Migration,
+} from 'cloudflare:test'
+import { beforeAll, expect, test } from 'vitest'
+import {
+	ecpDeadlineCancelGraceMs,
 	ecpDefaultGrant,
 	ecpHttpSignaturePrefix,
 	importEd25519PrivateKey,
@@ -15,12 +21,29 @@ import testKeys from '@kody-internal/shared/execution-context-protocol/vectors/t
 import { consoleError } from '#worker/test-support/console-spies.ts'
 import { ownerIdFromStored } from '@kody-internal/shared/owner-person-ids.ts'
 import { beginRunRecord, getRunRecord } from '#worker/run-records/service.ts'
-import { type RunRecordHandle } from '#worker/run-records/types.ts'
+import {
+	type RunRecordHandle,
+	runRecordStaleRunningTtlMsShortLived,
+} from '#worker/run-records/types.ts'
+import { runLogDurableObjectName } from '#worker/user-scoped-durable-object-name.ts'
 import {
 	ExecutionContextSessionV1,
 	type ExecutionContextLease,
 	type ExecutionContextSnapshot,
 } from './session-do.ts'
+
+// 100 × 50ms (~5s) timed out under full validate / CI workerd load while
+// isolation stayed green (#4469, #4477, #4484). Stay under the workers-unit
+// 40s test budget so a slow first `run.request` is not a false flake.
+const frameWaitMs = 30_000
+
+// Queue drains look up the context row in APP_DB (#4905).
+beforeAll(async () => {
+	const { TEST_MIGRATIONS } = env as Env & {
+		TEST_MIGRATIONS: Array<D1Migration>
+	}
+	await applyD1Migrations(env.APP_DB, TEST_MIGRATIONS)
+})
 
 const contextJwk = testKeys.context as {
 	kty: 'OKP'
@@ -65,10 +88,6 @@ async function connect(ecid: string, hello: Record<string, unknown> = {}) {
 			inbox.push(decodeEnvelopePayload(envelope.p) as EcpFramePayload)
 		for (const wake of waiters.splice(0)) wake()
 	})
-	// 100 × 50ms (~5s) timed out under full validate / CI workerd load while
-	// isolation stayed green (#4469, #4477, #4484). Stay under the workers-unit
-	// 40s test budget so a slow first `run.request` is not a false flake.
-	const frameWaitMs = 30_000
 	const next = async (type: string) => {
 		const deadline = Date.now() + frameWaitMs
 		for (;;) {
@@ -142,7 +161,9 @@ function runRequest(runId: string) {
 	return {
 		runId,
 		deadline: Date.now() + 60_000,
-		acceptBy: Date.now() + 3_000,
+		// Match the frame wait so a slow runner accept under load is not
+		// dispatched as expired before the test reads its frames (#4610).
+		acceptBy: Date.now() + frameWaitMs,
 		requestedBy: {
 			userId: 'user_requester',
 			handle: 'requester',
@@ -776,6 +797,58 @@ async function drainWaitUntil(pending: Array<Promise<unknown>>) {
 	while (pending.length > 0) await pending.shift()
 }
 
+test('a committed run holds its run record running until the context deadline', async () => {
+	const ecid = 'ec_hold'
+	const { stub, next, send } = await connect(ecid)
+	const userId = 'user_requester'
+	const owner = ownerIdFromStored(userId)
+	const handle: RunRecordHandle = {
+		id: crypto.randomUUID(),
+		userId: owner,
+		// Already past the 3-minute execute TTL, like a long run on a context.
+		startedAt: new Date(
+			Date.now() - runRecordStaleRunningTtlMsShortLived - 1_000,
+		).toISOString(),
+		persistence: 'eager',
+		context: { surface: 'execute', name: null },
+	}
+	const runId = 'run_hold'
+	const request = { ...runRequest(runId), deadline: Date.now() + 15 * 60_000 }
+	const dispatching = stub.dispatch({
+		request,
+		lease: { ...lease(ecid, runId), deadline: request.deadline },
+		runRecord: handle,
+		position: 1,
+	})
+	const offered = await next('run.request')
+	await send('run.accept', { runId }, { re: offered.seq })
+	expect((await dispatching).outcome).toBe('committed')
+	await next('run.commit')
+
+	expect(
+		(await getRunRecord({ env, userId: owner, runId: handle.id }))?.run,
+	).toMatchObject({ id: handle.id, status: 'running', finishedAt: null })
+	const runLog = env.RUN_LOG.get(
+		env.RUN_LOG.idFromName(runLogDurableObjectName(owner)),
+	)
+	const staleAfter = await runInDurableObject(
+		runLog,
+		async (_instance, state) =>
+			state.storage.sql
+				.exec<{
+					stale_after: string | null
+				}>(`SELECT stale_after FROM runs WHERE id = ?`, handle.id)
+				.one().stale_after,
+	)
+	expect(staleAfter).toBe(
+		new Date(
+			request.deadline +
+				ecpDeadlineCancelGraceMs +
+				runRecordStaleRunningTtlMsShortLived,
+		).toISOString(),
+	)
+})
+
 test('a live session reports when it last heard from the daemon', async () => {
 	const before = Date.now()
 	const { stub, ws } = await connect('ec_last_seen')
@@ -793,7 +866,7 @@ test('a live session reports when it last heard from the daemon', async () => {
 test('a reconnecting daemon ends the committed runs it no longer holds at once', async () => {
 	const ecid = 'ec_reconnect'
 	const first = await connect(ecid, {
-		status: { acceptingRuns: true, running: 0, maxConcurrent: 3 },
+		status: { acceptingRuns: true, running: 0, maxConcurrent: 4 },
 	})
 	const commit = async (runId: string) => {
 		const dispatching = first.stub.dispatch({
@@ -810,9 +883,15 @@ test('a reconnecting daemon ends the committed runs it no longer holds at once',
 	await commit('run_dropped')
 	await commit('run_finished_offline')
 	await commit('run_still_held')
+	await commit('run_cancelled_offline')
+	// The daemon never saw this cancel: its socket had already dropped.
+	await first.stub.cancel({
+		runId: 'run_cancelled_offline',
+		reason: 'user_cancelled',
+	})
 
 	const second = await connect(ecid, {
-		heldRuns: ['run_still_held'],
+		heldRuns: ['run_still_held', 'run_cancelled_offline'],
 		pendingResults: [
 			{
 				runId: 'run_finished_offline',
@@ -834,6 +913,10 @@ test('a reconnecting daemon ends the committed runs it no longer holds at once',
 	expect(
 		await second.stub.awaitResult({ runId: 'run_still_held', waitMs: 0 }),
 	).toEqual({ state: 'pending' })
+	expect((await second.next('run.cancel')).body).toEqual({
+		runId: 'run_cancelled_offline',
+		reason: 'user_cancelled',
+	})
 	const rows = new Map(
 		(await second.stub.listHistory({})).rows.map((row) => [row.runId, row]),
 	)
@@ -952,6 +1035,47 @@ test('dispatching a run that is already committed leaves the live run alone', as
 		await stub.awaitResult({ runId: 'run_dup', waitMs: 1000 }),
 	).toMatchObject({ state: 'succeeded' })
 }, 60_000)
+
+test.each(['aborted', 'rejected'])(
+	'a %s offer can redispatch and commit',
+	async (state) => {
+		const ecid = `ec_retry_${state}`
+		const runId = `run_retry_${state}`
+		const { stub, next, send } = await connect(ecid)
+		await runInDurableObject(stub, async (_instance, ctx) => {
+			ctx.storage.sql.exec(
+				`INSERT INTO runs (run_id, state, lease_json, deadline, accept_by, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+				runId,
+				state,
+				JSON.stringify(lease(ecid, runId)),
+				Date.now() + 60_000,
+				Date.now() + 30_000,
+				Date.now(),
+			)
+		})
+		const dispatching = stub.dispatch({
+			request: runRequest(runId),
+			lease: lease(ecid, runId),
+			runRecord: null,
+			position: 1,
+		})
+		const request = await next('run.request')
+		await send('run.accept', { runId }, { re: request.seq })
+		expect(await dispatching).toEqual({ outcome: 'committed' })
+		await next('run.commit')
+		await runInDurableObject(stub, async (_instance, ctx) => {
+			expect(
+				ctx.storage.sql
+					.exec<{ state: string }>(
+						'SELECT state FROM runs WHERE run_id = ?',
+						runId,
+					)
+					.one().state,
+			).toBe('committed')
+		})
+	},
+)
 
 test('a person cancels their own running run with user_cancelled, and only theirs', async () => {
 	const ecid = 'ec_user_cancel'
@@ -1122,4 +1246,86 @@ test('a queued run whose earlier attempt was refused can still be cancelled', as
 	expect(
 		await stub.cancelRunFor({ runId: 'run_queued_retry', orgId: 'org_test' }),
 	).toEqual({ status: 'finished', state: 'rejected' })
+})
+
+test('pausing fails queued runs, tells the connected daemon, and a reconnect welcome carries the pause', async () => {
+	const ecid = 'ec_pause'
+	const { stub, next } = await connect(ecid)
+	await stub.enqueue({
+		request: runRequest('run_queued_paused'),
+		lease: lease(ecid, 'run_queued_paused'),
+		runRecord: null,
+		requires: [],
+		position: 1,
+		expiresAt: Date.now() + 60_000,
+	})
+	const pause = {
+		at: '2026-11-05T00:00:00.000Z',
+		by: 'kent',
+		reason: 'disk full',
+	}
+	await stub.setPaused({ paused: pause, name: 'build-box' })
+	expect(await stub.listQueued()).toEqual([])
+	expect((await next('state.update')).body).toEqual({ paused: pause })
+	// Still connected: a paused daemon stays online for resume, status and update.
+	expect(await stub.getStatus()).toMatchObject({ online: true })
+
+	const reconnected = await connect(ecid)
+	expect(reconnected.welcome.body).toMatchObject({ paused: pause })
+	await stub.setPaused({ paused: null, name: 'build-box' })
+	expect((await reconnected.next('state.update')).body).toEqual({
+		paused: null,
+	})
+})
+
+test('control requests round-trip over the signed socket, and fail fast when they cannot', async () => {
+	const offline = env.EXECUTION_CONTEXT_SESSION.get(
+		env.EXECUTION_CONTEXT_SESSION.idFromName('ec_control_offline'),
+	)
+	await offline.issueConnectTicket({
+		snapshot: snapshot('ec_control_offline'),
+		nonce: crypto.randomUUID(),
+	})
+	expect(await offline.control({ op: 'status' })).toEqual({
+		ok: false,
+		code: 'context_offline',
+	})
+
+	const old = await connect('ec_control_old')
+	expect(await old.stub.control({ op: 'status' })).toEqual({
+		ok: false,
+		code: 'daemon_outdated',
+	})
+
+	const { stub, next, send } = await connect('ec_control', {
+		capabilities: { features: ['daemon-control'] },
+	})
+	const status = stub.control({ op: 'logs', args: { lines: 2 } })
+	const request = await next('control.request')
+	expect(request.body).toMatchObject({ op: 'logs', args: { lines: 2 } })
+	await send(
+		'control.result',
+		{ id: request.body.id, ok: true, data: { lines: ['a', 'b'] } },
+		{ re: request.seq },
+	)
+	expect(await status).toEqual({ ok: true, data: { lines: ['a', 'b'] } })
+
+	const restart = stub.control({ op: 'restart' })
+	const restartRequest = await next('control.request')
+	await send('control.result', {
+		id: restartRequest.body.id,
+		ok: false,
+		code: 'not_service_managed',
+		message: 'This daemon runs in a terminal.',
+	})
+	expect(await restart).toEqual({
+		ok: false,
+		code: 'not_service_managed',
+		message: 'This daemon runs in a terminal.',
+	})
+
+	expect(await stub.control({ op: 'status', timeoutMs: 1_000 })).toEqual({
+		ok: false,
+		code: 'daemon_timeout',
+	})
 })

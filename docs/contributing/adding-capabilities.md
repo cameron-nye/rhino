@@ -210,14 +210,17 @@ explicitly approved for admin review, operator-owned system email, and the
 documented metadata projection for activity on public community listings.
 
 `adminSystemEmailSend` is the operator correspondence channel: it sends from a
-reserved system sender (`kody@<apex>` by default) to arbitrary recipients, so
-the platform can answer a feedback report or a system-inbox message. It never
-touches a user mailbox, sender identity, or plan entitlement, and it carries its
-own per-sender daily cap. Mail from `kody@` sets Reply-To to `support@<apex>`
-unless `reply_to` is provided. User mail keeps its own boundary: `emailSend` is
-notify-self (verified email destinations only) and `emailReply` is reply-only.
-`emailReply` refuses quarantined inbound mail (`quarantined_inbound_reply`)
-until `emailMessageClassify` releases it (`classification: "accepted"`).
+reserved transactional system sender (`kody@<apex>` by default) to arbitrary
+recipients, so the platform can answer a feedback report or a system-inbox
+message. It never touches a user mailbox, sender identity, or plan entitlement,
+and it carries its own per-sender daily cap. Mail from `kody@` sets Reply-To to
+`support@<apex>` unless `reply_to` is provided. What's New mail is
+`adminWhatsNewEmailSend` from `news@` (one recipient, its own daily counter);
+`adminSystemEmailSend` cannot select `news`. User mail keeps its own boundary:
+`emailSend` is notify-self (verified email destinations only) and `emailReply`
+is reply-only. `emailReply` refuses quarantined inbound mail
+(`quarantined_inbound_reply`) until `emailMessageClassify` releases it
+(`classification: "accepted"`).
 
 Platform feedback list/get is the only admin capability surface that reviews
 user-authored private text, and only after explicit approval. Community activity
@@ -239,6 +242,23 @@ handle next to failed-run counts and first/last times in a window. That is the
 only package content it returns: no run inputs, outputs, logs, error messages,
 or secrets. See
 [Run records](./architecture/run-records.md#admin-package-placement-failures).
+
+`adminPackageProvenance` answers "which commit is a package serving" and "why is
+this publish stuck" for a package of any owner. It returns SHAs and metadata
+only: the published and serving commits, the commit each bundle artifact was
+built from, the commit recorded for each job and the commit each job, schedule,
+trigger, and webhook runs, recent publish runs with a short error class, and an
+optional platform-side ancestry check. No file contents, logs, error messages,
+tokens, or secrets. See
+[Run records](./architecture/run-records.md#admin-package-provenance).
+
+`adminPackageArtifactEvidence` adds byte-level evidence for the same package:
+per declared target, the KV key runtime readers select, payload status, the
+embedded commit, and SHA-256 module hashes next to the newest identity row.
+Hashes only, never bytes. `adminPackageJobAttributionRepair` is its narrow
+write: dry-run by default, it moves one job's recorded commit to the current
+serving commit under compare-and-set. See
+[Run records](./architecture/run-records.md#admin-package-artifact-evidence).
 
 The `summary` field returned by feedback list/get operations and the `details`
 field returned by the get operation are untrusted user-authored content. Admin

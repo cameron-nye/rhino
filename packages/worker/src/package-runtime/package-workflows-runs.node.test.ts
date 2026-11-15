@@ -1,5 +1,5 @@
 import { ownerIdFromStored } from '@kody-internal/shared/owner-person-ids.ts'
-import { type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers'
+import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers'
 import { expect, test, vi } from 'vitest'
 import { sessionRequestLineage } from '#worker/test-support/request-context.ts'
 import type * as PackageInvocationsService from '#worker/package-invocations/service.ts'
@@ -9,12 +9,15 @@ import { isEntitlementLimitError } from '#worker/entitlements/errors.ts'
 import { planLimits } from '#universal/plans.ts'
 import { activeWorkflowStatusValues } from '#worker/package-runtime/workflow-statuses.ts'
 import { creatingWorkflowProjectionStatus } from '#worker/run-records/workflow-projection.ts'
-import { type WorkflowProjectionUpsertInput } from '#worker/run-records/service.ts'
+import { runRecordMaxResultSnapshotBytes } from '#worker/run-records/types.ts'
+import { durablePublishWorkflowCode } from '#worker/package-runtime/durable-publish-result.ts'
+import type { WorkflowProjectionUpsertInput } from '#worker/run-records/service.ts'
 import {
 	DynamicCallableWorkflowBase,
 	cancelWorkflowRunForUser,
 	createDynamicCallableWorkflow,
 	dynamicCallableWorkflowsBindingName,
+	listWorkflowRunPageForUser,
 	listWorkflowRunsForUser,
 	type DynamicCallableWorkflowPayload,
 } from './package-workflows.ts'
@@ -56,6 +59,11 @@ vi.mock('#worker/run-records/service.ts', () => ({
 	finishRunRecord: (
 		...args: Parameters<typeof RunRecordsServiceModule.finishRunRecord>
 	) => runRecordMocks.finishRunRecord(...args),
+	closeStoppedWorkflowAttemptRuns: (
+		...args: Parameters<
+			typeof RunRecordsServiceModule.closeStoppedWorkflowAttemptRuns
+		>
+	) => runRecordMocks.closeStoppedWorkflowAttemptRuns(...args),
 	upsertWorkflowProjection: (...args: Array<unknown>) =>
 		runRecordMocks.upsertWorkflowProjection(
 			...(args as [
@@ -975,4 +983,209 @@ test('workflow_run usage is recorded once across replays and never on failed ter
 	} finally {
 		recordUsageSpy.mockRestore()
 	}
+})
+
+const syntheticPublishContext = {
+	packageId: 'pkg-synthetic-publish',
+	kodyId: 'synthetic-publish',
+	sourceId: 'source-synthetic-publish',
+}
+const syntheticPublishCommit = 'a'.repeat(40)
+
+function createPublishRun(env: Env, idempotencyKey: string, code = inlineCode) {
+	return createDynamicCallableWorkflow({
+		env,
+		userId: ownerIdFromStored('user-1'),
+		lineage: sessionRequestLineage('user-1'),
+		packageContext: syntheticPublishContext,
+		enqueuedCommit: syntheticPublishCommit,
+		body: {
+			workflowName: 'packagePublishExternalPush',
+			idempotencyKey,
+			code,
+		},
+	})
+}
+
+test('package-launched inline runs record package and commit provenance at enqueue', async () => {
+	runRecordMocks.resetProjections()
+	const env = createWorkflowEnv()
+	const created = await createPublishRun(env, 'user-1:publish-synthetic')
+
+	expect(findRun(created.id)).toMatchObject({
+		sourceType: 'inline',
+		packageId: syntheticPublishContext.packageId,
+		kodyId: syntheticPublishContext.kodyId,
+		sourceId: syntheticPublishContext.sourceId,
+		enqueuedCommit: syntheticPublishCommit,
+		sourceRevision: null,
+	})
+
+	const byPackage = await listWorkflowRunsForUser({
+		env,
+		userId: ownerIdFromStored('user-1'),
+		filter: { packageId: syntheticPublishContext.packageId },
+	})
+	expect(byPackage.map((row) => row.id)).toEqual([created.id])
+	expect(byPackage[0]).toMatchObject({
+		packageId: syntheticPublishContext.packageId,
+		enqueuedCommit: syntheticPublishCommit,
+	})
+})
+
+test('package and commit provenance survive an idempotency key release', async () => {
+	runRecordMocks.resetProjections()
+	const env = createWorkflowEnv()
+	const created = await createPublishRun(env, 'user-1:publish-released')
+	await runRecordMocks.releaseWorkflowProjectionIdempotencyKey({
+		env,
+		userId: 'user-1',
+		id: created.id,
+	})
+
+	const [row] = await listWorkflowRunsForUser({
+		env,
+		userId: ownerIdFromStored('user-1'),
+		filter: { packageId: syntheticPublishContext.packageId },
+	})
+	expect(row).toMatchObject({
+		id: created.id,
+		idempotencyKey: `released:${created.id}`,
+		packageId: syntheticPublishContext.packageId,
+		sourceId: syntheticPublishContext.sourceId,
+		enqueuedCommit: syntheticPublishCommit,
+	})
+})
+
+test('the queued inline payload carries the enqueued commit through validation', async () => {
+	runRecordMocks.resetProjections()
+	const binding = createStatefulWorkflowBinding()
+	const env = createWorkflowEnv(binding)
+	const created = await createPublishRun(env, 'user-1:publish-payload')
+	const payload = queuedPayload(binding, created.id).payload
+	expect(payload).toMatchObject({
+		sourceType: 'inline',
+		packageContext: syntheticPublishContext,
+		enqueuedCommit: syntheticPublishCommit,
+	})
+})
+
+test('listWorkflowRunPageForUser pages past one page with next_cursor', async () => {
+	runRecordMocks.resetProjections()
+	const env = createWorkflowEnv()
+	const ids: Array<string> = []
+	for (let index = 0; index < 5; index += 1) {
+		const id = `dynwf-page-${index}`
+		ids.push(id)
+		const at = `2026-05-08T19:0${index}:00.000Z`
+		await runRecordMocks.upsertWorkflowProjection({
+			env,
+			userId: 'user-1',
+			projection: {
+				id,
+				bindingName: dynamicCallableWorkflowsBindingName,
+				sourceType: 'inline',
+				workflowName: 'inline-code',
+				idempotencyKey: `page-${index}`,
+				runAt: at,
+				status: 'complete',
+				createdAt: at,
+				updatedAt: at,
+				completedAt: at,
+			},
+		})
+	}
+	const newestFirst = [...ids].reverse()
+	for (const filter of [{}, { status: 'complete' }]) {
+		const seen: Array<string> = []
+		let cursor: string | null = null
+		let pages = 0
+		do {
+			const page: Awaited<ReturnType<typeof listWorkflowRunPageForUser>> =
+				await listWorkflowRunPageForUser({
+					env,
+					userId: ownerIdFromStored('user-1'),
+					limit: 2,
+					cursor,
+					filter,
+				})
+			seen.push(...page.workflows.map((row) => row.id))
+			cursor = page.nextCursor
+			pages += 1
+		} while (cursor && pages < 10)
+		expect(seen).toEqual(newestFirst)
+		expect(pages).toBe(3)
+	}
+})
+
+test('a durable publish run keeps a compact result and records its published commit', async () => {
+	runRecordMocks.resetProjections()
+	runRecordMocks.finishRunRecord.mockClear()
+	const binding = createStatefulWorkflowBinding()
+	const env = createWorkflowEnv(binding)
+	const created = await createPublishRun(
+		env,
+		'user-1:publish-compact',
+		durablePublishWorkflowCode,
+	)
+	const exports = Object.fromEntries(
+		Array.from({ length: 30 }, (_, index) => [
+			`./export-${index}`,
+			{ description: 'x'.repeat(200), source: `./src/export-${index}.ts` },
+		]),
+	)
+	invocationMocks.runModuleWithRegistry.mockResolvedValueOnce({
+		result: {
+			status: 'already_published',
+			published_commit: syntheticPublishCommit,
+			checks_rerun: true,
+			manifest: { name: '@user/many-exports', exports },
+			static_dependents: { total: 0, dependents: [] },
+			phase_timings: { checks_typecheck_ms: 1200, total_ms: 41_000 },
+		},
+		logs: [],
+	})
+	const expected = {
+		status: 'already_published',
+		previous_commit: null,
+		published_commit: syntheticPublishCommit,
+		enqueued_commit: syntheticPublishCommit,
+		checks_rerun: true,
+		phase_timings: { checks_typecheck_ms: 1200, total_ms: 41_000 },
+	}
+
+	await expect(
+		new DynamicCallableWorkflowBase({} as ExecutionContext, env).run(
+			queuedPayload(binding, created.id),
+			createInlineStep(),
+		),
+	).resolves.toEqual(expected)
+	const finish = runRecordMocks.finishRunRecord.mock.calls.at(-1)?.[0]
+	expect(finish).toMatchObject({ status: 'success', result: expected })
+	expect(finish?.handle?.context.publishedCommit).toBe(syntheticPublishCommit)
+	expect(
+		new TextEncoder().encode(JSON.stringify(finish?.result)).length,
+	).toBeLessThan(runRecordMaxResultSnapshotBytes)
+})
+
+test('a custom inline workflow that reuses the publish name keeps its own result', async () => {
+	runRecordMocks.resetProjections()
+	const binding = createStatefulWorkflowBinding()
+	const env = createWorkflowEnv(binding)
+	const created = await createPublishRun(env, 'user-1:publish-name-reused')
+	const custom = { ok: true, items: [1, 2, 3] }
+	invocationMocks.runModuleWithRegistry.mockResolvedValueOnce({
+		result: custom,
+		logs: [],
+	})
+	await expect(
+		new DynamicCallableWorkflowBase({} as ExecutionContext, env).run(
+			queuedPayload(binding, created.id),
+			createInlineStep(),
+		),
+	).resolves.toEqual(custom)
+	expect(runRecordMocks.finishRunRecord.mock.calls.at(-1)?.[0]).toMatchObject({
+		status: 'success',
+		result: custom,
+	})
 })

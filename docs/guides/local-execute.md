@@ -20,59 +20,69 @@ or Open API path exists.
 `--local` runs a pinned workerd on Linux, macOS, and Windows (x64 or arm64;
 Windows on Arm uses the x64 workerd build). No Docker required.
 
+Local workerd uses a real clock: `Date.now()` and `performance.now()` advance
+during CPU-only code, while hosted runs only advance them across I/O (see
+[Server-Timing phases](../use/execute.md#server-timing-phases)), so local
+timings of synchronous work do not match hosted ones.
+
+Watch:
+[Where Kody code runs: the cloud, your laptop, or your own machine](https://www.youtube.com/watch?v=i5qCOaIiYc8).
+
 Auth: `--token` / `KODY_API_TOKEN` (`kody_at_…` with `org:execute`; add
-`package:execute` when the module imports `kody:@…`), or when no API token is
-set, the access token from `kody login` (MCP OAuth) as Bearer on CapabilityProxy
-and package-graph routes.
+`package:execute` when the module imports `kody:@…`), then the one saved CLI
+credential from `kody login` or `kody auth bootstrap` (a `kody_at_…` device
+token, not host MCP OAuth). `kody whoami` reports the same pick.
 
 ## Setup
 
 **Agents already on MCP (do this yourself; never ask a human for a token):**
-call `cliCredentialBootstrap` with a required lifetime (single-task agents use
-`short`). Prefer MCP `api` with `operationId: "cliCredentialBootstrap"` (or the
-capability via search when you need the schema). It returns a one-shot
-`kody_bc_…` code and a `cli_command` that already includes lifetime flags
-(**not** a `kody_at_…`). Bootstrap tokens are person-owned
-(`org_binding: user`); pass `?org=<slug>` on API calls to act in a team org
-(default: personal). Run the returned `cli_command` (no second OAuth, no
-`tokenCreate`):
+call `cliCredentialBootstrap` with no params (single-task agents may pass
+`lifetime: "short"`). Prefer MCP `api` with
+`operationId: "cliCredentialBootstrap"` (or the capability via search when you
+need the schema). It returns a one-shot `kody_bc_…` code and a `cli_command`
+that includes lifetime flags for older CLIs (**not** a `kody_at_…`). Bootstrap
+tokens are person-owned (`org_binding: user`); pass `?org=<slug>` on API calls
+to act in a team org (default: personal). Run the returned `cli_command` (no
+second OAuth, no `tokenCreate`):
 
 ```json
 {
 	"operationId": "cliCredentialBootstrap",
-	"params": { "lifetime": "short" }
+	"params": {}
 }
 ```
 
 ```bash
 # Or run the cli_command returned by cliCredentialBootstrap:
-npx @kodycodes/cli auth bootstrap --code 'kody_bc_…' --lifetime short
+npx @kodycodes/cli auth bootstrap --code 'kody_bc_…'
 ```
 
-`short` is 1 hour idle / 24 hours max. `long` is 14 days idle / 3 months max. Or
-pass both `--idle-ttl-seconds` and `--max-lifetime-seconds`. Lifetime is
-required; missing it fails with the exact flag syntax.
+Omit `lifetime` for the same lifetime as `kody login` (`long` = 14 days idle / 3
+months max, clamped to a parent API token). `short` is 1 hour idle / 24 hours
+max. Or pass both `--idle-ttl-seconds` and `--max-lifetime-seconds`.
+`tokenCreate` still requires a lifetime.
 
-**Default scopes:** bootstrap tokens include local-execute use scopes
-(`org:execute`, `org:read`, and package/integration/secret/email/job/app/memory
-use scopes), plus `package:write` (plain-repo / package pushes),
-`package:create`, and `token:delete` (self-revoke). They do not include
-`search:read`. When a task needs a different set, pass `scopes` when minting.
-The list replaces the defaults, so include every scope you need:
+Omit `scopes` for the same scopes as `kody login`: every org permission, capped
+by your org role on each request and by a parent token or a session that narrows
+scopes. Pass `scopes` only for a deliberately narrower token; the list replaces
+the default, so include every scope you need. Prefer MCP `search` for discovery
+(`search:read` is not required).
 
 ```bash
-# Agents on MCP, with the api tool (execute is refused): cliCredentialBootstrap({ lifetime: "short", scopes: ["org:execute", "org:read", "package:execute", "package:read", "package:write"] })
-npx @kodycodes/cli auth bootstrap --code 'kody_bc_…' --lifetime short
+# Agents on MCP, with the api tool (execute is refused): cliCredentialBootstrap({})
+npx @kodycodes/cli auth bootstrap --code 'kody_bc_…'
 
-# After `kody login`, the CLI mints the code itself and stores the token:
+# Optional: save a deliberately narrower credential (replaces the default):
 npx @kodycodes/cli auth bootstrap --lifetime short \
   --scopes org:execute,org:read,package:execute,package:read,package:write
 ```
 
-`--scopes` mints with `--token` when given, else the `kody login` session (any
-scope your org role grants), else `KODY_API_TOKEN` or the stored token (only
-scopes that token already holds). `--code` with `--scopes` is an error because a
-code's scopes are fixed when it is minted.
+Redeeming a code saves the same credential `kody login` saves: every scope your
+org role grants (never more than the authorizing MCP session holds), 14d idle /
+3mo max, in the same slot. `--scopes` is only for a narrower credential; it
+mints with `--token` when given, else `KODY_API_TOKEN`, else the saved
+credential, and a child never exceeds its parent. `--code` with `--scopes` is an
+error because a code's scopes are fixed when it is minted.
 
 **Interactive humans:** `kody login` once per machine (beside the agent
 `cliCredentialBootstrap` path above), then run `--local` without
@@ -159,8 +169,11 @@ over that limit returns JSON `413 payload_too_large`. See the
 [CLI streaming gateway-fetch contract](../contributing/contracts/cli-streaming-gateway-fetch.md).
 
 The CLI CapabilityProxy client waits up to 7 minutes for origin's reply, so the
-gateway's 5-minute deadline ends a slow fetch, with its own error.
-`@kodycodes/cli` below 1.13.1 hits Node's default 300-second wait
+gateway's 5-minute deadline ends a slow fetch, with its own error. Set
+`KODY_CAPABILITY_PROXY_TIMEOUT_MS` (milliseconds) to change that wait for slow
+capabilities. When it runs out, the module fails with a
+`Kody API sent nothing for …ms` error that says the call may still be running on
+Kody. `@kodycodes/cli` below 1.13.1 hits Node's default 300-second wait
 (`UND_ERR_HEADERS_TIMEOUT`) instead. With `NODE_USE_ENV_PROXY=1` or
 `--use-env-proxy`, these requests still go through `HTTP_PROXY` / `HTTPS_PROXY`.
 A `fetch` without placeholders, and a multipart upload that does not need fill,
@@ -191,26 +204,36 @@ still auth or permission — use the Failure section below. Two workarounds for
   `cliCredentialBootstrap` and run the returned `cli_command`; never ask a human
   to paste a token. Humans: `kody login`. CI/headless: `tokenCreate` +
   `KODY_API_TOKEN`.
-- Bootstrap or redeem rejects a missing lifetime. Pass `--lifetime short|long`
-  (or both idle/max flags). Call `cliCredentialBootstrap` again with
-  `lifetime: "short"` if the code expired.
+- The bootstrap code expired or was already used. Call `cliCredentialBootstrap`
+  again and run the new `cli_command`.
 - `insufficient_scope` on a token means it lacks a scope. The error names the
   scope and prints both mint commands with the full list (the token's scopes
   plus the missing one); run one and retry. `--token` and `KODY_API_TOKEN` still
-  win over the stored token, so replace or unset them before retrying. The error
-  also says which credential was sent (`Credential used: …`). Open API errors
-  carry the same list as `details.mint_scopes`. When your org role lacks the
-  permission (`denial: missing_permission`), a new token cannot help; an org
+  win over the saved credential, so replace or unset them before retrying. The
+  error also says which credential was sent (`Credential used: …`). Open API
+  errors carry the same list as `details.mint_scopes`. When your org role lacks
+  the permission (`denial: missing_permission`), a new token cannot help; an org
   Owner has to grant it.
+- `profile_grant` means the profile the token acts as (or a parent) was not
+  granted that package or credential. A new token alone cannot fix it; the
+  person the profile acts for grants it (`accessGrant` with
+  `subject_type: "profile"`). If the message says the token also lacks the
+  scope, mint one with it after the grant. `profile_inactive` means the profile
+  or a parent was revoked or expired; use a token for an active profile.
 - **Package-scoped `secretSet` / `secretSetMany` / `secretDelete` are not
   available under `--local`.** Local CapabilityProxy does not attach package
   secret authority (a client-supplied package id is not trusted as a hosted
   run). Use hosted package execute, or set the secret from the account UI
   (`/connect/secret-set`) or Open API `secretSet` with a user scope / outside
   local execute. See [Secrets](./secrets.md#scopes).
+- Package-graph prep that exceeds the throwaway isolate's memory or CPU returns
+  `400 package_graph_resource_limit` (the error names the packages). A served
+  graph missing a reachable static relative import is `500 internal_error`. See
+  [Open API architecture](../contributing/architecture/open-api.md).
 - The module imports `kody:@…`. Keep `--local`.
-- Auth priority for `--local`: `--token` / `KODY_API_TOKEN`, then the stored API
-  token, then `kody login`. `kody whoami` reports the same credential.
-  `kody login` does not replace a stored API token; replace it with
-  `npx @kodycodes/cli auth bootstrap --lifetime short --scopes <list>` or clear
-  it with `kody logout`.
+- Auth priority for `--local` (and every other command): `--token` /
+  `KODY_API_TOKEN`, then the one saved CLI credential from `kody login` or
+  `kody auth bootstrap`. `kody whoami` reports the same credential. A token an
+  older CLI left in the old API-token slot is moved into the saved credential
+  only when nothing else is saved and no `--org` / `KODY_ORG` is given;
+  `kody login` tries to delete it.

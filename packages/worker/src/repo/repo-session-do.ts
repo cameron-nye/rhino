@@ -1,6 +1,23 @@
+import {
+	runIsolatedModuleArtifactRebuild,
+	type IsolatedModuleArtifactRebuildOutcome,
+	type IsolatedModuleArtifactRebuildRequest,
+} from '#worker/package-invocations/module-artifacts.ts'
+import { repoSessionState } from './repo-session-state.ts'
 import { assertProfileCanPublishImports } from '#worker/profiles/publish-imports.ts'
-import { type RequestContext } from '@kody-internal/shared/request-context.ts'
-import { type OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
+import {
+	runIsolatedLocalExecutePackageGraphBuild,
+	type IsolatedLocalExecutePackageGraphOutcome,
+	type IsolatedLocalExecutePackageGraphRequest,
+} from '#worker/package-runtime/isolated-local-execute-package-graph.ts'
+import {
+	runIsolatedExecuteBundleBuild,
+	type IsolatedExecuteBundleOutcome,
+	type IsolatedExecuteBundleRequest,
+} from '#worker/package-runtime/isolated-execute-bundle.ts'
+import type { PersistUploadedPublishBuildResult } from '#worker/publish-offload/types.ts'
+import type { RequestContext } from '@kody-internal/shared/request-context.ts'
+import type { OwnerId } from '@kody-internal/shared/owner-person-ids.ts'
 import { getErrorMessage } from '@kody-internal/shared/error-message.ts'
 import { isUserCodeError } from '#worker/user-code-error.ts'
 import * as Sentry from '@sentry/cloudflare'
@@ -44,7 +61,7 @@ import {
 	loadLockedSavedPackage,
 } from '#worker/package-registry/package-publish-lock.ts'
 import { getSavedPackageById } from '#worker/package-registry/repo.ts'
-import { type SavedPackageRecord } from '#worker/package-registry/types.ts'
+import type { SavedPackageRecord } from '#worker/package-registry/types.ts'
 import {
 	collectPublishedPackageArtifactTargets,
 	isPublishedPackageArtifactBuiltForCommit,
@@ -54,7 +71,12 @@ import {
 	persistPublishedPackageArtifactTargets,
 	type PublishedPackageArtifactBuildTarget,
 } from '#worker/package-runtime/published-bundle-artifacts.ts'
-import { type PreparedKodyGraphCache } from '#worker/package-runtime/module-graph.ts'
+import type { PreparedKodyGraphCache } from '#worker/package-runtime/module-graph.ts'
+import {
+	buildPublishedPackageArtifactTargetBundle,
+	memoizePublishedPackageArtifactBuilders,
+	type PublishedPackageArtifactBuilders,
+} from '#worker/package-runtime/published-bundle-artifact-persist.ts'
 import {
 	hasPublishedRuntimeArtifacts,
 	loadPublishedSourceManifestSnapshot,
@@ -72,10 +94,11 @@ import {
 import {
 	runPackageTypecheckLanguageService,
 	runRepoSourceWalkChecks,
-	formatFailedRepoCheckMessages,
 	validatePackageBundles,
+	findFetchBodySecretResolutionHits,
 } from './checks.ts'
-import { RepoChecksFailedError } from './repo-checks-failed-error.ts'
+import { findSecretPlaceholderRequestPlacements } from '#worker/credentials/secret-placeholder-request-placement.ts'
+import { createRepoChecksError } from './repo-checks-failed-error.ts'
 import { confirmRemoteRefAtCommit } from './confirm-remote-ref.ts'
 import { readRemoteRefNotConfirmedError } from './remote-ref-not-confirmed-error.ts'
 import { runAuthoringPublishChecksOnFiles } from './authoring-publish-checks.ts'
@@ -86,6 +109,7 @@ import {
 	isolatedArtifactRebuildStagingKeyBelongsToUser,
 	isolatedArtifactRebuildStagingKeyForUser,
 	isolatedArtifactRebuildStagingTtlSeconds,
+	type IsolatedArtifactBuildCheckRequest,
 	type IsolatedArtifactRebuildOutcome,
 	type IsolatedArtifactRebuildRequest,
 	type IsolatedArtifactRebuildTargetResult,
@@ -98,27 +122,28 @@ import {
 	type IsolatedCheckPhaseRequest,
 } from './isolated-check-phases.ts'
 import {
+	artifactBuildFailureMessage,
 	isRepoCheckStep,
 	type RepoCheckStep,
 } from './isolated-runner-limit-message.ts'
-import {
-	type EntitySourceRow,
-	type RepoSearchMode,
-	type RepoSearchOutputMode,
-	type RepoExternalPublishResult,
-	type RepoExternalRefCheckResult,
-	type RepoSourceBootstrapResult,
-	type RepoSessionApplyEditsResult,
-	type RepoSessionEdit,
-	type RepoSessionCheckRun,
-	type RepoSessionCheckStatus,
-	type RepoSessionDiscardResult,
-	type RepoSessionPublishResult,
-	type RepoSessionRebaseResult,
-	type RepoSessionRow,
-	type RepoSessionSearchResult,
-	type RepoSessionTreeResult,
-	type RepoSessionLastPublish,
+import type {
+	EntitySourceRow,
+	RepoSearchMode,
+	RepoSearchOutputMode,
+	RepoExternalPublishResult,
+	RepoExternalRefCheckResult,
+	RepoSourceBootstrapResult,
+	RepoSessionApplyEditsResult,
+	RepoSessionEdit,
+	RepoSessionCheckRun,
+	RepoSessionCheckStatus,
+	RepoSessionDiscardResult,
+	RepoSessionPublishResult,
+	RepoSessionRebaseResult,
+	RepoSessionRow,
+	RepoSessionSearchResult,
+	RepoSessionTreeResult,
+	RepoSessionLastPublish,
 } from './types.ts'
 import {
 	finalizePublishedEntitySource,
@@ -129,6 +154,7 @@ import {
 	bindPublishHeavyWork,
 	createInlinePublishWorkRunner,
 	createIsolatedPublishWorkRunner,
+	publishWorkIgnoredDeclarationFiles,
 	runStagedPublishWorkStep,
 	stagePublishWorkFiles,
 	type ExternalRefCloneRequest,
@@ -136,13 +162,23 @@ import {
 	type PublishWorkChecksInput,
 	type PublishWorkRequest,
 	type PublishWorkRunner,
+	type PublishWorkTree,
 } from './publish-work.ts'
+import {
+	createSourceRootKodyIgnoreMatcher,
+	kodyIgnoreFilePath,
+	omitKodyIgnoredFiles,
+} from './kodyignore.ts'
 import {
 	buildWorkspaceSqliteTooBigCallerMessage,
 	cloneExternalPublishWorkspace,
 	isWorkspaceSqliteTooBigMessage,
 } from './external-publish-clone.ts'
 import { classifyExternalPublishCloneError } from './requested-commit-error.ts'
+import {
+	buildArtifactsHeadChangedBeforePublishMessage,
+	buildPublishedCommitMovedDuringPublishMessage,
+} from './publish-concurrency-caller-error.ts'
 import {
 	attachPublishPhaseTimings,
 	timePublishExternalPushPhase,
@@ -989,13 +1025,32 @@ class RepoSessionBase extends DurableObject<Env> {
 	 * One workspace walk that yields both the relative-path file map and the
 	 * tree hash used for checks_outdated. Publish reuses this instead of
 	 * globbing and re-reading every file three times.
+	 *
+	 * With `kodyIgnoreSourceRoot`, files that package's `.kodyignore` drops
+	 * stay in the tree hash but are left out of `files`, so they are never
+	 * staged for (or loaded by) the publish work isolates.
 	 */
 	private async collectWorkspacePublishSnapshot(
 		root = repoSessionWorkspacePrefix,
-	): Promise<{ files: Record<string, string>; treeHash: string }> {
+		options: { kodyIgnoreSourceRoot?: string } = {},
+	): Promise<{
+		files: Record<string, string>
+		kodyIgnoredPaths: Array<string>
+		treeHash: string
+	}> {
 		const entries = await this.listWorkspaceFileEntries(root)
 		const rootPrefix = `${root.replace(/\/+$/, '')}/`
+		const ignoredPath =
+			options.kodyIgnoreSourceRoot === undefined
+				? null
+				: createSourceRootKodyIgnoreMatcher({
+						ignoreFileContent: await this.workspace.readFile(
+							`${rootPrefix}${kodyIgnoreFilePath(options.kodyIgnoreSourceRoot)}`,
+						),
+						sourceRoot: options.kodyIgnoreSourceRoot,
+					})
 		const files: Record<string, string> = {}
+		const kodyIgnoredPaths: Array<string> = []
 		const chunks: Array<string> = []
 		for (const entry of entries) {
 			// Raw bytes — UTF-8 `readFile` replaces invalid sequences with
@@ -1015,7 +1070,9 @@ class RepoSessionBase extends DurableObject<Env> {
 				? entry.path.slice(rootPrefix.length)
 				: entry.path
 			const content = bytesToSnapshotString(bytes, relativePath)
-			files[relativePath] = content
+			const ignored = ignoredPath?.(relativePath) ?? null
+			if (ignored === null) files[relativePath] = content
+			else kodyIgnoredPaths.push(ignored)
 			chunks.push(`${entry.path}\n${content}\n`)
 		}
 		const data = new TextEncoder().encode(chunks.join(''))
@@ -1023,7 +1080,26 @@ class RepoSessionBase extends DurableObject<Env> {
 		const treeHash = [...new Uint8Array(digest)]
 			.map((byte) => byte.toString(16).padStart(2, '0'))
 			.join('')
-		return { files, treeHash }
+		return { files, kodyIgnoredPaths, treeHash }
+	}
+
+	/**
+	 * Session snapshot for the publish work runner: the full-tree hash plus
+	 * the `.kodyignore`-filtered tree every staged step reads. Checks apply
+	 * `.kodyignore` to package and plain-repo sources alike.
+	 */
+	private async collectWorkspacePublishWorkTree(source: EntitySourceRow) {
+		const snapshot = await this.collectWorkspacePublishSnapshot(
+			repoSessionWorkspacePrefix,
+			{ kodyIgnoreSourceRoot: source.source_root },
+		)
+		const tree: PublishWorkTree = {
+			files: snapshot.files,
+			kodyIgnoredDeclarationFiles: publishWorkIgnoredDeclarationFiles(
+				snapshot.kodyIgnoredPaths,
+			),
+		}
+		return { tree, treeHash: snapshot.treeHash }
 	}
 
 	private async computeTreeHash(root = repoSessionWorkspacePrefix) {
@@ -2075,7 +2151,7 @@ class RepoSessionBase extends DurableObject<Env> {
 				'bootstrap-repo-checks',
 				async () => {
 					const checks = await this.runSessionTreeChecks({
-						files: (await this.collectWorkspacePublishSnapshot()).files,
+						tree: (await this.collectWorkspacePublishWorkTree(source)).tree,
 						userId: input.userId,
 						checks: {
 							mode: 'session',
@@ -2095,9 +2171,7 @@ class RepoSessionBase extends DurableObject<Env> {
 						},
 					})
 					if (!checks.ok) {
-						throw new RepoChecksFailedError(
-							formatFailedRepoCheckMessages(checks.results),
-						)
+						throw createRepoChecksError(checks.results)
 					}
 				},
 			)
@@ -2213,6 +2287,9 @@ class RepoSessionBase extends DurableObject<Env> {
 		if (sessionRow.user_id !== input.userId) {
 			throw new Error(buildRepoSessionNotFoundForUserMessage(input.sessionId))
 		}
+		repoSessionState.parse(
+			repoSessionState.is(sessionRow.status) ? 'discarded' : sessionRow.status,
+		)
 		await updateRepoSession(this.env, {
 			id: sessionRow.id,
 			userId: sessionRow.user_id,
@@ -2892,9 +2969,9 @@ class RepoSessionBase extends DurableObject<Env> {
 		)
 		// One workspace walk yields both the checked tree and its hash; the
 		// checks themselves run off this Durable Object.
-		const snapshot = await this.collectWorkspacePublishSnapshot()
+		const snapshot = await this.collectWorkspacePublishWorkTree(source)
 		const result = await this.runSessionTreeChecks({
-			files: snapshot.files,
+			tree: snapshot.tree,
 			userId: input.userId,
 			checks: {
 				mode: 'session',
@@ -3022,6 +3099,7 @@ class RepoSessionBase extends DurableObject<Env> {
 		) {
 			return {
 				ok: false,
+				failureOrigin: 'platform',
 				message:
 					'Isolated check phase staging key does not belong to the requesting user.',
 			}
@@ -3034,6 +3112,7 @@ class RepoSessionBase extends DurableObject<Env> {
 		if (!sourceFiles) {
 			return {
 				ok: false,
+				failureOrigin: 'platform',
 				message:
 					'Isolated check phase staging data expired or is missing; run the checks again.',
 			}
@@ -3062,11 +3141,23 @@ class RepoSessionBase extends DurableObject<Env> {
 			for (const [path, content] of Object.entries(check.sourceFiles)) {
 				if (sourceFiles[path] !== content) changedFiles[path] = content
 			}
+			// Same isolate as the stamp scan, so the checks run never parses
+			// the whole tree again for these.
 			return {
 				ok: check.ok,
 				message: check.message,
 				changedFiles,
 				stampKeys: check.stampKeys,
+				...(check.ok
+					? {
+							requestPlacementHits: findSecretPlaceholderRequestPlacements(
+								check.sourceFiles,
+							),
+							fetchBodyHits: findFetchBodySecretResolutionHits(
+								check.sourceFiles,
+							),
+						}
+					: {}),
 			}
 		}
 		const exhaustive: never = input
@@ -3100,6 +3191,7 @@ class RepoSessionBase extends DurableObject<Env> {
 					{
 						kind: 'manifest',
 						ok: false,
+						failureOrigin: 'platform',
 						message:
 							'Publish check staging key does not belong to the requesting user.',
 					},
@@ -3109,6 +3201,7 @@ class RepoSessionBase extends DurableObject<Env> {
 		const staged = await this.env.BUNDLE_ARTIFACTS_KV.get<{
 			sourceFiles?: Record<string, string>
 			binaryFileSizes?: Record<string, number>
+			kodyIgnoredDeclarationFiles?: Array<string>
 		}>(input.stagingKey, 'json')
 		const sourceFiles = staged?.sourceFiles
 		if (!sourceFiles) {
@@ -3118,6 +3211,7 @@ class RepoSessionBase extends DurableObject<Env> {
 					{
 						kind: 'manifest',
 						ok: false,
+						failureOrigin: 'platform',
 						message:
 							'Publish check staging data expired or is missing; run the checks again.',
 					},
@@ -3139,6 +3233,15 @@ class RepoSessionBase extends DurableObject<Env> {
 			...(input.sourceId ? { sourceId: input.sourceId } : {}),
 			...(input.expectedPackageScope !== undefined
 				? { expectedPackageScope: input.expectedPackageScope }
+				: {}),
+			...(input.deferBundleCheckToRebuild === true
+				? { deferBundleCheckToRebuild: true }
+				: {}),
+			...(input.typecheckRanOffWorker === true
+				? { typecheckRanOffWorker: true }
+				: {}),
+			...(staged.kodyIgnoredDeclarationFiles?.length
+				? { kodyIgnoredDeclarationFiles: staged.kodyIgnoredDeclarationFiles }
 				: {}),
 		}).finally(() => this.clearCheckStep())
 		return {
@@ -3184,14 +3287,14 @@ class RepoSessionBase extends DurableObject<Env> {
 
 	/** Checks over a collected session tree, run through the publish runner. */
 	private async runSessionTreeChecks(input: {
-		files: Record<string, string>
+		tree: PublishWorkTree
 		userId: OwnerId
 		checks: PublishWorkChecksInput
 	}) {
 		const runner = this.publishWorkRunner()
 		const stagingKey = await runner.stage({
 			userId: input.userId,
-			files: input.files,
+			tree: input.tree,
 		})
 		try {
 			return await bindPublishHeavyWork({
@@ -3234,9 +3337,17 @@ class RepoSessionBase extends DurableObject<Env> {
 		// pre-clone D1 row: a concurrent snapshot-failure revert can clear
 		// published_commit so publish still finalizes, and UTF-8 check source
 		// files would corrupt PNG magic.
-		const files = await publishClone.collectFiles()
+		const collected = await publishClone.collectFiles({
+			sourceRoot: request.source.source_root,
+		})
+		const tree: PublishWorkTree = {
+			files: collected.files,
+			kodyIgnoredDeclarationFiles: publishWorkIgnoredDeclarationFiles(
+				collected.ignoredPaths,
+			),
+		}
 		return {
-			files,
+			tree,
 			headCommit: publishClone.headCommit,
 			isFastForward,
 			phaseTimings,
@@ -3259,7 +3370,7 @@ class RepoSessionBase extends DurableObject<Env> {
 			const stagingKey = await stagePublishWorkFiles({
 				kv: this.env.BUNDLE_ARTIFACTS_KV,
 				userId: request.userId,
-				files: cloned.files,
+				tree: cloned.tree,
 			})
 			return {
 				stagingKey,
@@ -3504,7 +3615,10 @@ class RepoSessionBase extends DurableObject<Env> {
 				}
 				results.push({
 					ok: false,
-					message: getErrorMessage(outcome.error),
+					message: artifactBuildFailureMessage(
+						getErrorMessage(outcome.error),
+						'rebuild',
+					),
 					...(isUserCodeError(outcome.error) ? { callerFailure: true } : {}),
 					target: outcome.target,
 				})
@@ -3536,6 +3650,65 @@ class RepoSessionBase extends DurableObject<Env> {
 			message: failed.map((result) => result.message).join('; '),
 			results,
 		}
+	}
+
+	/**
+	 * Publish offload commit step: verify a sealed upload against this
+	 * published commit and write its targets like a rebuild would. See
+	 * `#worker/publish-offload/persist-uploaded.ts`.
+	 */
+	async persistUploadedPublishBuild(input: {
+		sessionId?: string
+		sourceId: string
+		userId: OwnerId
+		publishedCommit: string
+		buildId: string
+		baseUrl?: string
+	}): Promise<PersistUploadedPublishBuildResult> {
+		const source = await this.resolvePublishSource(input)
+		if (source.entity_kind !== 'package') {
+			return { ok: false, message: 'Only packages can publish a build.' }
+		}
+		this.assertPublishedCommitUnchanged({
+			source,
+			publishedCommit: input.publishedCommit,
+		})
+		const savedPackage = await getSavedPackageById(this.env.APP_DB, {
+			userId: input.userId,
+			packageId: source.entity_id,
+		})
+		if (!savedPackage) {
+			throw new Error(`Saved package "${source.entity_id}" was not found.`)
+		}
+		const sourceAtCommit = {
+			...source,
+			published_commit: input.publishedCommit,
+		}
+		// The snapshot is already `.kodyignore`-filtered; the workspace
+		// fallback is not, and the builder's manifest never has ignored files.
+		const sourceFiles = omitKodyIgnoredFiles(
+			await this.collectSourceFilesForPublishedArtifactRebuild(
+				source,
+				input.publishedCommit,
+			),
+			source.source_root,
+		)
+		const targets =
+			await this.listPackageArtifactTargetsForSource(sourceAtCommit)
+		const baseUrl = input.baseUrl ?? source.source_root
+		const { persistUploadedPublishBuild } =
+			await import('#worker/publish-offload/persist-uploaded.ts')
+		return await persistUploadedPublishBuild({
+			env: this.env,
+			buildId: input.buildId,
+			baseUrl,
+			userId: input.userId,
+			source: sourceAtCommit,
+			savedPackage,
+			publishedCommit: input.publishedCommit,
+			sourceFiles,
+			targets,
+		})
 	}
 
 	async rebuildPublishedPackageArtifact(input: {
@@ -3661,6 +3834,150 @@ class RepoSessionBase extends DurableObject<Env> {
 		})
 	}
 
+	/**
+	 * The bundle builders the published artifact rebuild uses. `packageCheck`
+	 * builds through the same ones (without a package id for a package that
+	 * was never published) so a dev check hits the rebuild's bundling.
+	 */
+	private async publishedPackageArtifactBuilders(input: {
+		userId: OwnerId
+		baseUrl: string
+		sourceFiles: Record<string, string>
+		rootPackageId?: string
+		prepareCache: PreparedKodyGraphCache
+	}): Promise<PublishedPackageArtifactBuilders> {
+		const {
+			buildKodyAppBundle,
+			buildKodyAppClientBundle,
+			buildKodyModuleBundle,
+			buildKodyImportableModuleBundle,
+		} = await import('#worker/package-runtime/module-graph.ts')
+		const shared = {
+			env: this.env,
+			baseUrl: input.baseUrl,
+			userId: input.userId,
+			sourceFiles: input.sourceFiles,
+			...(input.rootPackageId ? { rootPackageId: input.rootPackageId } : {}),
+			prepareCache: input.prepareCache,
+		}
+		return memoizePublishedPackageArtifactBuilders({
+			buildAppBundle: async ({ entryPoint }) =>
+				await buildKodyAppBundle({ ...shared, entryPoint, cacheKey: null }),
+			buildAppClientBundle: async ({ entryPoint }) =>
+				await buildKodyAppClientBundle({
+					sourceFiles: input.sourceFiles,
+					entryPoint,
+				}),
+			buildModuleBundle: async ({ entryPoint }) =>
+				await buildKodyModuleBundle({ ...shared, entryPoint }),
+			buildImportableModuleBundle: async ({ entryPoint }) =>
+				await buildKodyImportableModuleBundle({ ...shared, entryPoint }),
+		})
+	}
+
+	/**
+	 * `POST /v1/local-execute/package-graph` build in this throwaway isolate,
+	 * so a large package can exceed the isolate limits without resetting the
+	 * API isolate (`#worker/package-runtime/isolated-local-execute-package-graph.ts`).
+	 */
+	async buildIsolatedLocalExecutePackageGraph(
+		input: IsolatedLocalExecutePackageGraphRequest,
+	): Promise<IsolatedLocalExecutePackageGraphOutcome> {
+		return await runIsolatedLocalExecutePackageGraphBuild(this.env, input)
+	}
+
+	/**
+	 * An invocation's missing module artifact, rebuilt in this throwaway
+	 * isolate so a large package cannot reset the isolate that jobs, webhooks,
+	 * and requests share (`#worker/package-invocations/module-artifacts.ts`).
+	 */
+	async rebuildIsolatedModuleArtifact(
+		input: IsolatedModuleArtifactRebuildRequest,
+	): Promise<IsolatedModuleArtifactRebuildOutcome> {
+		return await runIsolatedModuleArtifactRebuild(this.env, input)
+	}
+
+	/**
+	 * Hosted execute's module bundle in this throwaway isolate, so a large
+	 * import can exceed the isolate limits without resetting the caller's
+	 * isolate (`#worker/package-runtime/isolated-execute-bundle.ts`).
+	 */
+	async buildIsolatedExecuteBundle(
+		input: IsolatedExecuteBundleRequest,
+	): Promise<IsolatedExecuteBundleOutcome> {
+		return await runIsolatedExecuteBundleBuild(this.env, input)
+	}
+
+	/**
+	 * `packageCheck`'s stand-in for {@link runIsolatedArtifactRebuild}: builds
+	 * one chunk of artifact targets from the staged files in this throwaway
+	 * isolate with the rebuild's builders, and saves nothing.
+	 */
+	async runIsolatedArtifactBuildCheck(
+		input: IsolatedArtifactBuildCheckRequest,
+	): Promise<IsolatedArtifactRebuildOutcome> {
+		const failAll = (message: string): IsolatedArtifactRebuildOutcome => ({
+			ok: false,
+			message,
+			results: input.targets.map((target) => ({ ok: false, message, target })),
+		})
+		if (
+			!isolatedArtifactRebuildStagingKeyBelongsToUser({
+				stagingKey: input.stagingKey,
+				userId: input.userId,
+			})
+		) {
+			return failAll(
+				'Isolated artifact build check staging key does not belong to the requesting user.',
+			)
+		}
+		const staged = await this.env.BUNDLE_ARTIFACTS_KV.get<{
+			sourceFiles?: Record<string, string>
+		}>(input.stagingKey, 'json')
+		if (!staged?.sourceFiles) {
+			return failAll(
+				'Isolated artifact build check staging data expired or is missing; run the check again.',
+			)
+		}
+		const builders = await this.publishedPackageArtifactBuilders({
+			userId: input.userId,
+			baseUrl: input.baseUrl,
+			sourceFiles: staged.sourceFiles,
+			...(input.rootPackageId ? { rootPackageId: input.rootPackageId } : {}),
+			prepareCache: new Map(),
+		})
+		const results: Array<IsolatedArtifactRebuildTargetResult> = []
+		for (const target of input.targets) {
+			try {
+				await buildPublishedPackageArtifactTargetBundle({
+					...builders,
+					target,
+				})
+				results.push({
+					ok: true,
+					message: 'Built.',
+					target,
+				})
+			} catch (error) {
+				results.push({
+					ok: false,
+					message: artifactBuildFailureMessage(getErrorMessage(error), 'check'),
+					...(isUserCodeError(error) ? { callerFailure: true } : {}),
+					target,
+				})
+			}
+		}
+		const failed = results.filter((result) => !result.ok)
+		return {
+			ok: failed.length === 0,
+			message:
+				failed.length === 0
+					? 'Package artifacts built.'
+					: failed.map((result) => result.message).join('; '),
+			results,
+		}
+	}
+
 	private async persistPublishedPackageArtifactTargetsFromFiles(input: {
 		source: EntitySourceRow
 		savedPackage: SavedPackageRecord
@@ -3676,55 +3993,13 @@ class RepoSessionBase extends DurableObject<Env> {
 			...input.source,
 			published_commit: input.publishedCommit,
 		}
-		const {
-			buildKodyAppBundle,
-			buildKodyAppClientBundle,
-			buildKodyModuleBundle,
-			buildKodyImportableModuleBundle,
-		} = await import('#worker/package-runtime/module-graph.ts')
-		const prepareCache = input.prepareCache ?? new Map()
-		const builders = {
-			buildAppBundle: async ({ entryPoint }: { entryPoint: string }) =>
-				await buildKodyAppBundle({
-					env: this.env,
-					baseUrl: input.baseUrl ?? input.source.source_root,
-					userId: input.userId,
-					sourceFiles: input.sourceFiles,
-					entryPoint,
-					rootPackageId: input.savedPackage.id,
-					cacheKey: null,
-					prepareCache,
-				}),
-			buildAppClientBundle: async ({ entryPoint }: { entryPoint: string }) =>
-				await buildKodyAppClientBundle({
-					sourceFiles: input.sourceFiles,
-					entryPoint,
-				}),
-			buildModuleBundle: async ({ entryPoint }: { entryPoint: string }) =>
-				await buildKodyModuleBundle({
-					env: this.env,
-					baseUrl: input.baseUrl ?? input.source.source_root,
-					userId: input.userId,
-					sourceFiles: input.sourceFiles,
-					entryPoint,
-					rootPackageId: input.savedPackage.id,
-					prepareCache,
-				}),
-			buildImportableModuleBundle: async ({
-				entryPoint,
-			}: {
-				entryPoint: string
-			}) =>
-				await buildKodyImportableModuleBundle({
-					env: this.env,
-					baseUrl: input.baseUrl ?? input.source.source_root,
-					userId: input.userId,
-					sourceFiles: input.sourceFiles,
-					entryPoint,
-					rootPackageId: input.savedPackage.id,
-					prepareCache,
-				}),
-		}
+		const builders = await this.publishedPackageArtifactBuilders({
+			userId: input.userId,
+			baseUrl: input.baseUrl ?? input.source.source_root,
+			sourceFiles: input.sourceFiles,
+			rootPackageId: input.savedPackage.id,
+			prepareCache: input.prepareCache ?? new Map(),
+		})
 		if (input.targets.length === 1) {
 			const target = input.targets[0]!
 			try {
@@ -3904,6 +4179,11 @@ class RepoSessionBase extends DurableObject<Env> {
 			checks: null,
 			scope: 'repo.publishPlainRepoSession.publish-git-note',
 		})
+		repoSessionState.parse(
+			repoSessionState.is(input.sessionRow.status)
+				? 'published'
+				: input.sessionRow.status,
+		)
 		await updateRepoSession(this.env, {
 			id: input.sessionRow.id,
 			userId: input.sessionRow.user_id,
@@ -4049,7 +4329,7 @@ class RepoSessionBase extends DurableObject<Env> {
 		}
 		const sessionBranch = sessionRow.session_branch
 		const checkStatus = await this.readCheckStatus()
-		const workspaceSnapshot = await this.collectWorkspacePublishSnapshot()
+		const workspaceSnapshot = await this.collectWorkspacePublishWorkTree(source)
 		const currentTreeHash = workspaceSnapshot.treeHash
 		if (
 			(!input.force && !checkStatus.runId) ||
@@ -4102,7 +4382,7 @@ class RepoSessionBase extends DurableObject<Env> {
 			})
 		}
 		if (source.entity_kind === 'package') {
-			const afterContent = workspaceSnapshot.files[source.manifest_path]
+			const afterContent = workspaceSnapshot.tree.files[source.manifest_path]
 			if (typeof afterContent !== 'string') {
 				throw new Error(`Manifest "${source.manifest_path}" was not found.`)
 			}
@@ -4173,7 +4453,7 @@ class RepoSessionBase extends DurableObject<Env> {
 		const publishWork = this.publishWorkRunner()
 		const publishStagingKey = await publishWork.stage({
 			userId: input.userId,
-			files: workspaceSnapshot.files,
+			tree: workspaceSnapshot.tree,
 		})
 		try {
 			const work = bindPublishHeavyWork({
@@ -4342,6 +4622,11 @@ class RepoSessionBase extends DurableObject<Env> {
 					scope: 'repo.publishSession.publish-git-note',
 				})
 			}
+			repoSessionState.parse(
+				repoSessionState.is(sessionRow.status)
+					? 'published'
+					: sessionRow.status,
+			)
 			await updateRepoSession(this.env, {
 				id: sessionRow.id,
 				userId: sessionRow.user_id,
@@ -4420,7 +4705,10 @@ class RepoSessionBase extends DurableObject<Env> {
 						const clonedHead = cloned.headCommit
 						if (clonedHead !== input.expectedHead) {
 							throw new Error(
-								`Artifacts HEAD changed from "${input.expectedHead}" to "${clonedHead ?? 'unknown'}" before publish.`,
+								buildArtifactsHeadChangedBeforePublishMessage(
+									input.expectedHead,
+									clonedHead ?? 'unknown',
+								),
 							)
 						}
 					}
@@ -4609,6 +4897,7 @@ class RepoSessionBase extends DurableObject<Env> {
 		requestedByUserId?: string | null
 		publisherRequest?: RequestContext | null
 		deferBundleCheckToRebuild?: boolean
+		typecheckRanOffWorker?: boolean
 		resumeFinalize?: boolean
 	}): Promise<RepoExternalPublishResult> {
 		const source = await getEntitySourceById(this.env.APP_DB, input.sourceId)
@@ -4649,9 +4938,7 @@ class RepoSessionBase extends DurableObject<Env> {
 						previousCommit !== source.published_commit ||
 						cloned.isFastForward === null
 					) {
-						throw new Error(
-							'The published commit moved while this publish was running. Retry the publish.',
-						)
+						throw new Error(buildPublishedCommitMovedDuringPublishMessage())
 					}
 					return cloned.isFastForward
 				},
@@ -4669,6 +4956,9 @@ class RepoSessionBase extends DurableObject<Env> {
 				...(recordCheckStep ? { onCheckStep: recordCheckStep } : {}),
 				...(input.deferBundleCheckToRebuild
 					? { deferBundleCheckToRebuild: true }
+					: {}),
+				...(input.typecheckRanOffWorker === true
+					? { typecheckRanOffWorker: true }
 					: {}),
 				...(input.resumeFinalize ? { resumeFinalize: true } : {}),
 			}).finally(() => this.clearCheckStep())

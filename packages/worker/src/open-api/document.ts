@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { isRecord } from '@kody-internal/shared/is-record.ts'
 import { getStaticRegistry } from '#mcp/capabilities/registry.ts'
-import { type BuiltCapabilityRegistry } from '#mcp/capabilities/build-capability-registry.ts'
+import type { BuiltCapabilityRegistry } from '#mcp/capabilities/build-capability-registry.ts'
 import {
 	apiTokenScopeDescriptions,
 	apiTokenScopes,
@@ -117,6 +117,8 @@ export type ResolvedApiOperation = {
 }
 
 const tagDescriptions: Record<ApiOperation['tag'], string> = {
+	files:
+		'Private workspace files, immutable revisions, and conflict-aware saves.',
 	account: 'Account profile, usage, waiting items, export, and feedback.',
 	search: 'Unified Kody search.',
 	memories: 'Memories and the MCP server-instruction overlay.',

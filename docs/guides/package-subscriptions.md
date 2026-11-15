@@ -21,7 +21,9 @@ topics. The saved package remains the top-level entity; subscriptions are nested
 manifest metadata and package runtime handlers.
 
 Watch:
-[Kody subscriptions: email and Discord events wake your agents](https://www.youtube.com/watch?v=8I6kYYiaqis).
+[Kody subscriptions: email and Discord events wake your agents](https://www.youtube.com/watch?v=8Tx8YpLh2y8)
+and
+[Kody triggers by example: schedules, webhooks, email, and events](https://www.youtube.com/watch?v=Atn8dO_ZGs0).
 
 ## Manifest shape
 
@@ -112,26 +114,19 @@ publish to verify handler wiring without waiting for production fan-out.
 Package reuse is a static `import … from 'kody:@scope/pkg/export'` (declare
 `kody.dependencies`). See [Package reuse](../use/packages.md#package-reuse).
 
-Reuse the scoped `name` from `packageSubscriptionsList` as `kody_id`.
+Look up the package with the scoped `@owner/leaf` name from
+`packageSubscriptionsList` (or `package_id` when the name is not known). See
+[Synthetic event dispatch](../use/synthetic-event-dispatch.md) for the fields.
 
 ```json
 {
-	"kody_id": "@owner/email-automation",
+	"package_id": "550e8400-e29b-41d4-a716-446655440000",
 	"topic": "email.message.received",
 	"params": {}
 }
 ```
 
-For stored inbound mail, replay with `email_message_id` instead of `params`:
-
-```json
-{
-	"kody_id": "@owner/email-automation",
-	"topic": "email.message.received",
-	"email_message_id": "00000000000000000000000000000001"
-}
-```
-
+For stored inbound mail, replay with `email_message_id` instead of `params`.
 Pass exactly one of `params` or `email_message_id`. There is no caller
 `idempotency_key` — the platform generates internal idempotency keys.
 
@@ -265,6 +260,10 @@ type PackageEventEnvelope = {
 - Per-subscriber invocations are exactly-once keyed on
   `(source package, subscriber package, topic, idempotencyKey)`, so Queue
   redelivery replays stored results instead of re-running handlers.
+- One account has at most 4 package events being delivered at a time. More than
+  that wait and are checked again after a delay that grows from a few seconds up
+  to 5 minutes. Waiting this way does not use up retries, and a burst from one
+  account does not delay other accounts' events.
 - Infrastructure failures before handler code runs retry via the Queue (3
   attempts, then the `kody-package-events-dispatch-dlq` dead-letter queue).
   Terminal handler failures do not retry — a stored failed invocation replays
@@ -302,6 +301,14 @@ define whether and how `filters` apply.
 Accepted stored inbound email dispatches `email.message.received` after Kody
 stores the message and attachment metadata. Quarantined mail uses
 `email.message.quarantined` instead.
+
+Dispatch is asynchronous: once the message is stored, Kody enqueues its delivery
+effects on the `kody-package-events-dispatch` Queue, and the consumer invokes
+subscribers within seconds, outside the Email Routing invocation. The sender's
+SMTP acknowledgement never waits on handlers. Each delivery is independent, so
+handlers for separate messages run concurrently and may start in any order; use
+`message.received_at` when order matters. A delivery whose dispatch hits an
+infrastructure failure is retried by the inbound reconciliation sweep.
 
 Handlers receive a metadata-first payload:
 
@@ -421,15 +428,15 @@ agent, or otherwise react when something in the user's account fails.
 
 When host-side OAuth token refresh fails with reconnectable caller state —
 missing refresh token on a sign-in that expires, provider HTTP 4xx /
-`invalid_grant`, missing secrets, host-approval gaps, or invalid connection
-config — Kody dispatches `integration.auth.failed` to packages saved by that
-same user that declare the topic. Every classified attempt emits. The platform
-does not coalesce repeats; notifier packages decide how often to ping, typically
-by pairing this topic with `integration.auth.succeeded` and storing last-known
-health in package storage. Provider HTTP 5xx and missing connections do not
-emit. Neither does a non-expiring grant (no refresh token and no access-token
-expiry at connect): refresh returns `refreshed: false` and emits neither auth
-topic.
+`invalid_grant` (except 429), missing secrets, host-approval gaps, or invalid
+connection config — Kody dispatches `integration.auth.failed` to packages saved
+by that same user that declare the topic. Every classified reconnectable attempt
+emits. The platform does not coalesce repeats; notifier packages decide how
+often to ping, typically by pairing this topic with `integration.auth.succeeded`
+and storing last-known health in package storage. Provider HTTP 5xx, provider
+HTTP 429 (rate limit; not a dead grant), and missing connections do not emit.
+Neither does a non-expiring grant (no refresh token and no access-token expiry
+at connect): refresh returns `refreshed: false` and emits neither auth topic.
 
 Delivery is best-effort after the refresh caller error is classified — there is
 no Queue / DLQ for this topic. Failures during subscriber discovery or

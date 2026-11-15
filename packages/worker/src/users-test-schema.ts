@@ -72,6 +72,7 @@ const alwaysAdditiveColumns: Record<string, UsersColumnDefinition> = {
 	deleting_at: { create: 'TEXT' },
 	deleted_at: { create: 'TEXT' },
 	suspended_at: { create: 'TEXT' },
+	guest_expires_at: { create: 'TEXT' },
 	email_verification_delivery_status: { create: 'TEXT' },
 	email_verification_delivery_at: { create: 'TEXT' },
 	email_verification_delivery_detail: { create: 'TEXT' },
@@ -93,6 +94,15 @@ const alwaysAdditiveColumns: Record<string, UsersColumnDefinition> = {
 	first_job_at: { create: 'TEXT' },
 	mcp_client_name: { create: 'TEXT' },
 	last_active_at: { create: 'TEXT' },
+	whats_new_email_opt_in: {
+		create:
+			'INTEGER NOT NULL DEFAULT 0 CHECK (whats_new_email_opt_in IN (0, 1))',
+	},
+	whats_new_email_opt_in_updated_at: { create: 'TEXT' },
+	whats_new_email_opt_in_source: {
+		create:
+			"TEXT CHECK (whats_new_email_opt_in_source IN ('signup', 'settings', 'email_link', 'admin'))",
+	},
 	experiments_opt_in: {
 		create: `INTEGER NOT NULL DEFAULT 0 CHECK (experiments_opt_in IN (0, 1))`,
 		alter: `INTEGER NOT NULL DEFAULT 0`,

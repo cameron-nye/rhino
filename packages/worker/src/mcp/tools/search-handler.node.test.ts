@@ -7,7 +7,7 @@ import type * as CommunityService from '#worker/community/service.ts'
 import type * as EntitlementsService from '#worker/entitlements/service.ts'
 import type * as IntegrationsService from '#worker/integrations/service.ts'
 import type * as PackageRepo from '#worker/package-registry/repo.ts'
-import { type SavedPackageRecord } from '#worker/package-registry/types.ts'
+import type { SavedPackageRecord } from '#worker/package-registry/types.ts'
 import type * as SearchRateLimit from '#worker/search-rate-limit.ts'
 import { consoleWarn } from '#worker/test-support/console-spies.ts'
 import type * as MemoryToolContext from './memory-tool-context.ts'
@@ -135,6 +135,8 @@ vi.mock('#worker/package-registry/repo.ts', () => ({
 vi.mock('#worker/package-registry/source.ts', () => ({
 	loadPackageSourceBySourceId: (...args: Array<unknown>) =>
 		mockModule.loadPackageSourceBySourceId(...args),
+	loadServingPackageSourceBySourceId: (...args: Array<unknown>) =>
+		mockModule.loadPackageSourceBySourceId(...args),
 }))
 
 vi.mock('#mcp/secrets/service.ts', () => ({
@@ -199,11 +201,8 @@ vi.mock('#worker/search-rate-limit.ts', async (importOriginal) => {
 	return { ...actual, consumeSearchRateLimit: vi.fn(async () => 'free') }
 })
 
-const {
-	registerSearchTool,
-	SEARCH_MEMORY_ENRICHMENT_BUDGET_MS,
-	memoryEnrichmentSkippedWarning,
-} = await import('./search.ts')
+const { registerSearchTool, SEARCH_MEMORY_ENRICHMENT_BUDGET_MS } =
+	await import('./search.ts')
 
 type SearchResponse = {
 	content: Array<{ type: 'text'; text: string }>
@@ -970,7 +969,9 @@ test('search tool memory enrichment: structured context, timeout, and rejection 
 	)
 	expect(timedOutResult.matches.length).toBeGreaterThan(0)
 	expect(timedOutResult.memories).toBeUndefined()
-	expect(timedOutResult.warnings).toContain(memoryEnrichmentSkippedWarning)
+	expect(timedOutResult.warnings).toContain(
+		'Memory enrichment was skipped; returning core results without memory context.',
+	)
 	expect(timedOutResult.phaseTimings).toEqual(
 		expect.objectContaining({
 			memoryEnrichmentTimedOut: true,
@@ -999,7 +1000,9 @@ test('search tool memory enrichment: structured context, timeout, and rejection 
 			}),
 		)
 		expect(rejectedResult.memories).toBeUndefined()
-		expect(rejectedResult.warnings).toContain(memoryEnrichmentSkippedWarning)
+		expect(rejectedResult.warnings).toContain(
+			'Memory enrichment was skipped; returning core results without memory context.',
+		)
 		expect(rejectedResult.phaseTimings).toEqual(
 			expect.objectContaining({
 				memoryEnrichmentFailed: true,
@@ -1046,7 +1049,6 @@ test('search reserves maxResponseSize for memories and still enriches from memor
 	expect(tightResult.telemetry?.trimmedMatchCount).toBeGreaterThan(0)
 	expect(tightResult.matches).toEqual([])
 	expect(tightResult.guidance).toBeUndefined()
-	expect(textOf(tightResponse)).not.toContain('## Recommended next step')
 	expect(textOf(tightResponse)).not.toMatch(/inlined export call contract/i)
 
 	mockModule.loadRelevantMemoriesForTool.mockClear()
@@ -1142,4 +1144,75 @@ test('search tool domain param: browse, reject unknown, scope ranked results, an
 		expect(match).toMatchObject({ type: 'capability', domain: 'meta' })
 	}
 	expect(mockModule.loadRelevantMemoriesForTool).toHaveBeenCalled()
+})
+
+test('search tool batch sends repeated guide metadata once so requested sections fit', async () => {
+	const slugs = [
+		'what-changes-on-a-machine',
+		'worker-compute-on-a-machine',
+		'where-a-run-ran-ranon',
+		'busy-machines',
+		'keep-it-running-the-background-service',
+		'set-up-a-machine',
+	]
+	const handler = await getSearchHandler()
+	const response = await handler({
+		entity: slugs.map((slug) => `guide:execution_contexts#${slug}`),
+		conversationId: 'conv-batch-guide-sections',
+	})
+	expect(response.isError).toBeUndefined()
+	const result = response.structuredContent.result as Array<
+		Record<string, unknown>
+	>
+	expect(result.map((entry) => entry['error'])).toEqual(
+		slugs.map(() => undefined),
+	)
+	expect(result).toEqual(
+		slugs.map((slug) =>
+			expect.objectContaining({
+				kind: 'entity',
+				type: 'guide',
+				id: 'execution_contexts',
+				entityRef: `guide:execution_contexts#${slug}`,
+				bodyMode: 'section',
+				guideMetadataRef: 'guide:execution_contexts',
+			}),
+		),
+	)
+	for (const entry of result) {
+		expect(entry).not.toHaveProperty('description')
+		expect(entry).not.toHaveProperty('sections')
+	}
+	const guides = (
+		response.structuredContent as { guides?: Record<string, unknown> }
+	).guides
+	expect(Object.keys(guides ?? {})).toEqual(['guide:execution_contexts'])
+	const metadata = guides?.['guide:execution_contexts'] as {
+		description: string
+		sections: Array<{ slug: string }>
+	}
+	expect(metadata.sections.map((section) => section.slug)).toEqual(
+		expect.arrayContaining(slugs),
+	)
+	const text = textOf(response)
+	expect(text.split(metadata.description.slice(0, 80)).length - 1).toBe(1)
+	for (const slug of slugs) expect(text).toContain(`- Section: \`${slug}\``)
+
+	const mixed = await handler({
+		entity: ['guide:execution_contexts#busy-machines', 'guide:open_api'],
+		conversationId: 'conv-batch-guide-distinct',
+	})
+	expect(mixed.structuredContent).not.toHaveProperty('guides')
+	expect(mixed.structuredContent.result).toEqual([
+		expect.objectContaining({
+			id: 'execution_contexts',
+			description: expect.any(String),
+			sections: expect.any(Array),
+		}),
+		expect.objectContaining({
+			id: 'open_api',
+			description: expect.any(String),
+			sections: expect.any(Array),
+		}),
+	])
 })

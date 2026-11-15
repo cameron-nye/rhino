@@ -2,13 +2,14 @@ import { capabilityDomainNames } from '#mcp/capabilities/domain-metadata.ts'
 import { McpCallerError } from '#mcp/caller-error.ts'
 import { guideMetadataList } from '#worker/guide-catalog-modules.ts'
 import { resolveMarkdownDocument } from '#worker/guides/document-sections.ts'
-import { type GuideMetadata } from '#worker/guides/guide-types.ts'
+import type { GuideMetadata } from '#worker/guides/guide-types.ts'
 import { formatRequestedLineLabel } from '#worker/guides/line-anchor.ts'
 import { lexicalScore } from '#worker/vectorize/scoring.ts'
 
-import { type SearchEntityPlugin } from '../search-entity-plugin.ts'
+import type { SearchEntityPlugin } from '../search-entity-plugin.ts'
 import { maxChars } from '../search-constants.ts'
 import {
+	buildGuideBatchRepeatHeaderLines,
 	buildGuideDetailHeaderLines,
 	guideContentsModeLine,
 	guideLinesModeLine,
@@ -183,9 +184,11 @@ export const guideSearchEntityPlugin = {
 			provider: match.provider,
 		}
 	},
-	formatEntityDetail(detail) {
+	formatEntityDetail(detail, options) {
 		const entityRef = buildEntityRef(detail.id, 'guide')
-		const headerLines = buildGuideDetailHeaderLines(detail)
+		const headerLines = options?.omitSharedMetadata
+			? buildGuideBatchRepeatHeaderLines(detail)
+			: buildGuideDetailHeaderLines(detail)
 		let resolved
 		try {
 			resolved = resolveMarkdownDocument({

@@ -13,12 +13,14 @@ import {
 	writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { Entry } from '@napi-rs/keyring'
 import { apiTokenFileStorePath } from '../api-token-store.js'
-import { keyringService } from '../defaults.js'
-import { secretServiceKeyringOptions } from '../store.js'
+import {
+	type AsyncKeyringEntry,
+	KeychainTimeoutError,
+	createAsyncKeyringEntry,
+} from '../keyring-entry.js'
 
-export const contextKeyPassphraseEnvVar = 'KODY_CONTEXT_KEY_PASSPHRASE'
+const contextKeyPassphraseEnvVar = 'KODY_CONTEXT_KEY_PASSPHRASE'
 
 export type StoredContext = {
 	version: 1
@@ -57,30 +59,30 @@ export function contextWorkersDir(apiUrl: string, ecid: string) {
 
 export type WrappingKeySource = {
 	kind: 'keyring' | 'passphrase' | 'file'
-	key(salt: Buffer | null): Buffer
+	/** Unwraps the AES key; keyring and file sources ignore `salt`. */
+	key(salt: Buffer | null): Promise<Buffer>
 	salt?: Buffer
 }
 
 /**
- * The private key is encrypted at rest with AES-256-GCM. The wrapping key
- * comes from the OS keyring, or from a passphrase in
- * KODY_CONTEXT_KEY_PASSPHRASE (scrypt). With neither, refuse.
+ * Resolve a keyring or passphrase wrapping key. The private key is encrypted
+ * at rest with AES-256-GCM. On macOS the keyring path is async: it can print a
+ * Keychain wait notice, time out (`KeychainTimeoutError`), and be killed on
+ * signals. A passphrase in KODY_CONTEXT_KEY_PASSPHRASE uses scrypt. With
+ * neither, refuse. File wrapping is `fileWrappingKey` (stored `wrap: 'file'`).
  */
 export function resolveWrappingKey(input: {
 	ecid: string
 	env?: NodeJS.ProcessEnv
 	create: boolean
-	keyringFactory?: (account: string) => {
-		getPassword(): string | null
-		setPassword(value: string): void
-	}
+	keyringFactory?: (account: string) => AsyncKeyringEntry
 }): WrappingKeySource {
 	const env = input.env ?? process.env
 	const passphrase = env[contextKeyPassphraseEnvVar]
 	if (passphrase) {
 		return {
 			kind: 'passphrase',
-			key: (salt) =>
+			key: async (salt) =>
 				scryptSync(passphrase, salt ?? Buffer.alloc(16), 32, {
 					N: 1 << 15,
 					r: 8,
@@ -90,21 +92,22 @@ export function resolveWrappingKey(input: {
 		}
 	}
 	const account = `execution-context:${input.ecid}`
-	let entry: { getPassword(): string | null; setPassword(value: string): void }
+	let entry: AsyncKeyringEntry
 	try {
 		entry = input.keyringFactory
 			? input.keyringFactory(account)
-			: new Entry(keyringService, account, secretServiceKeyringOptions)
+			: createAsyncKeyringEntry(account)
 	} catch {
 		throw noWrappingKeyError()
 	}
 	return {
 		kind: 'keyring',
-		key: () => {
+		key: async () => {
 			let stored: string | null = null
 			try {
-				stored = entry.getPassword()
-			} catch {
+				stored = await entry.getPassword()
+			} catch (error) {
+				if (error instanceof KeychainTimeoutError) throw error
 				stored = null
 			}
 			if (stored) return Buffer.from(stored, 'base64url')
@@ -115,8 +118,9 @@ export function resolveWrappingKey(input: {
 			}
 			const fresh = randomBytes(32)
 			try {
-				entry.setPassword(fresh.toString('base64url'))
-			} catch {
+				await entry.setPassword(fresh.toString('base64url'))
+			} catch (error) {
+				if (error instanceof KeychainTimeoutError) throw error
 				throw noWrappingKeyError()
 			}
 			return fresh
@@ -142,7 +146,7 @@ export function fileWrappingKey(input: {
 	const path = fileWrappingKeyPath(input.apiUrl, input.ecid)
 	return {
 		kind: 'file',
-		key: () => {
+		key: async () => {
 			if (existsSync(path)) {
 				return Buffer.from(readFileSync(path, 'utf8').trim(), 'base64url')
 			}
@@ -188,7 +192,7 @@ export function wrappingKeyForStoredContext(input: {
 }
 
 /** Re-encrypts the stored private key under another wrapping key. */
-export function rewrapContextKey(input: {
+export async function rewrapContextKey(input: {
 	apiUrl: string
 	ecid: string
 	from: WrappingKeySource
@@ -197,11 +201,13 @@ export function rewrapContextKey(input: {
 	const dir = contextDir(input.apiUrl, input.ecid)
 	const keyPath = join(dir, 'key.enc')
 	const file = JSON.parse(readFileSync(keyPath, 'utf8')) as KeyFile
-	const privateJwk = decryptPrivateKey(file, input.from)
+	const privateJwk = await decryptPrivateKey(file, input.from)
 	const next = `${keyPath}.next`
-	writeFileSync(next, JSON.stringify(encryptPrivateKey(privateJwk, input.to)), {
-		mode: 0o600,
-	})
+	writeFileSync(
+		next,
+		JSON.stringify(await encryptPrivateKey(privateJwk, input.to)),
+		{ mode: 0o600 },
+	)
 	chmodSync(next, 0o600)
 	renameSync(next, keyPath)
 }
@@ -212,12 +218,12 @@ function noWrappingKeyError() {
 	)
 }
 
-export function encryptPrivateKey(
+export async function encryptPrivateKey(
 	privateJwk: unknown,
 	wrapping: WrappingKeySource,
-): KeyFile {
+): Promise<KeyFile> {
 	const salt = wrapping.kind === 'passphrase' ? randomBytes(16) : null
-	const key = wrapping.key(salt)
+	const key = await wrapping.key(salt)
 	const iv = randomBytes(12)
 	const cipher = createCipheriv('aes-256-gcm', key, iv)
 	const data = Buffer.concat([
@@ -234,10 +240,10 @@ export function encryptPrivateKey(
 	}
 }
 
-export function decryptPrivateKey(
+export async function decryptPrivateKey(
 	file: KeyFile,
 	wrapping: WrappingKeySource,
-): unknown {
+): Promise<unknown> {
 	if (file.wrap !== wrapping.kind) {
 		throw new Error(
 			file.wrap === 'passphrase'
@@ -247,7 +253,7 @@ export function decryptPrivateKey(
 					: `This context key is protected by the OS keyring. Unset ${contextKeyPassphraseEnvVar}.`,
 		)
 	}
-	const key = wrapping.key(
+	const key = await wrapping.key(
 		file.salt ? Buffer.from(file.salt, 'base64url') : null,
 	)
 	const decipher = createDecipheriv(
@@ -269,7 +275,7 @@ export function decryptPrivateKey(
 	}
 }
 
-export function saveContext(input: {
+export async function saveContext(input: {
 	context: StoredContext
 	privateJwk: unknown
 	wrapping: WrappingKeySource
@@ -279,7 +285,7 @@ export function saveContext(input: {
 	const keyPath = join(dir, 'key.enc')
 	writeFileSync(
 		keyPath,
-		JSON.stringify(encryptPrivateKey(input.privateJwk, input.wrapping)),
+		JSON.stringify(await encryptPrivateKey(input.privateJwk, input.wrapping)),
 		{ mode: 0o600 },
 	)
 	chmodSync(keyPath, 0o600)
@@ -301,15 +307,15 @@ export function readStoredContext(apiUrl: string, ecid: string) {
 	}
 }
 
-export function loadContext(input: {
+export async function loadContext(input: {
 	apiUrl: string
 	ecid: string
 	wrapping: WrappingKeySource
-}): { context: StoredContext; privateJwk: unknown } {
+}): Promise<{ context: StoredContext; privateJwk: unknown }> {
 	const dir = contextDir(input.apiUrl, input.ecid)
 	const context = JSON.parse(
 		readFileSync(join(dir, 'context.json'), 'utf8'),
 	) as StoredContext
 	const file = JSON.parse(readFileSync(join(dir, 'key.enc'), 'utf8')) as KeyFile
-	return { context, privateJwk: decryptPrivateKey(file, input.wrapping) }
+	return { context, privateJwk: await decryptPrivateKey(file, input.wrapping) }
 }

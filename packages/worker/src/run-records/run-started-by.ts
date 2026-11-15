@@ -9,9 +9,9 @@
  * name), and the actor person id/username.
  */
 
-import {
-	type RequestContext,
-	type RequestCredentialKind,
+import type {
+	RequestContext,
+	RequestCredentialKind,
 } from '@kody-internal/shared/request-context.ts'
 
 /**
@@ -68,6 +68,8 @@ export function runStartedByClientFromCredentialKind(
 			return 'cli'
 		case 'api-token':
 			return 'api-token'
+		case 'file-storage':
+			throw new Error('File storage connections cannot start runs.')
 		case 'package-app':
 			return 'package-app'
 		case 'inbound-email':

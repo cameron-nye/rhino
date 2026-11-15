@@ -1,8 +1,6 @@
 /** @jsxImportSource @emotion/react */
-import {
-	DesktopMachinePanel,
-	useDesktopMachine,
-} from '../components/desktop-execution.tsx'
+import { useDesktopMachine } from '../components/desktop-execution.tsx'
+import { DesktopMachinePanel } from '../components/desktop-machine-panel.tsx'
 import { css } from '@emotion/react'
 import { useRouter } from '@tanstack/react-router'
 import { createListDetailLinks } from '#client/list-detail-route.ts'
@@ -213,7 +211,9 @@ function EnabledPage(props: {
 				description="Your machines and shared servers that run execute, and the order Kody tries them in."
 				currentHref={currentHref}
 			/>
-			<DesktopMachinePanel />
+			<DesktopMachinePanel
+				orgSlug={payload.personalOrg ? null : payload.orgSlug}
+			/>
 			{note ? (
 				<AccountManagementMessage>
 					<span data-testid="execution-contexts-unutilized">{note}</span>

@@ -1,4 +1,5 @@
 const config = require('./electron-builder.cjs')
+const { signtoolOptions, ...win } = config.win
 const azure =
 	process.platform === 'win32' &&
 	process.env.KODY_WINDOWS_SIGNING_PROVIDER === 'azure'
@@ -40,28 +41,46 @@ if (
 ) {
 	throw new Error('Missing release credential: CSC_LINK or CSC_NAME')
 }
+// Associated Domains is a restricted entitlement: a Developer ID build that
+// claims it without the matching provisioning profile is killed at launch.
+const provisioningProfile =
+	process.platform === 'darwin'
+		? process.env.KODY_MAC_PROVISIONING_PROFILE
+		: undefined
 module.exports = {
 	...config,
-	// Architecture channels keep parallel Windows and Mac jobs from
-	// replacing each other's update manifests.
-	publish: {
-		provider: 'github',
-		owner: 'kody-hq',
-		repo: 'kody-desktop',
-		channel: `latest-${process.arch}`,
-		tagNamePrefix: 'v',
-		releaseType: 'draft',
-	},
+	// Architecture channels keep parallel Mac and Linux jobs from replacing
+	// each other's update manifests. Windows MSIX installs update through App
+	// Installer instead, so they ship no electron-updater feed.
+	publish:
+		process.platform === 'win32'
+			? null
+			: {
+					provider: 'github',
+					owner: 'kody-hq',
+					repo: 'kody-desktop',
+					channel: `latest-${process.arch}`,
+					tagNamePrefix: 'v',
+					releaseType: 'draft',
+				},
 	forceCodeSigning: process.platform !== 'linux',
+	afterPack: './scripts/mac-app-update-config.cjs',
 	mac: {
 		...config.mac,
 		identity: undefined,
 		hardenedRuntime: true,
-		notarize: true,
+		// scripts/mac-notarize.cjs notarizes and staples the signed app before
+		// installers are packaged from it (see desktop-release.yml).
+		notarize: false,
+		...(provisioningProfile
+			? {
+					provisioningProfile,
+					entitlements: 'assets/entitlements.mac.app-links.plist',
+				}
+			: {}),
 	},
 	win: {
-		...config.win,
-		verifyUpdateCodeSignature: true,
+		...win,
 		...(azure
 			? {
 					azureSignOptions: {
@@ -73,6 +92,7 @@ module.exports = {
 				}
 			: {
 					signtoolOptions: {
+						...signtoolOptions,
 						publisherName: process.env.KODY_WINDOWS_PUBLISHER,
 					},
 				}),

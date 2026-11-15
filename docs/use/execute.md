@@ -40,9 +40,11 @@ helpers are runtime exports:
 - use **`import { packageContext } from 'kody:runtime'`** inside saved package
   code when you need package metadata; it is **`null`** for ad hoc execute calls
 - when a package name is data, use `import(specifier)` for a caller-owned or
-  forked module. Exactly-once work uses [workflows](./workflows.md). When the
-  target package's name is known when the code is written, use a static
-  `kody:@...` import (see below)
+  forked module. Saved package server code cannot (see
+  [Saved package composition](../guides/package-lifecycle.md#saved-package-composition)).
+  Exactly-once work uses [workflows](./workflows.md). When the target package's
+  name is known when the code is written, use a static `kody:@...` import (see
+  below)
 - use **`import thing from 'kody:@scope/my-package/export-name'`** or
   **`import { helper } from 'kody:@scope/my-package/export-name'`** to reuse a
   saved package export by npm-scoped package name. This is **the default for
@@ -59,7 +61,8 @@ package artifacts do not bundle the host runtime; execution always hydrates the
 deployed `kody:runtime` module.
 
 Prefer a static `kody:@...` import when the target package's name is known when
-the code is written. Use `import(specifier)` when the name is data.
+the code is written. Use `import(specifier)` when the name is data (in
+`execute`, not in saved package server code).
 
 **execute** also accepts optional **`params`**. Kody passes that JSON object to
 the module's **default export** as the first function argument. Shared helpers
@@ -175,16 +178,46 @@ workflows.
 
 Sandbox budgets are the same on every plan:
 
-| Run                                                                     | Budget                       |
-| ----------------------------------------------------------------------- | ---------------------------- |
-| MCP / ad-hoc execute, package export HTTP invokes, `sync` webhooks      | ~90s                         |
-| Jobs (scheduled and `jobRunNow`, including package exports they import) | 5 minutes                    |
-| Ack (queued) webhook deliveries                                         | 5 minutes                    |
-| Each workflow step                                                      | 5 minutes                    |
-| `execute --local`                                                       | none (fetch deadlines apply) |
+| Run                                                                       | Budget                                                          |
+| ------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| MCP / ad-hoc execute, package export HTTP invokes, `sync` webhooks        | ~90s                                                            |
+| Jobs (scheduled and `jobRunNow`, including package exports they import)   | 5 minutes                                                       |
+| Ack (queued) webhook deliveries                                           | 5 minutes                                                       |
+| Each workflow step                                                        | 5 minutes                                                       |
+| `execute --local`                                                         | none (fetch deadlines apply)                                    |
+| Any run on an execution context (execute, jobs, webhooks, workflow steps) | the context grant's `timeoutMs` (default 90s, up to 15 minutes) |
 
 A `sync` webhook's HTTP response stops waiting after 30s. Work that does not fit
 the interactive budget goes in a workflow or a job.
+
+### Modules too large to bundle on Kody cloud
+
+Hosted execute bundles a module that imports saved packages (`kody:@…`) or npm
+packages in its own short-lived isolate. If that build exceeds the isolate's
+memory or CPU limit, or takes longer than 90s, only that call fails and nothing
+runs. The error says so, and its structured `errorDetails` has
+`kind: "execute_bundle_too_large"` and a
+`suggestedAction: { type: "run_locally", command, requires }`. An agent with a
+shell can save the module to a file and run that command
+(`npx -y @kodycodes/cli@latest execute --local --file <file>`), which bundles on
+its own machine and calls the same Kody capabilities
+([local execute](../guides/local-execute.md)). To stay on Kody cloud, import
+fewer or smaller packages in one module.
+
+Two more failures add a local rerun command in `errorDetails` (`suggestedAction`
+/ `alternativeAction`):
+
+- `kind: "execution_timed_out"` from an ad hoc execute adds
+  `alternativeAction: { type: "run_locally", command, requires }` beside its
+  `suggestedAction`. Local runs have no execution time budget, so the same
+  module runs as written. Durable workflows remain the hosted path for long
+  work.
+- `kind: "package_build_limit"` means a package build or check ran out of memory
+  or CPU on Kody cloud. Its
+  `suggestedAction: { type: "publish_local_build", command, requires }` carries
+  `npx -y @kodycodes/cli@latest package publish <package> --build local`, which
+  needs the Execution contexts experiment
+  ([Publish packages too big for Kody cloud](../guides/publish-large-packages.md)).
 
 ### Long calls: start a workflow and check back
 
@@ -203,8 +236,24 @@ notifications do not reset that clock. Before that client deadline, hosted
 **execute** returns `inProgress: true` with **`runId`** and **`idempotencyKey`**
 instead of letting the timeout look like a failed mutation with nothing to
 follow. The sandbox keeps running. Poll **`runGet({ run_id: runId })`** with
-that `runId`. Retry **execute** with the same `idempotencyKey` to read the
-in-progress or retained result. Do not start a second mutation.
+that `runId`; once the run finishes, its **`result`** field holds the return
+value (capped at 4 KiB). Retry **execute** with the same `idempotencyKey` to
+read the in-progress or retained result. Do not start a second mutation.
+
+After that follow response, the run has about **20s** more to finish (about 65s
+in total) on hosted MCP and Open API execute, because the Worker only keeps work
+alive briefly once the response is sent. A run still going then stops with
+`Execution timed out after …s` on its run record, so `runGet` and keyed retries
+report that outcome right away. The CLI's cloud execute (`POST /v1/execute`)
+waits out the whole sandbox budget instead of returning a follow handle. Work
+that needs longer belongs in a workflow, a job, or `execute --local`.
+
+If the API stops before it answers (a 503 `internal_error`, for example when it
+runs out of server memory) after execute already started the run, the error
+names that run in `error.details.run_id` (and `idempotency_key` when you passed
+one), and the CLI's `--json` error carries them as `runId` and `idempotencyKey`.
+The run may still be going or may have finished, so read it with `runGet`
+instead of starting the work again.
 
 You can omit **`idempotencyKey`**. When Kody can record the run, it assigns one
 (`execute:…`) and returns it on that follow response. Pass your own key (string,
@@ -225,11 +274,13 @@ max 256 characters) when you want to choose the retry token on the first call.
 - If a keyed run is stranded as `running` (for example the Worker isolate reset
   before the terminal write), Kody reconciles it to an error with
   **`errorName=platform_interrupted`** after a few minutes (platform weather;
-  outcome unknown — not a user-authored package failure). Keyed package
-  invocations write `package invocation started: …` onto the running row before
-  sandbox work, so that reconciled row is not an empty log. Polling **`runGet`**
-  or retrying the same key then returns that terminal outcome instead of
-  `inProgress` forever.
+  outcome unknown — not a user-authored package failure). A run on an execution
+  context is not stranded while it is inside its grant's `timeoutMs`: it stays
+  `running` until it ends, and is reconciled only a few minutes after its
+  deadline. Keyed package invocations write `package invocation started: …` onto
+  the running row before sandbox work, so that reconciled row is not an empty
+  log. Polling **`runGet`** or retrying the same key then returns that terminal
+  outcome instead of `inProgress` forever.
 
 Ordinary short calls can omit the key. Those runs are still listed in Activity
 when they finish. A call that is still running at the transport budget returns
@@ -336,6 +387,7 @@ return {
 	rowsRead: result.rowsRead,
 	rowsWritten: result.rowsWritten,
 	truncated: result.truncated,
+	warning: result.warning,
 }
 ```
 
@@ -346,11 +398,30 @@ when more matched — page with `LIMIT`/`OFFSET` (or a keyset) for larger result
 Mutating statements that yield rows (`INSERT`/`UPDATE`/`DELETE … RETURNING`)
 still finish the write when truncated; only the returned row list is capped.
 
+Each `get` / `set` / `delete` / `sql` call is an independent request, with no
+multi-key transaction or compare-and-swap. For indexes that concurrent writers
+share, see
+[Concurrency and multi-key updates](../guides/kody-factory.md#concurrency-and-multi-key-updates).
+
 A read that examines a lot of rows is allowed and metered on the monthly Rows
 read include. `warning` is a string once the statement examines at least
 1,000,000 rows (usage past the include is billed from credits). One read stops
 after 1,000,000,000 rows examined, with `storage.sql read stopped…`. Narrow with
 `LIMIT` or `WHERE`. The 1,000-row cap limits the response, not the scan.
+
+Several `;`-separated statements run in order in one call. Only the last one may
+take bindings, and the result describes the last statement. Bindings are
+positional (named `:name` slots bind in order) and accept strings, numbers,
+booleans (stored as `1` / `0`), and `null`.
+
+Under `kody execute --target mock` and `kody dev`, `sql(...)` runs on a local
+SQLite file and returns the same fields, row cap, `truncated`, warning, and
+statement rules. Only `rowsRead` and `rowsWritten` are estimates there, because
+Node's SQLite does not expose the counters hosted storage reports: `rowsWritten`
+counts rows inserted, updated, or deleted (no index or schema writes, so DDL
+reports `0`), and `rowsRead` is the larger of rows returned and rows visited by
+full-table scans (no index probes or schema reads). Check usage against hosted
+storage before relying on those two numbers.
 
 For dedicated inspection, use:
 

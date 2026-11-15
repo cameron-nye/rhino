@@ -1,4 +1,6 @@
 /** @jsxImportSource @emotion/react */
+import { createUiFeedback, type UiFeedback } from '#client/ui-feedback.ts'
+import { usePageCommands } from '../commands/context.tsx'
 import { createListDetailLinks } from '#client/list-detail-route.ts'
 import {
 	filterAccountWorkflows,
@@ -10,10 +12,10 @@ import {
 	packageHrefFromScope,
 	packageScopeFromNameOrOwner,
 } from '#universal/community-links.ts'
-import {
-	type AccountWorkflowListItem,
-	type AccountWorkflowRunStatus,
-	type AccountWorkflowsLoaderData,
+import type {
+	AccountWorkflowListItem,
+	AccountWorkflowRunStatus,
+	AccountWorkflowsLoaderData,
 } from '#universal/loader-data.ts'
 import { routes } from '#universal/routes.ts'
 import {
@@ -189,8 +191,12 @@ export function AccountWorkflowsPage({
 	selectedId: string | null
 }) {
 	const { username, workflows, selectedWorkflow } = payload
-	const [message, setMessage] = useState<string | null>(null)
-	const [messageTone, setMessageTone] = useState<MessageTone>('info')
+	const [feedback, setFeedback] = useState<UiFeedback | null>(() =>
+		createUiFeedback(null, 'info'),
+	)
+	const message = feedback?.message ?? null
+	const messageTone = feedback?.tone ?? 'info'
+
 	const [cancelArmed, setCancelArmed] = useState(false)
 	const queryClient = useQueryClient()
 	const { actorKey } = useRouteContext({ from: '__root__' })
@@ -241,8 +247,7 @@ export function AccountWorkflowsPage({
 	}
 
 	function showMessage(nextMessage: string | null, tone: MessageTone = 'info') {
-		setMessage(nextMessage)
-		setMessageTone(tone)
+		setFeedback(createUiFeedback(nextMessage, tone))
 	}
 
 	type ActionResult = {
@@ -270,6 +275,26 @@ export function AccountWorkflowsPage({
 			},
 		),
 	})
+	usePageCommands(
+		isMutating
+			? []
+			: workflows.filter(isActiveAccountWorkflow).map((workflow) => ({
+					id: `cancel-workflow:${orgSlug}:${workflow.id}`,
+					title: `Cancel ${workflow.workflowName}`,
+					subtitle: workflow.id,
+					kind: 'action',
+					icon: 'close',
+					confirm: `Cancel this run of ${workflow.workflowName}? Completed steps cannot be undone.`,
+					run: async () => {
+						await mutation.mutateAsync({
+							id: workflow.id,
+							actorKey,
+							orgSlug,
+							failureMessage: 'Unable to cancel workflow run.',
+						})
+					},
+				})),
+	)
 	function postAction(input: {
 		id: string
 		successMessage: (payload: ActionResult) => string | null

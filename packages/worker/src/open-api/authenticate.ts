@@ -1,6 +1,6 @@
 import { loadProfileChain } from '#worker/profiles/store.ts'
 import { profileStatus } from '#worker/profiles/rules.ts'
-import { type OrgPermission } from '@kody-internal/shared/org-permissions.ts'
+import type { OrgPermission } from '@kody-internal/shared/org-permissions.ts'
 import {
 	ownerIdFromStored,
 	type OwnerId,
@@ -27,7 +27,10 @@ import {
 	type OrgBinding,
 } from '#worker/orgs/repo.ts'
 import { cliClientIdMetadataPath } from '#worker/cli-client-metadata.ts'
-import { buildMcpUserContextFromGrantProps } from '#worker/mcp-auth-user-context.ts'
+import {
+	buildMcpUserContextFromGrantProps,
+	resolveGuestAliasedGrantProps,
+} from '#worker/mcp-auth-user-context.ts'
 import { resolveOAuthHelpers } from '#worker/oauth-helpers.ts'
 import { isCredentialInvalidatedByStoredPasswordChange } from '#worker/password-change-lockout.ts'
 import {
@@ -42,12 +45,11 @@ import {
 	parseEcpSignatureHeader,
 	sha256Base64Url,
 } from '@kody-internal/shared/execution-context-protocol/index.ts'
-import {
-	getExecutionContext,
-	loadContextAccess,
-	sessionStub,
-} from '#worker/execution-contexts/store.ts'
+import { sessionStub } from '#worker/execution-contexts/store.ts'
 import { isOperatorContextRun } from '#worker/execution-contexts/credential-grant.ts'
+import { readClaimedGuestOrgForSlug } from '#worker/guest/guest-accounts.ts'
+import { credentialCallMapFromJson } from '#worker/credentials/credential-call-map.ts'
+import { loadExecutionContextRunAccess } from './execution-context-run-access.ts'
 
 type McpOauthGrantProps = {
 	userId?: unknown
@@ -98,7 +100,7 @@ function describeFailure(reason: ApiTokenAuthenticationFailure) {
 		case 'unknown':
 			return 'Invalid API token.'
 		case 'expired':
-			return 'API token expired. Agents on MCP: call cliCredentialBootstrap with lifetime short|long, then `npx @kodycodes/cli auth bootstrap --code …`. CI/headless: mint with tokenCreate.'
+			return 'API token expired. Humans: run `kody login`. Agents on MCP: call cliCredentialBootstrap, then run its cli_command. CI/headless: mint with tokenCreate.'
 		case 'revoked':
 			return 'API token was revoked.'
 		default: {
@@ -143,6 +145,13 @@ export async function resolveOrgBindingForUserOwnedToken(input: {
 	const byId = await getOrgById(input.db, hint)
 	if (byId) {
 		return loadOrgBindingForOrg(input.db, input.userId, byId.id)
+	}
+	const claimedGuestOrgId = await readClaimedGuestOrgForSlug(input.db, {
+		slug: hint,
+		personId: input.userId,
+	})
+	if (claimedGuestOrgId) {
+		return loadOrgBindingForOrg(input.db, input.userId, claimedGuestOrgId)
 	}
 	return null
 }
@@ -293,9 +302,13 @@ async function authenticateWithMcpOauth(input: {
 	) {
 		throw unauthorized('Invalid API token.', true)
 	}
+	const grantProps = await resolveGuestAliasedGrantProps(
+		input.env,
+		tokenSummary.grant.props as Record<string, unknown>,
+	)
 	const authContext = await buildMcpUserContextFromGrantProps(
 		input.env,
-		tokenSummary.grant.props,
+		grantProps,
 	)
 	if (!authContext) {
 		throw unauthorized('Invalid API token.', true)
@@ -335,7 +348,7 @@ async function authenticateWithMcpOauth(input: {
 	const orgBinding = await loadOrgBindingFromGrantProps({
 		db: input.env.APP_DB,
 		personId: authContext.user.userId,
-		grantProps: tokenSummary.grant.props,
+		grantProps,
 	})
 	if (grantHasRetiredConnectionProfile(tokenSummary.grant.props)) {
 		throw unauthorized(
@@ -431,40 +444,17 @@ async function authenticateWithExecutionContextLease(input: {
 			message,
 		})
 	}
-	const authContext = await buildMcpUserContextFromGrantProps(input.env, {
-		userId: lease.requester.userId,
-	})
-	if (!authContext || authContext.suspended || !authContext.emailVerified) {
-		throw await accessLost('The requester of this run can no longer use Kody.')
-	}
-	const [orgBinding, context] = await Promise.all([
-		loadOrgBindingForOrg(
-			input.env.APP_DB,
-			authContext.user.userId,
-			lease.orgId,
-		),
-		getExecutionContext(input.env.APP_DB, lease.ecid),
-	])
-	if (!orgBinding || !context) {
+	const access = await loadExecutionContextRunAccess(input.env, lease)
+	if (!access.ok) {
 		throw await accessLost(
-			'The requester of this run no longer has access to its org.',
+			access.reason === 'requester'
+				? 'The requester of this run can no longer use Kody.'
+				: access.reason === 'org'
+					? 'The requester of this run no longer has access to its org.'
+					: 'The requester of this run no longer has access to this execution context.',
 		)
 	}
-	const access = await loadContextAccess(input.env.APP_DB, context, {
-		userId: authContext.user.userId,
-		orgId: lease.orgId,
-	})
-	if (!access.usable) {
-		throw await accessLost(
-			'The requester of this run no longer has access to this execution context.',
-		)
-	}
-	const profileChain = lease.profileId
-		? await loadProfileChain(input.env.APP_DB, {
-				orgId: lease.orgId,
-				profileId: lease.profileId,
-			})
-		: null
+	const { authContext, orgBinding, context, profileChain } = access
 	if (
 		lease.profileId &&
 		(profileChain?.at(-1)?.id !== lease.profileId ||
@@ -511,6 +501,7 @@ async function authenticateWithExecutionContextLease(input: {
 			scopes: lease.callerScopes,
 			runtime: lease.runtime,
 			byOperator,
+			callMap: credentialCallMapFromJson(lease.credentials),
 		},
 		waitUntil: input.waitUntil,
 	})

@@ -14,6 +14,7 @@
     "test:execution-shell": "node test/execution-shell-smoke.cjs",
     "test:explorer": "node test/explorer-smoke.cjs",
     "test:browser-login": "node test/browser-login-smoke.cjs",
+    "test:in-app-approval": "node test/in-app-approval-smoke.cjs",
     "dist": "electron-builder --config electron-builder.cjs --publish never",
     "test:packaged-cli": "node test/packaged-cli.cjs",
     "dist:release": "electron-builder --config electron-builder.release.cjs --publish never"
@@ -21,7 +22,8 @@
   "dependencies": {
     "@kodycodes/cli": "file:../cli",
     "electron-updater": "^6.8.11",
-    "set-cookie-parser": "^3.1.2"
+    "set-cookie-parser": "^3.1.2",
+    "xstate": "6.0.0-beta.1"
   },
   "devDependencies": {
     "electron": "45.2.0",
@@ -40,6 +42,7 @@
       "*.cjs",
       "package.json",
       "assets/icon.png",
+      "assets/tray-*.png",
       "!electron-builder*.cjs"
     ],
     "mac": {
@@ -56,17 +59,39 @@
     },
     "win": {
       "target": [
-        "nsis"
-      ]
+        "appx"
+      ],
+      "signtoolOptions": {
+        "signingHashAlgorithms": [
+          "sha256"
+        ]
+      }
+    },
+    "appx": {
+      "identityName": "KodyCodes.Kody",
+      "applicationId": "Kody",
+      "displayName": "Kody",
+      "publisherDisplayName": "Kody",
+      "backgroundColor": "transparent",
+      "artifactName": "Kody-${version}-win-${arch}.msix"
     },
     "linux": {
       "target": [
-        "AppImage"
+        "AppImage",
+        "deb"
       ],
-      "executableName": "kody"
+      "executableName": "kody-desktop",
+      "category": "Development"
     },
     "icon": "assets/icon.png",
-    "artifactName": "Kody-${version}-${os}-${arch}.${ext}"
+    "artifactName": "Kody-${version}-${os}-${arch}.${ext}",
+    "toolsets": {
+      "winCodeSign": "1.1.0"
+    }
   },
-  "author": "Kody"
+  "author": {
+    "name": "Kody",
+    "email": "support@kody.codes"
+  },
+  "homepage": "https://kody.codes"
 }

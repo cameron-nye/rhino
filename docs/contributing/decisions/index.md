@@ -30,7 +30,11 @@ Do **not** write an ADR on every PR. Number collisions (two 0022s, then two
 number collides, renumber the later record; do not leave duplicates. The
 decision-record member of `npm run docs:check` (part of `npm run validate`)
 rejects duplicate primary numbers. A lab note may share a number only as
-`NNNN-*-lab.md`.
+`NNNN-*-lab.md`. The same check (and the pre-push hook, when a push touches a
+decision record) also lists the primary numbers other open pull requests add. On
+a collision the lowest-numbered pull request keeps the number; the others fail
+their PR check until they renumber to the suggested free number. Without GitHub
+auth the open-PR part is skipped silently.
 
 Do **not** record layout or UI tweaks, mode assignments, or "we use library X"
 unless that pick is a no that will otherwise be re-litigated.
@@ -47,6 +51,11 @@ shapes, and replace a superseded record's path with the new one.
 Add new steering records to the steering list, not a catch-all numbered dump.
 
 ## Steering list
+
+- [0102: Newsletter consent and a dedicated sender](./0102-whats-new-email.md)
+
+- [0101: Model operations, not arbitrary status-pair graphs](./0101-xstate-lifecycles.md)
+  XState lifecycles and actors; status enums for unconstrained replacement
 
 Open these before proposing a new primitive, surface, or storage home.
 
@@ -130,9 +139,11 @@ Open these before proposing a new primitive, surface, or storage home.
 - [0056 — Explicit MCP/API session → CLI credential bootstrap](./0056-cli-credential-bootstrap.md)
   (amended 2026-10-06: required lifetimes, 500-token cap, reclaim by soonest
   expiry; 2026-10-09 Teams P4 + 0092: default scopes restore `local-execute`
-  parity including `integration:read` / `secret:use`) — one-shot `kody_bc_…`
-  code from `cliCredentialBootstrap` (capability + Open API); CLI redeems for
-  `kody_at_…` without chat-facing secrets or host-token scavenging
+  parity including `integration:read` / `secret:use`; 2026-11-09: redeemed codes
+  mint the same token as `kody login`, so `scopes` and `lifetime` are optional)
+  — one-shot `kody_bc_…` code from `cliCredentialBootstrap` (capability + Open
+  API); CLI redeems for `kody_at_…` without chat-facing secrets or host-token
+  scavenging
 - [0057 — No framework platform affordance for package bundles](./0057-no-framework-platform-affordance.md)
   — do not vendor, mount, inject, sniff, or rewrite package bundles for Remix,
   TanStack, Preact, or any other framework; packages bring frameworks themselves
@@ -163,7 +174,7 @@ Open these before proposing a new primitive, surface, or storage home.
 - [0064 — OAuth consent binds a grant to one org](./0064-oauth-org-binding.md) —
   stamp `orgId` on grant props and metadata; `?org=` plus consent picker (no
   flag; one org = no picker); connection profiles stay org-bound narrowing, not
-  OAuth scopes; `userId` fallback for grants without `orgId`
+  OAuth scopes; grants without `orgId` fail closed
 - [0065 — Org seats and prepaid credits](./0065-org-seats-and-prepaid-credits.md)
   — org-billed seats and credits; usage past the include follows 0051 (an empty
   wallet keeps the full Pro include and never drops to Free limits); Stripe
@@ -209,8 +220,9 @@ Open these before proposing a new primitive, surface, or storage home.
   `any_authenticated`
 - [0075 — Repo pushes serialize through a per-repo Durable Object in a dedicated worker](./0075-repo-push-queue-worker.md)
   — `kody-push-queue` owns `RepoPushQueueV1`; pack lands before enqueue; FIFO
-  one push at a time; 90s budget then 503 `Retry-After: 2`; no fallback; gated
-  by the repo-scoped `repo-push-queue` flag
+  one push at a time; 90s budget then 503 `Retry-After: 2`; known-stale old-oids
+  get `ng fetch first` when the client asked for report-status; no fallback;
+  gated by the repo-scoped `repo-push-queue` flag
 - [0076 — CLI login mints a device API token](./0076-cli-login-device-token.md)
   — `POST /v1/tokens/device` exchanges official CLI OAuth for a user-owned
   `kody_at_…`; `POST /v1/execute` is that token with `org:execute`; MCP and
@@ -271,19 +283,39 @@ Open these before proposing a new primitive, surface, or storage home.
   `execution_context:command` (operator by default, shares only when granted);
   `kody.command.*` with daemon-held background jobs; audited without env values;
   macOS and Linux only
-- [0094: Package-app visitors sign in from limited browsers](./0094-package-app-limited-browser-sign-in.md)
+- [0094: Package-app visitors and accounts sign in from limited browsers](./0094-package-app-limited-browser-sign-in.md)
   `/login`, `/verify`, and consent work as plain HTML; "Sign in on another
   device" reuses the 0082 device code (amends 0082)
 - [0095: A visit from another org to an internal package app bills the visiting org](./0095-cross-org-package-app-visits-bill-the-visitor-org.md)
   Outside collaborators on an internal app pay for their metered work from their
   personal org; the publisher keeps the worker day; public apps stay
   publisher-paid; the billed org rides on the request, never the worker key
+- [0096: An execution context records its box login and warns grantees about excess access](./0096-execution-context-box-login-and-excess-access-notices.md)
+  Box login (person or agent profile) stored on the context; excess over each
+  grantee shown only to people who can act; subject-only dismissal; no
+  acknowledgment (amends 0092)
+- [0097: People can read a secret's value locally with the Kody CLI, per secret](./0097-local-secret-reads.md)
+  Per-secret switch set only on the website by write access; `kody login` tokens
+  read, agent tokens need `secret:read_local`, profiles need "read locally"; CLI
+  HTTP only; every read listed for 90 days (amends 0056, 0076, 0092)
+- [0099: Signing credentials sign HTTP requests Kody canonicalizes; raw RSA signing is owner opt-in](./0099-rsa-request-signing.md)
+  `http-signature` (draft-cavage, Oracle profile) binds method, URL, host, and
+  body digest to the credential's hosts; raw `rsa-sha256` is off until an Owner
+  turns it on on the website; every raw signature listed for 90 days
+  (amends 0068)
 
 ## Historical / UI / implementation
 
 Accepted or superseded records that do **not** change the next product proposal.
 Do not treat this list as homework. History stays; it is not silently deleted.
 
+- [0100: Declare lifecycle graphs once, not as scattered status checks](./0100-explicit-state-machines.md)
+  — superseded by 0101; status-pair tables replaced by operation events and
+  enums
+- [0098: Kody hosts short-lived build boxes for packages that declare a build step, paid from credits](./0098-kody-hosted-build-boxes.md)
+  Build-only boxes in the publish routing (amends 0025); Pro with enough
+  credits; credits-only meter; framework-neutral (0057 stands); fork-only
+  community listing allowed with a build-step label
 - [0073 — Community listing pin follows promote](./0073-community-listing-follows-promote.md)
   — active listings auto-follow `published_commit`; no separate Update public
   listing step; Settings **Publishing** panel is the owner surface

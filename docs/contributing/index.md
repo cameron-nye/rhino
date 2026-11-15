@@ -7,6 +7,8 @@ style, tests, MCP capabilities, and runtime architecture.
 
 - [Rhino fork](./rhino.md) (this repository: stay close to upstream
   kody-hq/kody; the visible product name is Rhino)
+- [Explicit state machines](./state-machines.md) (lifecycle graphs and SQL
+  guards)
 - [Engineering principles](../principles/index.md) (including
   [error prompt for agents](../principles/error-prompt-for-agents.md))
 - [Getting started](./getting-started.md), [project intent](./project-intent.md)
@@ -36,6 +38,7 @@ style, tests, MCP capabilities, and runtime architecture.
   still work and will be removed later, including `kody_id` / `kody.id`)
 - [Release notes](./release-notes.md) (PR bodies / Discord; **May break
   packages** heading)
+- [Writing blog posts](./blog.md) (category, series, frontmatter schema)
 - [Friction log](./friction-log.md) (when/where/how-to-fix policy; on this fork
   file issues on `cameron-nye/rhino` with
   [rhino-friction](../../.agents/skills/rhino-friction/SKILL.md), see
@@ -52,7 +55,10 @@ style, tests, MCP capabilities, and runtime architecture.
 - PR system recaps (visual plan/recap blocks in PR descriptions):
   [visual-recap skill](../../.agents/skills/visual-recap/SKILL.md)
 
-- [Desktop Electron shell](../../packages/desktop/README.md)
+- [Desktop Electron shell](../../packages/desktop/README.md) — production
+  downloads:
+  [kody-hq/kody-desktop releases](https://github.com/kody-hq/kody-desktop/releases/latest)
+  (canonical) or [https://kody.codes/download](https://kody.codes/download)
 
 ## Code and tooling
 
@@ -72,6 +78,8 @@ style, tests, MCP capabilities, and runtime architecture.
   `loadPageQuery` / `usePageQuery` keep the previous page until the next one is
   ready)
 - [Cloudflare Agents SDK usage](./cloudflare-agents-sdk.md)
+
+- [Files collaboration spike](./architecture/file-collaboration-spike.md)
 
 ## Testing
 

@@ -17,7 +17,9 @@
   2026-10-28 (the official CLI may use the OAuth device grant,
   [0082](./0082-cli-oauth-device-authorization-grant.md)); 2026-10-30
   ([0091](./0091-auth-md-service-auth-registration.md): auth.md agent
-  registration mints default to `long`)
+  registration mints default to `long`); 2026-11-09 (a redeemed code mints the
+  same token as `kody login`: same scopes, same lifetime, saved in the same CLI
+  slot; see "One CLI credential" below)
 - **Amends:** [0053](./0053-scoped-api-tokens-are-not-mcp-oauth-scopes.md),
   [0055](./0055-cli-mcp-oauth-local-execute-http.md)
 
@@ -129,28 +131,42 @@ Do **not** add OAuth device flow (superseded for the official CLI by
 bootstrap codes as general Open API Bearers. Do **not** scavenge host MCP tokens
 from disk. Do **not** keep a flagless / default-lifetime mint path.
 
+**Amended 2026-11-09: one CLI credential.** A redeemed code mints the same token
+`kody login` mints, through the same `mintCliToken`. Defaults are the full
+org-permission vocabulary (`cliTokenScopes`, capped by the org role on every
+request) and the login lifetime (14 days idle / 3 months), so `scopes` and
+`lifetime` are optional on mint and redeem. No human approval step: the person
+approved the agent when they authorized the MCP session. The child never exceeds
+its parent: an API-token parent caps scopes and absolute expiry (the default
+lifetime shrinks to fit), and a session whose credential narrows scopes caps
+scopes. The narrow local-execute set (`cliCredentialBootstrapNarrowScopes`, the
+old default) is minted only when a caller passes it explicitly (for example
+`kody auth bootstrap --scopes …`). Redeem returns `login_org` like
+`POST /v1/tokens/device`, and the CLI saves the token where `kody login` saves
+its device token. `created_via` stays `cli-bootstrap` for provenance; local
+secret reads key off the `secret:read_local` scope, which the default holds.
+`cli_command` keeps lifetime flags because older CLIs refuse to redeem without
+them. Existing bootstrap tokens keep their scopes until they expire. This
+replaces the "no silent default lifetime" rule above for bootstrap.
+
 ## Consequences
 
 - New D1 table `cli_credential_bootstrap_codes` (hash + TTL + one-shot).
 - `api_tokens.created_via` gains `cli-bootstrap`.
 - HTTP handler allows one unauthenticated route (redeem), rate-limited at the
   API edge by IP.
-- CLI companion:
-  `npx @kodycodes/cli auth bootstrap --code … --lifetime short|long` (or
-  explicit idle/max flags) redeems and stores the API token for `--local`.
+- CLI companion: `npx @kodycodes/cli auth bootstrap --code …` redeems and stores
+  the API token for `--local`. Omit lifetime at mint for the login default;
+  redeem without lifetime flags keeps the code's authorized lifetime. Pass
+  `--lifetime short|long` or explicit idle/max flags to override. `cli_command`
+  includes flags for older CLIs.
 - Agent tips prefer bootstrap (or login) over `tokenCreate` for interactive
-  local execute; single-task agents use `short`.
+  local execute; single-task agents may pass `short`.
 - Ordinary and bootstrap tokens share the same idle/max ceilings (14 days / 3
   months). Cap reclaim is generic in `mintApiToken`.
-- **As of Teams P4 + 0092 + later amendments:** default eventual scopes are the
-  pre-P4 `local-execute` + `account:read` parity set under org permissions:
-  `org:execute`, `org:read`, and the use-level scopes saved packages need
-  (`package:execute` / `package:read`, `integration:read` / `integration:use`,
-  `secret:use`, `email:read` / `email:send`, `job:read` / `job:execute`,
-  `app:read` / `app:execute`, `memory:read`), plus `package:write` (plain-repo /
-  package pushes), `package:create` (`packageGetGitRemote` create stubs), and
-  `token:delete` (self-revoke). `createAuthenticatedFetch` calls
-  `integrationGet` (`integration:read`); without it, every integration package
-  fails closed on CapabilityProxy. Do not mint `search:read`, the original
-  `local-execute` / `account:read` names, or `tokens:write`. Parent tokens still
-  cannot escalate scopes or outlive their own `max_expires_at`.
+- **As of 2026-11-09:** default eventual scopes are the same as `kody login`
+  (`cliTokenScopes`, the full org-permission vocabulary, capped by the org role
+  on every request and by a parent token). Pass `scopes` only to mint the
+  narrower local-execute set (`cliCredentialBootstrapNarrowScopes`) or another
+  explicit list. Parent tokens still cannot escalate scopes or outlive their own
+  `max_expires_at`.

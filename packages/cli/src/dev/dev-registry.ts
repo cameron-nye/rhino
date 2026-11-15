@@ -8,11 +8,16 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { type KodyTarget } from '../target.js'
+import type { KodyTarget } from '../target.js'
 import { userCacheDir } from '../workerd-binary.js'
 import { isProcessAlive } from './process-reaper.js'
 
 export const devStatusPath = '/__kody/dev/status'
+/** Email the local Kody would have delivered, newest last. */
+export const devOutboxPath = '/__kody/dev/outbox'
+
+/** POST `{operation, input}`: runs a job, webhook or event on local Kody. */
+export const devCallPath = '/__kody/dev/call'
 
 export type DevRegistration = {
 	pid: number

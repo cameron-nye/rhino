@@ -38,7 +38,9 @@ invoke it instead of creating another implementation.
   per call, so static imports from execute always see the current published
   version.
 - When the target's name is data, use `import(specifier)` for a caller-owned or
-  forked module. Exactly-once work uses workflows.
+  forked module from `execute`. Saved package server code cannot (see
+  [Saved package composition](#saved-package-composition)). Exactly-once work
+  uses workflows.
 
 This is the default for an established operation whose behavior should stay
 owned by its existing capability or package.
@@ -64,6 +66,9 @@ emissions (email, paid APIs, third-party writes) are not invertible; use a
 package `dryRun` and fresh user confirmation before a live mutation.
 
 ### Fork a close public package before creating
+
+> [!WATCH] https://www.youtube.com/watch?v=YTxilTb_wuw Watch: Kody community
+> packages: fork, connect your credentials, and keep up
 
 <details>
 <summary>What's the difference between forking and sharing?</summary>
@@ -125,6 +130,68 @@ When the OAuth token is coarser than the intended export — Gmail can send
 whenever it can create a draft — publish a thin package that only performs the
 allowed call, then lock it. Load `locked_gmail_drafts` for that pattern.
 
+## Saved package composition
+
+Saved package code reuses another package through a static
+`kody:@scope/package/export` import declared in
+`package.json#kody.dependencies`. Two publish checks shape what else works.
+
+### Server code cannot use computed `import()`
+
+Publishing a saved package runs the credential stamp publish gate. It refuses
+`import()` with a non-literal specifier in server-runtime code: exports, jobs,
+subscription handlers, the app server entry, and every module they import. Only
+`kody.app.client` browser entries are outside that rule. The failure reads:
+
+```text
+<path>: server-runtime code must not use eval, new Function (...), or import() with a non-literal specifier.
+```
+
+So `import(specifier)` for a package name that is data works in ad hoc
+`execute`, not in saved package server code. A literal
+`import('kody:@scope/package/export')` is also refused at publish and throws a
+teaching error at runtime. In package server code, call another package with a
+static import, or use one of the patterns below.
+
+### Static dependency cycles are refused
+
+Static imports form a graph through `kody.dependencies`. Publish checks fail the
+dependencies check when that graph has a cycle, including a cycle reachable
+through a package you depend on:
+
+```text
+package.json#kody.dependencies forms a cycle: @scope/a -> @scope/b -> @scope/a.
+```
+
+Remove one edge of the cycle. Removing the import but keeping the
+`kody.dependencies` entry also fails, because imports and declarations must
+match.
+
+### Two packages that need each other
+
+When `@scope/a` and `@scope/b` each need server-side behavior from the other,
+use one of these supported patterns:
+
+- **Split the shared code into a third package.** Move what both need into
+  `@scope/shared`, which imports neither. Both packages statically import
+  `@scope/shared`. Static imports snapshot at the dependent's publish, so
+  republish dependents after changing `@scope/shared`.
+- **Keep one direction static and queue the other.** `@scope/a` imports
+  `@scope/b` statically. Code in `@scope/b` calls
+  `workflows.create({ packageId: '@scope/a', exportName: 'export-name', params })`.
+  Both packages must belong to the same owner. The workflow runs later, so the
+  caller does not get the return value in the same call; read it from
+  `metadata.result` (capped at 4 KiB) with `kody.runList({ workflow_id })`. See
+  [Workflows](../use/workflows.md).
+- **Push an event instead of reading.** A job, subscription handler, or package
+  app in one package calls `events.dispatch` on a topic it declares in
+  `kody.emits`, and the other package subscribes. The emitter never sees the
+  handler's result. See
+  [Package subscriptions](./package-subscriptions.md#emitting).
+
+There is no supported synchronous call in both directions between two saved
+packages.
+
 ## Signals to escalate from `execute` to a package
 
 Move the behavior into a package when one or more of these become true:
@@ -158,8 +225,7 @@ When a normal filesystem and git client are available:
    package, pass `create: true`, `name` set to the `@owner/leaf` name (or the
    name leaf), and `description` (at most 200 characters; a short public
    tagline); for an existing package, omit `create` and pass `name` or
-   `package_id` when the name is not known. Leftover `kody_id` still accepts the
-   same values.
+   `package_id` when the name is not known.
 2. Run the returned setup commands and clone into a temporary directory. Those
    commands set local git `user.email` and `user.name` from `git_author` (the
    signed-in Kody account). Do not invent a git identity.
@@ -168,9 +234,17 @@ When a normal filesystem and git client are available:
 4. Commit and push the package repository.
 5. Publish the pushed head with `packagePublishExternalPush`. That call runs the
    server-side publish checks (manifest, docs, bundle, typecheck, lint,
-   credentials). Do **not** open a repo session to run `repoRunChecks` on the
-   pushed tree — `repoOpenSession` refuses unpublished HEAD, so the session
-   cannot see that commit.
+   credentials). When the publish exceeds the inline budget it returns
+   `dispatched` with a `workflow_id`; poll `workflowRunList` until the run is
+   terminal. A durable run that does not publish ends `errored` and frees a
+   retry for the same commit. See [Packages](../use/packages.md) for the
+   statuses. When bundling exceeds the worker isolate, build on this machine or
+   a context you operate and have Kody verify the upload:
+   `kody package publish <package> --build local` or `--build context`. See
+   [Publish packages too big for Kody cloud](./publish-large-packages.md)
+   (`guide:publish_large_packages`). Do **not** open a repo session to run
+   `repoRunChecks` on the pushed tree — `repoOpenSession` refuses unpublished
+   HEAD, so the session cannot see that commit.
 
 This lane supports binary assets, multi-file changes, local tests, and normal
 git review.
@@ -230,9 +304,10 @@ for `kody dev`**, **`prod` for `execute` / `search`**).
 
 Mock first (safe iteration; scratch `packageStorage` for the working tree; fake
 or local credentials), then re-run with `--target prod` for real CapabilityProxy
-hops before publish. `--target prod` still does **not** attach hosted
-`packageStorage` / `packageSecrets` to the working-tree package — publish (or
-import a published dep) for those. See the
+hops before publish. `--target prod` does **not** attach hosted `packageStorage`
+/ `packageSecrets` to the working-tree package, by design (see
+[Won't do in Package apps](./package-apps.md#wont-do-storage-secrets-email-events-and-packages-on---target-prod)).
+Publish (or import a published dep) for those. See the
 [target table in Package apps](./package-apps.md#local-testing-with-kody-dev).
 Share previews for unpublished packages are out of scope. `execute --local`
 without `--target` talks to the hosted account.

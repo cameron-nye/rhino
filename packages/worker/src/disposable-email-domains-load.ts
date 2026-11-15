@@ -1,26 +1,15 @@
 /**
- * Load the disposable-email domain blocklist from the deferred additional
- * module. Specifier must stay `./node_modules/.kody-generated/…` relative to
- * `packages/worker/src` so Wrangler matches the ESModule rule (same lane as
- * `postal-mime-load.ts`).
- *
- * Type the payload with `typeof import(...)` queries only — a top-level
- * `import type` from `disposable-email-domains.ts` keeps the list in Wrangler
- * main.
+ * Loads the disposable email domain list from its additional module so the
+ * ~160 KB list stays off the platform/runtime startup graph. The specifier is
+ * `./node_modules/.kody-generated/…` relative to `packages/worker/src`, like
+ * `postal-mime-load.ts`.
  */
+let memo: Promise<ReadonlySet<string>> | null = null
 
-export type DisposableEmailDomainList = ReadonlyArray<string>
-
-let memo: Promise<DisposableEmailDomainList> | null = null
-
-/**
- * Signup and email-change already await `assessAccountEmail`; the list loads
- * on first disposable check and is cached for the isolate.
- */
-export function loadDisposableEmailDomains(): Promise<DisposableEmailDomainList> {
+export function loadDisposableEmailDomains(): Promise<ReadonlySet<string>> {
 	memo ??=
 		import('./node_modules/.kody-generated/disposable-email-domains.mjs').then(
-			(module) => module.disposableEmailDomainList,
+			(module) => new Set<string>(module.disposableEmailDomainList),
 			(error: unknown) => {
 				memo = null
 				throw error

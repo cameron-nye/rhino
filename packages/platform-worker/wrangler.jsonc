@@ -144,6 +144,8 @@
 			"tag": "v2",
 			"new_sqlite_classes": ["ExecutionContextSessionV1"],
 		},
+		{ "tag": "files-v1", "new_sqlite_classes": ["FileStore"] },
+		{ "tag": "file-rooms-v1", "new_sqlite_classes": ["FileRoom"] },
 	],
 	"observability": {
 		"enabled": true,
@@ -217,6 +219,11 @@
 						"name": "REPO_SESSION_INDEX",
 					},
 					{
+						"class_name": "FileStore",
+						"name": "FILE_STORE",
+					},
+					{ "class_name": "FileRoom", "name": "FILE_ROOM" },
+					{
 						"class_name": "StripePlanRefresh",
 						"name": "STRIPE_PLAN_REFRESH",
 					},
@@ -285,6 +292,10 @@
 				{
 					"binding": "REPO_SESSION_BLOBS",
 					"bucket_name": "kody-repo-session-blobs",
+				},
+				{
+					"binding": "FILE_BLOBS",
+					"bucket_name": "kody-file-blobs",
 				},
 				{
 					"binding": "OPERATOR_BACKUPS",
@@ -408,6 +419,8 @@
 					"tag": "v2",
 					"new_sqlite_classes": ["ExecutionContextSessionV1"],
 				},
+				{ "tag": "files-v1", "new_sqlite_classes": ["FileStore"] },
+				{ "tag": "file-rooms-v1", "new_sqlite_classes": ["FileRoom"] },
 			],
 			"worker_loaders": [
 				{
@@ -451,6 +464,11 @@
 						"class_name": "RepoSessionIndex",
 						"name": "REPO_SESSION_INDEX",
 					},
+					{
+						"class_name": "FileStore",
+						"name": "FILE_STORE",
+					},
+					{ "class_name": "FileRoom", "name": "FILE_ROOM" },
 					{
 						"class_name": "StripePlanRefresh",
 						"name": "STRIPE_PLAN_REFRESH",
@@ -519,6 +537,10 @@
 				{
 					"binding": "REPO_SESSION_BLOBS",
 					"bucket_name": "kody-preview-repo-session-blobs",
+				},
+				{
+					"binding": "FILE_BLOBS",
+					"bucket_name": "kody-preview-file-blobs",
 				},
 				{
 					"binding": "OPERATOR_BACKUPS",

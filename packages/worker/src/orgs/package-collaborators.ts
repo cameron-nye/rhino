@@ -17,6 +17,7 @@ import {
 	type PackageCollaboratorView,
 } from '#universal/package-collaborators.ts'
 
+/** Collaborators and remaining add-options for one package or file. */
 export type PackageCollaborators = {
 	collaborators: Array<PackageCollaboratorView>
 	options: {
@@ -122,12 +123,34 @@ export async function listPackageCollaborators(input: {
 	orgId: string
 	packageId: string
 }): Promise<PackageCollaborators> {
-	const { db, orgId, packageId } = input
+	return listResourceCollaborators({
+		...input,
+		resourceType: 'package',
+		resourceId: input.packageId,
+	})
+}
+
+/**
+ * Shared subject projection for package and file access panels: everyone who
+ * holds a live grant (org, teams, members, outside collaborators) and the
+ * subjects a manager can still add. Profile grants appear only for packages.
+ * Owners and admins are omitted from add-member options because they already
+ * hold every permission. Callers authorize first.
+ */
+export async function listResourceCollaborators(input: {
+	db: D1Database
+	orgId: string
+	resourceType: 'package' | 'file'
+	resourceId: string
+}): Promise<PackageCollaborators> {
+	const { db, orgId, resourceType, resourceId } = input
 	const [grants, members, teams, profileGrants] = await Promise.all([
-		listGrants({ db, orgId, resourceType: 'package', resourceId: packageId }),
+		listGrants({ db, orgId, resourceType, resourceId }),
 		listOrgMembers(db, orgId),
 		listTeams(db, orgId),
-		listPackageProfileGrants({ db, orgId, packageId }),
+		resourceType === 'package'
+			? listPackageProfileGrants({ db, orgId, packageId: resourceId })
+			: Promise.resolve([]),
 	])
 	const memberIds = new Set(members.map((member) => member.userId))
 	const teamsById = new Map(teams.map((team) => [team.id, team]))
@@ -147,6 +170,7 @@ export async function listPackageCollaborators(input: {
 				preset: readPreset(grant.preset),
 				permissions: grant.permissions,
 				createdAt: grant.createdAt,
+				expiresAt: grant.expiresAt,
 				allowUnmappableCredentialChanges:
 					grant.allowUnmappableCredentialChanges,
 			}
@@ -257,11 +281,14 @@ export async function listPackageCollaborators(input: {
 					name: team.name,
 					memberCount: team.memberCount,
 				})),
-			// Owners already hold every permission on every package.
+			// Owners and admins already hold every permission on every package
+			// and file, so they are not add-collaborator options.
 			members: members
 				.filter(
 					(member) =>
-						member.role !== 'owner' && !grantedUsers.has(member.userId),
+						member.role !== 'owner' &&
+						member.role !== 'admin' &&
+						!grantedUsers.has(member.userId),
 				)
 				.map((member) => ({
 					userId: member.userId,

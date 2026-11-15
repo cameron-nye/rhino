@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {
 	existsSync,
 	mkdtempSync,
+	rmSync,
 	readFileSync,
 	statSync,
 	writeFileSync,
@@ -365,7 +366,7 @@ async function storeContext(
 	wrapping: import('../src/execution-context/keystore.js').WrappingKeySource,
 ) {
 	const { publicKeyJwk, privateKeyJwk } = await generateContextKey()
-	keystore.saveContext({
+	await keystore.saveContext({
 		context: {
 			version: 1,
 			ecid,
@@ -433,6 +434,36 @@ test('status names each problem with the command that fixes it', () => {
 	assert.match(
 		text,
 		/\[linger-disabled\][^\n]*\n\s+Fix: sudo loginctl enable-linger/,
+	)
+	// A stop you asked for is not a crash: no not-running problem.
+	const stopRequested = service.servicePaths({
+		apiUrl,
+		ecid: 'ec_status',
+		manager: 'systemd',
+	}).stopRequestedPath
+	service.writeJson(stopRequested, { at: '2026-11-05T00:00:00.000Z' })
+	const stopped = service.serviceStatus({
+		apiUrl,
+		ecid: 'ec_status',
+		cliVersion: '1.2.3',
+		tmpDir: null,
+		expectedUnit: 'something else',
+		keyWrap: 'passphrase',
+		platform: 'linux',
+		isRoot: false,
+		readText: (path) => (path === unitPath ? unit : null),
+		run: fakeSystemd({ active: false, enabled: false, linger: 'no' }).run,
+	})
+	assert.deepEqual(stopped.stopRequested, { at: '2026-11-05T00:00:00.000Z' })
+	assert.ok(!stopped.problems.some((p) => p.code === 'not-running'))
+	assert.match(
+		service.formatServiceStatus(stopped),
+		/Status: stopped \(kody daemon stop, 2026-11-05T00:00:00\.000Z\); start it with: kody daemon start/,
+	)
+	rmSync(stopRequested, { force: true })
+	assert.match(
+		service.formatServiceStatus(broken),
+		/crashed or failed to start/,
 	)
 	const windows = service.serviceStatus({
 		apiUrl,
@@ -582,7 +613,7 @@ test('the file wrapping key is 600 and replaces a passphrase without a passphras
 		env: { KODY_CONTEXT_KEY_PASSPHRASE: 'correct horse battery staple' },
 	})
 	const privateJwk = await storeContext(ecid, passphrase)
-	keystore.rewrapContextKey({
+	await keystore.rewrapContextKey({
 		apiUrl,
 		ecid,
 		from: passphrase,
@@ -594,17 +625,16 @@ test('the file wrapping key is 600 and replaces a passphrase without a passphras
 		assert.equal(statSync(keyPath).mode & 0o777, 0o600)
 	}
 	assert.equal(keystore.storedKeyWrap(apiUrl, ecid), 'file')
-	const loaded = keystore.loadContext({
+	const loaded = await keystore.loadContext({
 		apiUrl,
 		ecid,
 		wrapping: keystore.wrappingKeyForStoredContext({ apiUrl, ecid, env: {} }),
 	})
 	assert.deepEqual(loaded.privateJwk, privateJwk)
-	assert.throws(
-		() =>
-			keystore
-				.fileWrappingKey({ apiUrl, ecid: 'ec_nofile', create: false })
-				.key(Buffer.alloc(16)),
+	await assert.rejects(
+		keystore
+			.fileWrappingKey({ apiUrl, ecid: 'ec_nofile', create: false })
+			.key(Buffer.alloc(16)),
 		/file key for this execution context is missing/,
 	)
 })
