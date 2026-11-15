@@ -6,8 +6,14 @@ test('landing agent marquee fades both edges while it drifts', async ({
 	page,
 }) => {
 	await page.goto('/')
+	if (new URL(page.url()).pathname.endsWith('/login')) {
+		test.skip(
+			true,
+			'Homepage marketing marquee is not served in personal-use mode',
+		)
+	}
 	const marquee = page.getByRole('navigation', {
-		name: 'Agents that work with Kody',
+		name: 'Agents that work with Rhino',
 	})
 	await expect(marquee).toBeVisible()
 	await expect
