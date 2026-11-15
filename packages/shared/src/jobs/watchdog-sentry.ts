@@ -1,4 +1,4 @@
-import { type JobRow } from './repo.ts'
+import type { JobRow } from './repo.ts'
 
 /**
  * One overdue/stuck job row formatted for ops logs and Sentry. Values are
